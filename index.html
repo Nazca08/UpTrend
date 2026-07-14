@@ -1,0 +1,1990 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>UpTrend</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0A0D12;
+    --panel:#12161F;
+    --panel-2:#171C27;
+    --line:#232A38;
+    --text:#E7EAF0;
+    --muted:#7C879C;
+    --up:#3ECF8E;
+    --down:#FF5C5C;
+    --amber:#F5A623;
+    --tech:#B98CFF;
+    --energy:#FFB454;
+    --health:#5CD6C0;
+    --consumer:#6FA8FF;
+    --sp:#F5A623;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:'Inter',sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  h1,h2,h3,.display{font-family:'Space Grotesk',sans-serif;}
+  .mono{font-family:'IBM Plex Mono',monospace;}
+
+  /* ---------- layout ---------- */
+  #app{max-width:1400px;margin:0 auto;padding:16px;}
+  .topbar{
+    display:flex;align-items:center;justify-content:space-between;
+    padding:14px 20px;background:linear-gradient(180deg,#141924,#0F131B);
+    border:1px solid var(--line);border-radius:14px;margin-bottom:14px;
+  }
+  .topbar .title{font-size:22px;font-weight:700;letter-spacing:0.5px;display:flex;align-items:center;gap:9px;}
+  .title .logo-mark{flex-shrink:0;}
+  .title .word-up{color:#FFFFFF;}
+  .title .word-trend{color:var(--up);}
+  .topbar .meta{display:flex;gap:22px;align-items:center;}
+  .meta .item{text-align:right;}
+  .meta .label{font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);}
+  .meta .value{font-size:16px;font-weight:600;}
+
+  .layout{display:grid;grid-template-columns:1fr 340px;gap:14px;align-items:start;}
+  @media (max-width:980px){.layout{grid-template-columns:1fr;}}
+
+  .board{display:flex;flex-direction:column;gap:12px;}
+  .sector-panel{
+    background:var(--panel);border:1px solid var(--line);border-radius:14px;overflow:hidden;
+  }
+  .sector-head{
+    padding:9px 16px;font-size:12px;text-transform:uppercase;letter-spacing:1.4px;
+    font-weight:600;display:flex;align-items:center;gap:8px;
+    border-bottom:1px solid var(--line);
+  }
+  .sector-dot{width:8px;height:8px;border-radius:50%;}
+  .stock-row{padding:12px 16px;border-bottom:1px solid var(--line);cursor:pointer;transition:background .15s;}
+  .stock-row:last-child{border-bottom:none;}
+  .stock-row:hover{background:rgba(255,255,255,0.02);}
+  .stock-row.selected{background:rgba(245,166,35,0.07);box-shadow:inset 3px 0 0 var(--amber);}
+  .sp-panel{cursor:pointer;transition:background .15s;}
+  .sp-panel.selected{box-shadow:inset 3px 0 0 var(--amber),0 0 0 1px var(--amber);}
+  .tap-hint{font-size:10px;color:var(--muted);margin-left:auto;text-transform:uppercase;letter-spacing:0.5px;}
+  .sparkline{display:block;flex-shrink:0;background:rgba(255,255,255,0.02);border-radius:4px;}
+  .stock-row-inner{display:flex;align-items:flex-start;gap:12px;}
+  .stock-chart-col{flex-shrink:0;padding-top:2px;cursor:zoom-in;border-radius:6px;transition:background .12s;}
+  .stock-chart-col:hover{background:rgba(255,255,255,0.06);}
+  .stock-main-col{flex:1;min-width:0;}
+  .stock-row .row-top{display:flex;align-items:baseline;gap:10px;margin-bottom:8px;}
+  .ticker{font-family:'Space Grotesk';font-weight:700;font-size:15px;letter-spacing:0.5px;}
+  .price-now{font-family:'IBM Plex Mono';font-size:19px;font-weight:600;}
+  .price-delta{font-family:'IBM Plex Mono';font-size:12px;padding:1px 6px;border-radius:5px;}
+  .price-delta.up{color:var(--up);background:rgba(62,207,142,0.12);}
+  .price-delta.down{color:var(--down);background:rgba(255,92,92,0.12);}
+  .price-delta.flat{color:var(--muted);background:rgba(124,135,156,0.12);}
+  .frozen-badge{font-size:10px;color:#8FD9FF;background:rgba(143,217,255,0.12);padding:1px 6px;border-radius:5px;letter-spacing:0.5px;text-transform:uppercase;}
+  .worthless-badge{font-size:10px;color:var(--down);background:rgba(255,92,92,0.14);padding:1px 6px;border-radius:5px;letter-spacing:0.5px;text-transform:uppercase;font-weight:600;}
+  .stock-row.worthless{opacity:0.5;cursor:default;}
+  .stock-row.worthless:hover{background:none;}
+
+  .track{display:flex;align-items:flex-end;gap:2px;position:relative;overflow-x:auto;padding-bottom:2px;}
+  .dot-wrap{display:flex;flex-direction:column;align-items:center;flex:1;min-width:0;}
+  .dot{width:9px;height:9px;border-radius:50%;background:#2A3242;transition:all .25s;}
+  .dot.filled{width:12px;height:12px;box-shadow:0 0 7px currentColor;}
+  .dot-price{font-size:8.5px;font-family:'IBM Plex Mono';color:var(--muted);margin-top:4px;white-space:nowrap;}
+  .dot.filled + .dot-price, .dot-wrap.active .dot-price{color:var(--text);font-weight:600;}
+  .dot-wrap.edge .dot{outline:1px solid rgba(255,255,255,0.15);outline-offset:2px;}
+  .dot-wrap.center .dot{box-shadow:0 0 0 2px rgba(255,255,255,0.28);}
+  .dot-wrap.center .dot-price{color:var(--text);font-weight:600;background:rgba(255,255,255,0.08);border-radius:4px;padding:0 4px;}
+
+  .sp-panel{
+    background:linear-gradient(180deg,#1A1508,#12161F);
+    border:1px solid #3A2F12;border-radius:14px;padding:14px 16px;
+  }
+  .sp-panel .sector-head{border-bottom:1px solid #3A2F12;color:var(--sp);padding-left:0;padding-top:0;margin-bottom:10px;}
+
+  /* ---------- sidebar ---------- */
+  .sidebar{display:flex;flex-direction:column;gap:12px;position:sticky;top:16px;}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px;}
+  .panel h3{margin:0 0 10px 0;font-size:13px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);}
+  .player-card{
+    padding:10px 10px 10px 12px;border-radius:10px;margin-bottom:8px;border:1px solid var(--line);
+    border-left-width:4px;background:var(--panel-2);
+  }
+  .player-card.active{box-shadow:0 0 0 1px var(--amber) inset;}
+  .player-color-dot{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:6px;flex-shrink:0;}
+  .player-card .p-top{display:flex;justify-content:space-between;align-items:center;}
+  .p-name{font-weight:600;font-size:14px;}
+  .p-cash{font-family:'IBM Plex Mono';font-size:13px;color:var(--up);}
+  .p-net{font-size:11px;color:var(--muted);margin-top:2px;}
+
+  .btn{
+    background:var(--amber);color:#1A1200;border:none;border-radius:9px;
+    padding:10px 14px;font-weight:600;font-size:13px;cursor:pointer;
+    font-family:'Inter';transition:transform .1s, filter .1s;
+  }
+  .btn:hover{filter:brightness(1.08);}
+  .btn:active{transform:scale(0.98);}
+  .btn.secondary{background:var(--panel-2);color:var(--text);border:1px solid var(--line);}
+  .btn.full{width:100%;}
+  .btn:disabled{opacity:0.35;cursor:not-allowed;}
+  .btn-row{display:flex;gap:8px;}
+  .btn.buy{background:var(--up);color:#062A1B;}
+  .btn.sell{background:var(--down);color:#3A0808;}
+  .btn.short{background:var(--tech);color:#1D0F3A;}
+  .btn.cover{background:#4C8DFF;color:#04122E;}
+  .cap-meter{font-size:11px;color:var(--muted);margin-bottom:8px;font-family:'IBM Plex Mono';}
+  .cap-meter b{color:var(--text);}
+  .price-now.flash{ animation: tickFlash .5s ease-out; display:inline-block; }
+  @keyframes tickFlash{
+    0%{ transform:scale(1); }
+    35%{ transform:scale(1.22); text-shadow:0 0 12px currentColor; }
+    100%{ transform:scale(1); text-shadow:none; }
+  }
+
+  .trade-row{display:flex;gap:8px;align-items:center;margin-bottom:8px;}
+  select, input[type=number]{
+    background:var(--panel-2);border:1px solid var(--line);color:var(--text);
+    border-radius:7px;padding:7px 8px;font-family:'IBM Plex Mono';font-size:12px;
+  }
+  select{flex:1;}
+  input[type=number]{width:62px;}
+
+  .selected-ticker-box{
+    display:flex;align-items:center;justify-content:space-between;
+    padding:10px 12px;border-radius:9px;background:var(--panel-2);
+    border:1px solid var(--line);margin-bottom:10px;
+  }
+  .selected-ticker-box .stx{font-family:'Space Grotesk';font-weight:700;font-size:15px;}
+  .selected-ticker-box .spx{font-family:'IBM Plex Mono';font-size:14px;color:var(--muted);}
+  .no-selection{font-size:12px;color:var(--muted);margin-bottom:10px;line-height:1.5;}
+  .choice-error{
+    background:rgba(255,92,92,0.12);border:1px solid var(--down);color:var(--down);
+    border-radius:9px;padding:9px 12px;font-size:12.5px;margin-bottom:12px;line-height:1.4;
+  }
+  .resume-card-banner{
+    position:fixed;left:50%;bottom:22px;transform:translateX(-50%);
+    background:#151A24;border:1px solid var(--amber);border-radius:12px;
+    padding:12px 16px;display:flex;align-items:center;gap:16px;z-index:60;
+    box-shadow:0 8px 24px rgba(0,0,0,0.5);
+  }
+  .resume-card-label{font-size:12px;font-weight:600;color:var(--amber);text-transform:uppercase;letter-spacing:0.5px;}
+  .resume-card-sub{font-size:12px;color:var(--muted);margin-top:1px;}
+
+  .holdings-table{width:100%;border-collapse:collapse;font-size:12px;font-family:'IBM Plex Mono';}
+  .holdings-table th{text-align:left;color:var(--muted);font-weight:500;padding:4px 0;border-bottom:1px solid var(--line);}
+  .holdings-table td{padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.03);}
+
+  .log{max-height:190px;overflow-y:auto;font-size:12px;color:var(--muted);display:flex;flex-direction:column;gap:6px;}
+  .log-entry{padding:6px 8px;background:var(--panel-2);border-radius:7px;border-left:2px solid var(--line);}
+  .log-entry.event{border-left-color:var(--amber);color:var(--text);}
+
+  /* ---------- overlay modals ---------- */
+  .overlay{
+    position:fixed;inset:0;background:rgba(6,8,12,0.75);backdrop-filter:blur(3px);
+    display:flex;align-items:center;justify-content:center;z-index:50;padding:20px;
+  }
+  .modal{
+    background:#151A24;border:1px solid var(--line);border-radius:16px;
+    max-width:480px;width:100%;padding:24px;
+  }
+  .modal h2{margin:0 0 6px 0;font-size:20px;}
+  .modal .sub{color:var(--muted);font-size:13px;margin-bottom:16px;}
+  .card-face{
+    border:1px solid var(--line);border-radius:12px;padding:18px;margin-bottom:16px;
+    background:radial-gradient(circle at 30% 0%, #1D2433, #10141C);
+  }
+  .card-kind{font-size:10px;text-transform:uppercase;letter-spacing:1.4px;color:var(--amber);margin-bottom:6px;}
+  .card-text{font-size:15px;line-height:1.5;}
+  .choice-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:6px;}
+  .setup-field{margin-bottom:10px;}
+  .setup-field label{display:block;font-size:12px;color:var(--muted);margin-bottom:4px;}
+  .setup-field input{width:100%;padding:9px 10px;border-radius:8px;background:var(--panel-2);border:1px solid var(--line);color:var(--text);font-family:'Inter';}
+  .player-count-row{display:flex;gap:8px;margin-bottom:14px;}
+  .count-opt{
+    flex:1;text-align:center;padding:10px;border-radius:9px;border:1px solid var(--line);
+    background:var(--panel-2);cursor:pointer;font-family:'IBM Plex Mono';font-weight:600;
+  }
+  .count-opt.selected{border-color:var(--amber);color:var(--amber);}
+  .hint{font-size:11px;color:var(--muted);margin-top:10px;line-height:1.5;}
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<script type="module">
+/* ============================= CONFIG ============================= */
+const SECTORS = {
+  Tech:      { color:'var(--tech)',     top:400, bottom:0,  stocks:['NOVA','QBIT'] },
+  Energy:    { color:'var(--energy)',   top:300, bottom:0,  stocks:['PWR','OILX'] },
+  Health:    { color:'var(--health)',   top:220, bottom:15, stocks:['VITA','RXCO'] },
+  Consumer:  { color:'var(--consumer)', top:160, bottom:35, stocks:['LUXE','SPRE'], label:'Consumer Discretionary' },
+};
+const STOCKS = {
+  NOVA:{ name:'Nova Systems',  sector:'Tech' },
+  QBIT:{ name:'Qubit AI',      sector:'Tech' },
+  PWR: { name:'Ampere Power',  sector:'Energy' },
+  OILX:{ name:'OilCross',      sector:'Energy' },
+  VITA:{ name:'Vitalis Health',sector:'Health' },
+  RXCO:{ name:'RxCore',        sector:'Health' },
+  LUXE:{ name:'Luxeway',       sector:'Consumer' },
+  SPRE:{ name:'SpreeMart',     sector:'Consumer' },
+};
+const STOCK_IDS = Object.keys(STOCKS);
+const STOCK_DOTS_PER_SIDE = 13;  // 13 left of center + center + 13 right, for every individual stock
+const SP_DOTS_PER_SIDE = 15;     // SP8 gets its own, wider track: 15 left + center + 15 right
+const STOCK_CENTER_IDX = STOCK_DOTS_PER_SIDE;
+const SP_CENTER_IDX = SP_DOTS_PER_SIDE;
+const CENTER_PRICE = 100;
+const PLAYER_COLORS = ['#F5A623', '#4C8DFF', '#3ECF8E', '#FF6FD8'];
+const START_CASH = 3000;
+
+/* Builds a price track centered on `center` (defaults to the shared $100
+   center; NOVA overrides this to $250), running from `bottom` to `top` over
+   `dotsPerSide` dots on each side. Uses a mild power curve (1.6) so gaps
+   grow smoothly and moderately the further out you go — no flat repeated
+   segments near the edges, and no runaway exponential blowup. A sector with
+   bottom=0 can reach exactly $0 (see checkWorthless); sectors with a
+   positive bottom (the calmer ones) never can. */
+function generateTrack(top, bottom, center, dotsPerSide){
+  center = center===undefined ? CENTER_PRICE : center;
+  dotsPerSide = dotsPerSide===undefined ? STOCK_DOTS_PER_SIDE : dotsPerSide;
+  const POWER = 1.6;
+  const left=[], right=[];
+  for(let k=1;k<=dotsPerSide;k++){
+    const t = Math.pow(k/dotsPerSide, POWER);
+    const up = Math.round(center + (top-center)*t);
+    const down = Math.max(0, Math.round(center - (center-bottom)*t));
+    right.push(up);
+    left.unshift(down);
+  }
+  return [...left, center, ...right];
+}
+
+/* ============================= DECK ============================= */
+function buildDeck(){
+  const deck = [];
+  let uid = 0;
+  const add = (n, obj) => { for(let i=0;i<n;i++) deck.push({ ...obj, _id: uid++ }); };
+
+  // Stock Movement (dictated) — 6 per stock (3 up / 3 down) = 48
+  STOCK_IDS.forEach(id=>{
+    add(3, { type:'stock_move', stock:id, dir:1,  text:`${id} moves UP 1 step.` });
+    add(3, { type:'stock_move', stock:id, dir:-1, text:`${id} moves DOWN 1 step.` });
+  });
+
+  // Big Stock Movement (dictated) — 4 per stock: 3-up, 3-down, 4-up, 4-down = 32
+  STOCK_IDS.forEach(id=>{
+    add(1, { type:'stock_move', stock:id, dir:1,  steps:3, text:`${id} moves UP 3 steps.` });
+    add(1, { type:'stock_move', stock:id, dir:-1, steps:3, text:`${id} moves DOWN 3 steps.` });
+    add(1, { type:'stock_move', stock:id, dir:1,  steps:4, text:`${id} moves UP 4 steps.` });
+    add(1, { type:'stock_move', stock:id, dir:-1, steps:4, text:`${id} moves DOWN 4 steps.` });
+  });
+
+  // Sector Movement (dictated) — 6 per sector (3 up / 3 down) = 24
+  Object.keys(SECTORS).forEach(sec=>{
+    const label = SECTORS[sec].label || sec;
+    add(3, { type:'sector_move', sector:sec, dir:1,  text:`${label} sector moves UP 1 step.` });
+    add(3, { type:'sector_move', sector:sec, dir:-1, text:`${label} sector moves DOWN 1 step.` });
+  });
+
+  // Big Sector Movement (dictated) — 4 per sector: 3-up, 3-down, 4-up, 4-down = 16
+  Object.keys(SECTORS).forEach(sec=>{
+    const label = SECTORS[sec].label || sec;
+    add(1, { type:'sector_move', sector:sec, dir:1,  steps:3, text:`${label} sector moves UP 3 steps.` });
+    add(1, { type:'sector_move', sector:sec, dir:-1, steps:3, text:`${label} sector moves DOWN 3 steps.` });
+    add(1, { type:'sector_move', sector:sec, dir:1,  steps:4, text:`${label} sector moves UP 4 steps.` });
+    add(1, { type:'sector_move', sector:sec, dir:-1, steps:4, text:`${label} sector moves DOWN 4 steps.` });
+  });
+
+  // Reversion — overextended stocks/sectors pull back toward their center price = 24
+  STOCK_IDS.forEach(id=>{
+    add(1, { type:'stock_revert', stock:id, amount:1, text:`${id} reverts 1 step toward the middle.` });
+    add(1, { type:'stock_revert', stock:id, amount:2, text:`${id} reverts 2 steps toward the middle.` });
+  });
+  Object.keys(SECTORS).forEach(sec=>{
+    const label = SECTORS[sec].label || sec;
+    add(1, { type:'sector_revert', sector:sec, amount:1, text:`${label} sector reverts 1 step toward the middle.` });
+    add(1, { type:'sector_revert', sector:sec, amount:2, text:`${label} sector reverts 2 steps toward the middle.` });
+  });
+
+  // Insider Info
+  add(3, { type:'peek', text:'Insider Info — Market Peek: reveal the next 3 cards in the deck.' });
+  add(2, { type:'sched_swing', text:'Insider Info — Scheduled Swing: pick a stock. In 2 turns it swings 2 steps in a direction you choose now.' });
+  // Price Target — fully randomized: a random stock, a random price on its own row, in a random 1-12 turns.
+  // Everything is rolled at draw time, not fixed here — see resolveAuto's 'sched_price' case.
+  add(32, { type:'sched_price', text:'Insider Info: a random stock will hit a random price within 12 turns — no matter what happens in between.' });
+  // Earnings Report — fully randomized and public (not hidden like Insider Info): a random stock
+  // beats or misses, then drifts 1-4 bubbles per turn for 1-12 of the drawer's own turns
+  // (capped so bubbles-per-turn × turns never exceeds 24). See resolveAuto's 'earnings_report' case.
+  add(8, { type:'earnings_report', text:'Earnings Report! A random stock beats or misses earnings and drifts up to 4 bubbles a turn, for up to 12 of your turns.' });
+
+  // Market-wide events
+  add(1, { type:'covid', text:'COVID-19: markets crash. All 8 stocks and the S&P 8 drop 6 steps.' });
+  add(1, { type:'recession', text:'Recession: all 8 stocks and the S&P 8 drop 3 steps.' });
+  add(4, { type:'bull', text:'Bull Market: all 8 stocks and the S&P 8 rise 1 step.' });
+
+  // Cash Bonus — 6
+  add(3, { type:'cash', amount:500,  text:'Cash Bonus: +$500.' });
+  add(2, { type:'cash', amount:1000, text:'Cash Bonus: +$1,000.' });
+  add(1, { type:'cash', amount:2500, text:'Cash Bonus: +$2,500.' });
+
+  // Stock Gift — 1 per stock = 8
+  STOCK_IDS.forEach(id=>{
+    add(1, { type:'gift', stock:id, text:`Stock Gift: receive 1 free share of ${id}.` });
+  });
+
+  // Stock Split — 2
+  add(2, { type:'split', text:'Stock Split: pick a stock you own — your shares in it double.' });
+
+  // Move Any Stock ±1 (player choice) — 6
+  add(6, { type:'choose_stock_move', text:'Move Any Stock: pick any stock and a direction — it moves 1 step.' });
+
+  // Move Any Sector ±1 (player choice) — 4
+  add(4, { type:'choose_sector_move', text:'Move Any Sector: pick any sector and a direction — both its stocks move 1 step.' });
+
+  // Whale Trade — 3
+  add(3, { type:'whale', text:'Whale Trade: trade a stock at today\u2019s price right now — your trade then pushes the price 2 steps in that direction.' });
+
+  // Golden Parachute — 3
+  add(3, { type:'parachute', text:'Golden Parachute: if your net worth is under $3,000, receive a $2,000 bailout.' });
+
+  // Steady Hand — 4
+  add(4, { type:'steady', text:'Steady Hand: gain $25 for every distinct stock you currently hold shares in.' });
+
+  // Dividend Day — 4 (one per sector)
+  Object.keys(SECTORS).forEach(sec=>{
+    const label = SECTORS[sec].label || sec;
+    add(1, { type:'dividend', sector:sec, text:`Dividend Day — ${label}: you get $10/share owned in ${label}'s two stocks. Everyone else gets $5/share owned in those stocks.` });
+  });
+
+  // Freeze — 3
+  add(3, { type:'freeze', text:'Freeze: pick a stock — it ignores the next dictated movement card that targets it.' });
+
+  // S&P +1 — 9 (new, no negative counterpart)
+  add(9, { type:'sp_up', text:'S&P 8 rises 1 step.' });
+
+  return deck;
+}
+
+function shuffle(arr){
+  const a = arr.slice();
+  for(let i=a.length-1;i>0;i--){
+    const j = Math.floor(Math.random()*(i+1));
+    [a[i],a[j]]=[a[j],a[i]];
+  }
+  return a;
+}
+
+/* ============================= MULTIPLAYER SYNC (Firebase) ============================= */
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import { getDatabase, ref, set, onValue } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyCIvy56Q7bbmowhiXGbiIpkp-jVakaOZI0",
+  authDomain: "uptrend-ams08.firebaseapp.com",
+  databaseURL: "https://uptrend-ams08-default-rtdb.firebaseio.com",
+  projectId: "uptrend-ams08",
+  storageBucket: "uptrend-ams08.firebasestorage.app",
+  messagingSenderId: "872888330812",
+  appId: "1:872888330812:web:51b46e3f8e59b9e75f3139",
+};
+const fbApp = initializeApp(firebaseConfig);
+const db = getDatabase(fbApp);
+const GAME_PATH = 'uptrend_game';
+const gameRef = ref(db, GAME_PATH);
+
+// Fields that live only in THIS browser tab and are never written to Firebase
+// or overwritten by a remote update — pure UI state, not real game state.
+const LOCAL_ONLY_KEYS = ['tradeSelection','turnUndoStack','confirmEndTurn','confirmRestart','expandedChart','showLog','cardMinimized'];
+
+function localDefaults(){
+  return {
+    tradeSelection: null, turnUndoStack: [], confirmEndTurn: false,
+    confirmRestart: false, expandedChart: null, showLog: false, cardMinimized: false,
+  };
+}
+
+function extractSynced(s){
+  const out = {};
+  Object.keys(s).forEach(k=>{ if(!LOCAL_ONLY_KEYS.includes(k)) out[k] = s[k]; });
+  return out;
+}
+
+let applyingRemote = false; // guards against re-persisting a change we just received
+async function persist(){
+  if(!state || applyingRemote) return;
+  state.version = (state.version||0) + 1;
+  try{ await set(gameRef, extractSynced(state)); }
+  catch(e){ console.error('UpTrend: failed to sync to Firebase', e); }
+}
+
+function mergeRemote(remote){
+  applyingRemote = true;
+  const locals = state ? {} : localDefaults();
+  if(state) LOCAL_ONLY_KEYS.forEach(k=>{ locals[k] = state[k]; });
+  state = { ...remote, ...locals };
+  applyingRemote = false;
+}
+
+onValue(gameRef, (snap)=>{
+  const remote = snap.val();
+  if(!remote){ if(!state) render(); return; } // nothing in the DB yet — show "create a game"
+  const prevVersion = state ? state.version : -1;
+  mergeRemote(remote);
+  if(state.version !== prevVersion) render();
+});
+
+async function wipeGame(){
+  state = null; myPlayerIndex = null;
+  try{ await set(gameRef, null); }catch(e){ console.error('UpTrend: failed to clear game', e); }
+  render();
+}
+
+let myPlayerIndex = null; // which seat THIS browser tab is playing — resets on reload
+
+/* ============================= STATE ============================= */
+let state = null;
+
+// NOVA is the one stock that starts off-center — same $400 range width as
+// the rest of Tech, just shifted up so it opens at $250 instead of $100.
+const STOCK_PRICE_OVERRIDES = { NOVA: { center:250, top:550, bottom:0 } };
+
+function freshState(players){
+  const stocks = {};
+  STOCK_IDS.forEach(id=>{
+    const sec = SECTORS[STOCKS[id].sector];
+    const ov = STOCK_PRICE_OVERRIDES[id];
+    const center = ov ? ov.center : CENTER_PRICE;
+    const top = ov ? ov.top : sec.top;
+    const bottom = ov ? ov.bottom : sec.bottom;
+    const track = generateTrack(top, bottom, center, STOCK_DOTS_PER_SIDE);
+    stocks[id] = { idx: STOCK_CENTER_IDX, track, frozen:false, worthless:false, prevIdx: STOCK_CENTER_IDX, history:[track[STOCK_CENTER_IDX]], tradeMarkers:[] };
+  });
+  const spTrack = generateTrack(200, 50, CENTER_PRICE, SP_DOTS_PER_SIDE);
+  const sp = { idx: 0, track: spTrack, prevIdx: 0, history:[spTrack[0]], tradeMarkers:[] };
+  return {
+    stocks, sp,
+    players: players.map((name,i)=>({
+      name, cash: START_CASH,
+      color: PLAYER_COLORS[i % PLAYER_COLORS.length],
+      shares: Object.fromEntries(STOCK_IDS.map(id=>[id,0])),
+      shorts: Object.fromEntries(STOCK_IDS.map(id=>[id,0])),
+      costBasis: Object.fromEntries(STOCK_IDS.map(id=>[id,0])), // $ currently invested in open long positions
+      shortBasis: Object.fromEntries(STOCK_IDS.map(id=>[id,0])), // $ received for open short positions
+      spShares:0, spCostBasis:0, eliminated:false
+    })),
+    current: 0,
+    deck: shuffle(buildDeck()),
+    discard: [],
+    scheduled: [], // {turnsLeft, resolve}
+    log: [],
+    phase: 'draw', // draw -> choice -> trade
+    pendingCard: null,
+    pendingChoice: null,
+    gameOver: false,
+    winner: null,
+    tradeSelection: null, // stock id or 'SP'
+    turnUsage: { total: 0, perStock: {} }, // resets each player's turn; buys+shorts only, drives the 10/4 caps
+    turnFills: { up: {}, down: {} }, // resets each player's turn; tracks cumulative shares walked THIS turn per stock so repeated clicks chain together correctly. up = buys, down = sells+shorts (both push price down)
+    turnUndoStack: [], // snapshots taken before each trade this turn, for the Undo Last Trade button
+    confirmEndTurn: false,
+    confirmRestart: false,
+    expandedChart: null, // stock id or 'SP' currently shown in the big chart modal
+    recurringEffects: [], // active Earnings Report drips: {stock, dir, bubblesPerTurn, turnsLeft, ownerIndex}
+    showLog: false,
+    cardMinimized: false,
+    choiceError: null,
+    cardsPerTurn: 1, // exactly one draw to open the turn, and one more to close it
+    cardsDrawnThisTurn: 0,
+    turnStage: 'start', // 'start' = the opening draw(s), 'end' = the mandatory draw that closes the turn
+  };
+}
+
+function isMyTurn(){ return state && myPlayerIndex!==null && myPlayerIndex===state.current; }
+
+function price(stockId){ return state.stocks[stockId].track[state.stocks[stockId].idx]; }
+function spPrice(){ return state.sp.track[state.sp.idx]; }
+
+function lockedCash(p){
+  return STOCK_IDS.reduce((sum,id)=> sum + (p.shorts[id]||0)*price(id), 0);
+}
+function freeCash(p){ return p.cash - lockedCash(p); }
+
+function netWorth(p){
+  let v = p.cash;
+  STOCK_IDS.forEach(id=>{
+    v += p.shares[id]*price(id);
+    v -= (p.shorts[id]||0)*price(id);
+  });
+  v += p.spShares*spPrice();
+  return v;
+}
+
+/* Cost-basis bookkeeping so we can show unrealized gain/loss per holding.
+   Longs: costBasis[id] is the total $ currently invested in open shares
+   (average-cost method — selling removes a proportional slice, not FIFO).
+   Shorts: shortBasis[id] is the total $ received when the open short
+   position(s) were opened; gain = basis received − current buy-back cost. */
+function addCostBasis(p, key, amount, isSP){
+  if(isSP) p.spCostBasis = (p.spCostBasis||0) + amount;
+  else p.costBasis[key] = (p.costBasis[key]||0) + amount;
+}
+function reduceCostBasisOnSell(p, key, qty, isSP){
+  const held = isSP ? p.spShares : p.shares[key];
+  if(held<=0) return;
+  const total = isSP ? (p.spCostBasis||0) : (p.costBasis[key]||0);
+  const avg = total/held;
+  const reduceBy = avg*qty;
+  if(isSP) p.spCostBasis = Math.max(0, total - reduceBy);
+  else p.costBasis[key] = Math.max(0, total - reduceBy);
+}
+function addShortBasis(p, id, amount){ p.shortBasis[id] = (p.shortBasis[id]||0) + amount; }
+function reduceShortBasisOnCover(p, id, qty){
+  const held = p.shorts[id]||0;
+  if(held<=0) return;
+  const total = p.shortBasis[id]||0;
+  const avg = total/held;
+  p.shortBasis[id] = Math.max(0, total - avg*qty);
+}
+function longGainLoss(p, key, isSP){
+  const held = isSP ? p.spShares : p.shares[key];
+  const val = held * (isSP ? spPrice() : price(key));
+  const basis = isSP ? (p.spCostBasis||0) : (p.costBasis[key]||0);
+  return val - basis;
+}
+function shortGainLoss(p, id){
+  const held = p.shorts[id]||0;
+  const buyBackCost = held * price(id);
+  const basis = p.shortBasis[id]||0;
+  return basis - buyBackCost;
+}
+
+function capRemaining(){ return 10 - state.turnUsage.total; }
+function capRemainingForStock(id){ return 4 - (state.turnUsage.perStock[id]||0); }
+
+function canBuyOne(id){
+  if(!id || state.gameOver) return false;
+  if(id!=='SP' && state.stocks[id].worthless) return false;
+  if(capRemaining()<=0 || capRemainingForStock(id)<=0) return false;
+  const p = state.players[state.current];
+  const priorFilled = state.turnFills.up[id]||0;
+  const walk = walkOrderDetailed(id, 1, +1, priorFilled);
+  return (walk.total+walk.fee) <= freeCash(p);
+}
+function canSellOne(id){
+  if(!id || state.gameOver) return false;
+  const p = state.players[state.current];
+  const held = id==='SP' ? p.spShares : p.shares[id];
+  return held>0;
+}
+function canShortOne(id){
+  if(!id || id==='SP' || state.gameOver) return false;
+  if(state.stocks[id].worthless) return false;
+  if(capRemaining()<=0 || capRemainingForStock(id)<=0) return false;
+  const p = state.players[state.current];
+  return price(id) <= freeCash(p);
+}
+function canCoverOne(id){
+  if(!id || state.gameOver) return false;
+  const p = state.players[state.current];
+  const held = p.shorts[id]||0;
+  if(held<=0) return false;
+  const priorFilled = state.turnFills.up[id]||0;
+  const walk = walkOrderDetailed(id, 1, +1, priorFilled);
+  return (walk.total+walk.fee) <= p.cash;
+}
+
+/* Walks the order book in groups of 4 shares — matching the 4-per-stock
+   turn cap. `priorFilled` is how many shares have already been bought/
+   sold/shorted/covered of this stock THIS TURN (across any number of
+   earlier clicks), so separate 1-share clicks chain together correctly.
+   1-3 shares in a group fill flat at the current price with no fee at all.
+   Only when a full group of 4 completes does the price step 1 dot and a
+   20% fee get charged — on that completing group only, not the whole
+   order. A big enough sell/cover order (uncapped) can cross this boundary
+   more than once, walking and getting fee'd once per complete group of 4. */
+function walkOrderDetailed(id, qty, direction, priorFilled){
+  const GROUP = 4, FEE_RATE = 0.20;
+  const obj = id==='SP' ? state.sp : state.stocks[id];
+  let idx = obj.idx;
+  const chunks = [];
+  let curChunkIdx = -1, curPrice = 0, curQty = 0, curSubtotal = 0, curWalked = false;
+  for(let i=0;i<qty;i++){
+    const position = priorFilled + i;
+    const chunkIdx = Math.floor(position/GROUP);
+    const posInGroup = position%GROUP;
+    if(chunkIdx!==curChunkIdx){
+      if(curChunkIdx!==-1) chunks.push({ chunkIdx: curChunkIdx, qty: curQty, price: curPrice, subtotal: curSubtotal, walked: curWalked });
+      curChunkIdx = chunkIdx; curPrice = obj.track[idx]; curQty = 0; curSubtotal = 0; curWalked = false;
+    }
+    const p = obj.track[idx];
+    curQty += 1; curSubtotal += p;
+    if(posInGroup===GROUP-1){
+      idx = Math.max(0, Math.min(obj.track.length-1, idx+direction)); // group just completed — walk now
+      curWalked = true; // this call is the one that completed the group, so it eats the fee
+    }
+  }
+  if(curChunkIdx!==-1) chunks.push({ chunkIdx: curChunkIdx, qty: curQty, price: curPrice, subtotal: curSubtotal, walked: curWalked });
+  const total = chunks.reduce((s,c)=>s+c.subtotal, 0);
+  const fee = chunks.filter(c=>c.walked).reduce((s,c)=>s+Math.ceil(c.subtotal*FEE_RATE), 0);
+  return { chunks, total, fee, finalIdx: idx };
+}
+
+function checkMarginCalls(){
+  state.players.forEach(p=>{
+    let locked = lockedCash(p);
+    let guard = 0;
+    while(locked > p.cash && guard < STOCK_IDS.length+1){
+      guard++;
+      let target = null, maxLiab = -1;
+      STOCK_IDS.forEach(id=>{
+        const liab = (p.shorts[id]||0)*price(id);
+        if(liab>maxLiab){ maxLiab = liab; target = id; }
+      });
+      if(!target || maxLiab<=0) break;
+      const qty = p.shorts[target];
+      const cost = qty*price(target);
+      p.cash -= cost;
+      p.shorts[target] = 0;
+      logEvent(`Margin call: ${p.name}'s ${target} short was auto-covered at $${price(target)}.`, true);
+      locked = lockedCash(p);
+    }
+  });
+}
+
+
+function logEvent(text, isEvent){
+  state.log.push({ text, event: !!isEvent });
+}
+
+function moveStock(id, dir, respectFreeze){
+  const s = state.stocks[id];
+  if(s.worthless) return; // dead stocks never move again
+  if(respectFreeze && s.frozen){
+    s.frozen = false;
+    logEvent(`${id} was frozen — movement ignored.`, true);
+    return;
+  }
+  s.prevIdx = s.idx;
+  s.idx = Math.max(0, Math.min(s.track.length-1, s.idx + dir));
+}
+function moveSP(dir){
+  state.sp.prevIdx = state.sp.idx;
+  state.sp.idx = Math.max(0, Math.min(state.sp.track.length-1, state.sp.idx + dir));
+}
+
+/* Applies a dictated multi-step move to one stock, checking Freeze once for
+   the whole card (not once per step) so a frozen stock ignores the entire
+   card's movement rather than just its first step. */
+function applyDictatedSteps(id, dir, steps){
+  const s = state.stocks[id];
+  if(s.frozen){
+    s.frozen = false;
+    logEvent(`${id} was frozen — movement ignored.`, true);
+    return;
+  }
+  for(let i=0;i<steps;i++) moveStock(id, dir, false);
+}
+
+/* Reversion: pulls a stock back toward its own center price by up to
+   `amount` steps, never overshooting the center. Stocks already at center
+   are unaffected — nothing to revert. */
+function revertStock(id, amount){
+  const s = state.stocks[id];
+  const centerIdx = (s.track.length-1)/2;
+  const dist = centerIdx - s.idx;
+  if(dist===0){ logEvent(`${id} is already at its center price — no reversion needed.`); return; }
+  const dir = dist>0 ? 1 : -1;
+  const steps = Math.min(amount, Math.abs(dist));
+  applyDictatedSteps(id, dir, steps);
+  logEvent(`${id} reverted ${steps} step(s) toward the middle — now $${price(id)}.`, true);
+}
+function revertSector(sector, amount){
+  SECTORS[sector].stocks.forEach(id=>revertStock(id, amount));
+}
+
+/* A stock that hits exactly $0 (only possible for Tech/Energy, whose tracks
+   bottom out at $0 — Health/Consumer never go below their floor) goes
+   permanently worthless: every player's shares are erased, any open shorts
+   on it are auto-covered for free (max profit — the price can't be beat),
+   and it's frozen forever so it can never be bought, shorted, or moved again. */
+function checkWorthless(){
+  STOCK_IDS.forEach(id=>{
+    const s = state.stocks[id];
+    if(s.worthless || price(id)!==0) return;
+    s.worthless = true;
+    s.frozen = false;
+    state.players.forEach(pl=>{
+      if(pl.shares[id]>0){
+        logEvent(`${pl.name}'s ${pl.shares[id]} shares of ${id} were wiped out — worthless.`, true);
+        pl.shares[id] = 0;
+        pl.costBasis[id] = 0;
+      }
+      if((pl.shorts[id]||0)>0){
+        logEvent(`${pl.name}'s short on ${id} was auto-covered for free — max profit as it went to $0.`, true);
+        pl.shorts[id] = 0;
+        pl.shortBasis[id] = 0;
+      }
+    });
+    logEvent(`${id} has crashed to $0 and is now worthless — delisted, can never be traded again.`, true);
+  });
+}
+
+/* A player whose net worth is negative can never dig out — even selling
+   every last share can't bring their cash back to $0, since shorts/fees
+   already account for that in netWorth. Rather than soft-locking their
+   turn forever, they're knocked out of the game entirely. */
+function checkEliminations(){
+  if(state.gameOver) return;
+  state.players.forEach(p=>{
+    if(!p.eliminated && p.cash<0 && netWorth(p)<0){
+      p.eliminated = true;
+      logEvent(`${p.name} is eliminated — net worth went negative with no way to recover.`, true);
+    }
+  });
+  const active = state.players.filter(p=>!p.eliminated);
+  if(state.players.length>1 && active.length<=1 && !state.gameOver){
+    state.gameOver = true;
+    state.winner = active[0] || state.players.reduce((best,p)=> (!best||netWorth(p)>netWorth(best))?p:best, null);
+    logEvent(active.length===1 ? `${active[0].name} is the last player standing — wins!` : 'All players were eliminated — game over.', true);
+  }
+}
+
+/* Appends the current price to each stock's (and SP8's) history whenever it
+   has actually changed since the last recorded point — used to draw the
+   little line chart next to each price track. */
+function recordHistory(){
+  STOCK_IDS.forEach(id=>{
+    const s = state.stocks[id];
+    const cur = price(id);
+    if(s.history[s.history.length-1]!==cur) s.history.push(cur);
+  });
+  const spCur = spPrice();
+  if(state.sp.history[state.sp.history.length-1]!==spCur) state.sp.history.push(spCur);
+}
+
+function checkGameOver(){
+  recordHistory();
+  checkWorthless();
+  checkEliminations();
+  if(state.gameOver) return;
+
+  // 1. SP8 reaches the far right bubble (its ceiling)
+  if(state.sp.idx === state.sp.track.length-1){
+    state.gameOver = true;
+    let best=null;
+    state.players.forEach(p=>{ if(!best || netWorth(p)>netWorth(best)) best=p; });
+    state.winner = best;
+    logEvent(`S&P 8 hit its ceiling — game over!`, true);
+    return;
+  }
+
+  // 2. Every Tech and Energy stock has gone worthless
+  const techEnergyIds = [...SECTORS.Tech.stocks, ...SECTORS.Energy.stocks];
+  if(techEnergyIds.every(id=>state.stocks[id].worthless)){
+    state.gameOver = true;
+    let best=null;
+    state.players.forEach(p=>{ if(!best || netWorth(p)>netWorth(best)) best=p; });
+    state.winner = best;
+    logEvent(`Every Tech and Energy stock is worthless — game over!`, true);
+    return;
+  }
+
+  // 3. A player reaches $50,000 net worth — they win outright
+  const bigWinner = state.players.find(p=>!p.eliminated && netWorth(p)>=50000);
+  if(bigWinner){
+    state.gameOver = true;
+    state.winner = bigWinner;
+    logEvent(`${bigWinner.name} reached $50,000 net worth — game over!`, true);
+    return;
+  }
+}
+
+/* ============================= CARD RESOLUTION ============================= */
+/* How many draws the CURRENT stage of the turn requires. The opening stage
+   draws cardsPerTurn (1, or 2 in a heads-up game); the closing stage that
+   ends the turn is always exactly 1 draw, regardless of player count. */
+function drawsNeededThisStage(){
+  return state.turnStage==='start' ? state.cardsPerTurn : 1;
+}
+
+function drawCard(){
+  if(!isMyTurn()) return;
+  const p = state.players[state.current];
+  if(p.eliminated) return;
+  if(p.cash<0) return; // must raise cash back to $0+ first — see the forced-liquidation Action panel
+  // Tick this player's own Insider Info countdowns BEFORE drawing — so "1 turn"
+  // means "the next time it's my turn," not "immediately," and a card drawn
+  // this turn doesn't get ticked down on the very turn it was set up. This
+  // only happens once per whole turn (the very first draw), not once per
+  // individual card — starting AND ending draws together are one turn.
+  if(state.turnStage==='start' && state.cardsDrawnThisTurn===0){
+    tickScheduled(state.current);
+    tickRecurringEffects(state.current);
+    checkGameOver();
+    if(state.gameOver){ persist(); render(); return; } // a scheduled prediction landing just ended the game
+  }
+  if(state.deck.length===0){ state.deck = shuffle(state.discard); state.discard=[]; }
+  const card = state.deck.shift();
+  state.pendingCard = card;
+  state.phase = 'resolve';
+  state.choiceError = null;
+  state.cardsDrawnThisTurn += 1;
+  // Auto-resolving cards (anything that doesn't need a player choice) apply
+  // their effect right here, exactly once. The modal that follows is purely
+  // a display of what already happened — it must NEVER re-trigger the
+  // effect, or minimizing/resuming the card (or any other re-render while
+  // it's open) would re-apply it every single time.
+  if(!needsChoice(card)){
+    resolveAuto(card);
+  }
+  persist(); render();
+}
+
+function finishCardResolution(){
+  state.discard.push(state.pendingCard);
+  state.pendingCard = null;
+  state.pendingChoice = null;
+  state.cardMinimized = false;
+  state.choiceError = null;
+  checkMarginCalls();
+  checkGameOver();
+  if(state.gameOver){ state.phase = 'trade'; persist(); render(); return; }
+  if(state.cardsDrawnThisTurn < drawsNeededThisStage()){
+    state.phase = 'draw'; // more draws needed for this stage (not currently used, but kept for flexibility)
+  } else if(state.turnStage==='start'){
+    state.phase = 'trade'; // opening draw is done — into the trading phase
+  } else {
+    endTurn(); // the closing card has been seen and resolved — the turn ends right here, no extra trading
+    return;
+  }
+  persist(); render();
+}
+
+/* Only ticks down scheduled items belonging to `ownerIndex` — each player's
+   Insider Info countdown advances only on that same player's own turns,
+   so "in 1 turn" always means "the next time it comes back around to me." */
+function tickScheduled(ownerIndex){
+  const remaining = [];
+  state.scheduled.forEach(item=>{
+    if(item.ownerIndex!==ownerIndex){ remaining.push(item); return; }
+    item.turnsLeft -= 1;
+    if(item.turnsLeft<=0){ item.resolve(); }
+    else remaining.push(item);
+  });
+  state.scheduled = remaining;
+}
+
+/* Advances active Earnings Report drips owned by `ownerIndex` by one step —
+   same "only the drawer's own turns" rule as tickScheduled. Each tick moves
+   the stock `bubblesPerTurn` steps and counts down; a drip whose stock has
+   gone worthless in the meantime just quietly ends instead of moving. */
+function tickRecurringEffects(ownerIndex){
+  const remaining = [];
+  state.recurringEffects.forEach(eff=>{
+    if(eff.ownerIndex!==ownerIndex){ remaining.push(eff); return; }
+    if(state.stocks[eff.stock].worthless){
+      logEvent(`${eff.stock}'s earnings drift ended — the stock went worthless.`, true);
+      return;
+    }
+    applyDictatedSteps(eff.stock, eff.dir, eff.bubblesPerTurn);
+    eff.turnsLeft -= 1;
+    logEvent(`${eff.stock} drifted ${eff.bubblesPerTurn} bubble${eff.bubblesPerTurn===1?'':'s'} ${eff.dir>0?'up':'down'} on earnings — now $${price(eff.stock)}${eff.turnsLeft>0?` (${eff.turnsLeft} more turn${eff.turnsLeft===1?'':'s'})`:' — drift complete.'}`, true);
+    if(eff.turnsLeft>0) remaining.push(eff);
+  });
+  state.recurringEffects = remaining;
+}
+
+function resolveAuto(card){
+  const p = state.players[state.current];
+  switch(card.type){
+    case 'stock_move': {
+      const steps = card.steps || 1;
+      applyDictatedSteps(card.stock, card.dir, steps);
+      logEvent(`${card.stock} ${card.dir>0?'rose':'fell'} ${steps} step${steps===1?'':'s'} to $${price(card.stock)}.`);
+      break;
+    }
+    case 'sector_move': {
+      const steps = card.steps || 1;
+      SECTORS[card.sector].stocks.forEach(id=>applyDictatedSteps(id, card.dir, steps));
+      logEvent(`${SECTORS[card.sector].label||card.sector} sector moved ${steps} step${steps===1?'':'s'} ${card.dir>0?'up':'down'}.`);
+      break;
+    }
+    case 'stock_revert':
+      revertStock(card.stock, card.amount);
+      break;
+    case 'sector_revert':
+      revertSector(card.sector, card.amount);
+      logEvent(`${SECTORS[card.sector].label||card.sector} sector reverted toward the middle.`, true);
+      break;
+    case 'sched_price': {
+      const eligible = STOCK_IDS.filter(sid=>!state.stocks[sid].worthless);
+      if(eligible.length===0){ logEvent('Insider Info fizzled — no stocks left to predict.'); break; }
+      const stock = eligible[Math.floor(Math.random()*eligible.length)];
+      const track = state.stocks[stock].track;
+      const targetIdx = Math.floor(Math.random()*track.length); // anywhere on the row, ends included
+      const snappedPrice = track[targetIdx];
+      const turns = 1 + Math.floor(Math.random()*12); // 1-12 inclusive
+      // Rewrite the card's own text with what actually got rolled, so the
+      // modal (seen only in this private moment) shows the real prediction
+      // instead of the generic "a random stock..." placeholder.
+      card.text = `Insider Info: ${stock} will be $${snappedPrice} in ${turns} turn${turns===1?'':'s'} — no matter what happens in between.`;
+      state.scheduled.push({ turnsLeft: turns, ownerIndex: state.current, description: `${stock} will hit $${snappedPrice}`, resolve:()=>{
+        if(state.stocks[stock].worthless){ logEvent(`${stock} went worthless before its price target could land.`, true); return; }
+        state.stocks[stock].prevIdx = state.stocks[stock].idx;
+        state.stocks[stock].idx = targetIdx;
+        logEvent(`Insider Info came true: ${stock} hit $${snappedPrice} as predicted.`, true);
+      }});
+      logEvent(`Insider Info was set up by ${p.name} — details stay hidden until it plays out.`);
+      break;
+    }
+    case 'earnings_report': {
+      const eligible = STOCK_IDS.filter(sid=>!state.stocks[sid].worthless);
+      if(eligible.length===0){ logEvent('Earnings Report fizzled — no stocks left to report on.'); break; }
+      const stock = eligible[Math.floor(Math.random()*eligible.length)];
+      const beat = Math.random()<0.5;
+      const dir = beat ? 1 : -1;
+      const bubblesPerTurn = 1 + Math.floor(Math.random()*4); // 1-4
+      const maxTurns = Math.max(1, Math.min(12, Math.floor(24/bubblesPerTurn))); // bubbles*turns capped at 24
+      const turns = 1 + Math.floor(Math.random()*maxTurns);
+      card.text = `${stock} Earnings Report! — ${stock} ${beat?'beats':'misses'} earnings and will ${beat?'rise':'fall'} ${bubblesPerTurn} bubble${bubblesPerTurn===1?'':'s'} ${beat?'right':'left'} every turn for ${turns} turn${turns===1?'':'s'}.`;
+      // A new report on a stock that already has an active drip overrides it —
+      // no stacking.
+      const existingIdx = state.recurringEffects.findIndex(e=>e.stock===stock);
+      if(existingIdx>=0){
+        logEvent(`${stock}'s earlier earnings drift was overridden by a new report.`, true);
+        state.recurringEffects.splice(existingIdx,1);
+      }
+      state.recurringEffects.push({ stock, dir, bubblesPerTurn, turnsLeft: turns, ownerIndex: state.current });
+      // Earnings Report is public market news, not secret like Insider Info —
+      // shown to everyone in full, not redacted in the log.
+      logEvent(card.text, true);
+      break;
+    }
+    case 'peek': {
+      const next3 = state.deck.slice(0,3).map(c=>c.text);
+      state.pendingChoice = { kind:'info', lines: next3.length?next3:['Deck is empty.'] };
+      break;
+    }
+    case 'covid':
+      STOCK_IDS.forEach(id=>moveStock(id,-6,false));
+      moveSP(-6);
+      logEvent('COVID-19 crash hit every stock and the S&P 8.', true);
+      break;
+    case 'recession':
+      STOCK_IDS.forEach(id=>moveStock(id,-3,false));
+      moveSP(-3);
+      logEvent('Recession: all stocks and the S&P 8 dipped.', true);
+      break;
+    case 'bull':
+      STOCK_IDS.forEach(id=>moveStock(id,1,false));
+      moveSP(1);
+      logEvent('Bull Market: all stocks and the S&P 8 climbed.', true);
+      break;
+    case 'sp_up':
+      moveSP(1);
+      logEvent(`S&P 8 rose to $${spPrice()}.`);
+      break;
+    case 'cash':
+      p.cash += card.amount;
+      logEvent(`${p.name} received $${card.amount} cash bonus.`);
+      break;
+    case 'gift':
+      if(state.stocks[card.stock].worthless){
+        logEvent(`${card.stock} is worthless and delisted — the stock gift has no effect.`);
+      } else {
+        p.shares[card.stock] += 1; // free share — no cost basis added, shows as pure gain
+        logEvent(`${p.name} received 1 free share of ${card.stock}.`);
+      }
+      break;
+    case 'parachute':
+      if(netWorth(p) < START_CASH){ p.cash += 2000; logEvent(`${p.name} was below starting capital ($${START_CASH}) — Golden Parachute pays $2,000.`, true); }
+      else logEvent(`${p.name}'s net worth is healthy — Golden Parachute has no effect.`);
+      break;
+    case 'steady': {
+      const heldCount = STOCK_IDS.filter(id=>p.shares[id]>0).length;
+      const gain = heldCount*25;
+      p.cash += gain;
+      logEvent(`${p.name} holds ${heldCount} stock(s) — Steady Hand pays $${gain}.`);
+      break;
+    }
+    case 'dividend': {
+      const ids = SECTORS[card.sector].stocks;
+      state.players.forEach(pl=>{
+        const isDrawer = pl===p;
+        let shares = 0; ids.forEach(id=>shares+=pl.shares[id]);
+        const rate = isDrawer?10:5;
+        const pay = shares*rate;
+        pl.cash += pay;
+      });
+      logEvent(`Dividend Day — ${SECTORS[card.sector].label||card.sector}: ${p.name} collects $10/share, others $5/share.`, true);
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+function needsChoice(card){
+  return ['sched_swing','split','choose_stock_move','choose_sector_move','whale','freeze'].includes(card.type);
+}
+
+/* choice resolvers, called from UI */
+function resolveChoice(card, choice){
+  const p = state.players[state.current];
+  state.choiceError = null;
+  switch(card.type){
+    case 'sched_swing': {
+      const { stock, dir } = choice;
+      state.scheduled.push({ turnsLeft:2, ownerIndex: state.current, description: `${stock} will swing 2 steps ${dir>0?'up':'down'}`, resolve:()=>{
+        moveStock(stock, dir*2>0?1:-1, false); moveStock(stock, dir*2>0?1:-1, false);
+        logEvent(`Scheduled Swing triggered: ${stock} moved 2 steps ${dir>0?'up':'down'}.`, true);
+      }});
+      logEvent(`Insider Info was set up by ${p.name} — details stay hidden until it plays out.`);
+      break;
+    }
+    case 'split': {
+      const { stock } = choice;
+      if(p.shares[stock]<=0){ state.choiceError = `You don't own any ${stock} — pick a stock you hold shares in.`; return false; }
+      p.shares[stock]*=2; // cost basis total is unchanged by design — a split just halves avg cost/share
+      logEvent(`${p.name}'s ${stock} shares split — now ${p.shares[stock]}.`);
+      break;
+    }
+    case 'choose_stock_move': {
+      const { stock, dir } = choice;
+      moveStock(stock, dir, false);
+      logEvent(`${p.name} moved ${stock} ${dir>0?'up':'down'} to $${price(stock)}.`);
+      break;
+    }
+    case 'choose_sector_move': {
+      const { sector, dir } = choice;
+      SECTORS[sector].stocks.forEach(id=>moveStock(id, dir, false));
+      logEvent(`${p.name} moved the ${SECTORS[sector].label||sector} sector ${dir>0?'up':'down'}.`);
+      break;
+    }
+    case 'whale': {
+      const { stock, side, qty } = choice;
+      if(side==='buy'){
+        const cost = price(stock)*qty;
+        if(cost>p.cash){ state.choiceError = `Not enough cash — whale-buying ${qty} ${stock} costs $${cost}, you have $${p.cash}.`; return false; }
+        p.cash -= cost; addCostBasis(p, stock, cost, false); p.shares[stock]+=qty;
+        moveStock(stock,1,false); moveStock(stock,1,false);
+        recordHistory(); recordTradeMarker(stock, p.color, 'up', qty);
+        logEvent(`${p.name} whale-bought ${qty} ${stock} for $${cost} — price surged.`);
+      } else if(side==='sell'){
+        if(p.shares[stock]<qty){ state.choiceError = `You only hold ${p.shares[stock]} ${stock} — can't whale-sell ${qty}.`; return false; }
+        reduceCostBasisOnSell(p, stock, qty, false);
+        p.shares[stock]-=qty; p.cash += price(stock)*qty;
+        moveStock(stock,-1,false); moveStock(stock,-1,false);
+        recordHistory(); recordTradeMarker(stock, p.color, 'down', qty);
+        logEvent(`${p.name} whale-sold ${qty} ${stock} for $${price(stock)*qty} — price dropped.`);
+      } else if(side==='short'){
+        const margin = price(stock)*qty;
+        if(margin>freeCash(p)){ state.choiceError = `Not enough free cash — shorting ${qty} ${stock} needs $${margin} collateral, you have $${freeCash(p)} free.`; return false; }
+        const proceeds = price(stock)*qty;
+        p.cash += proceeds; addShortBasis(p, stock, proceeds); p.shorts[stock] = (p.shorts[stock]||0) + qty;
+        moveStock(stock,-1,false); moveStock(stock,-1,false);
+        recordHistory(); recordTradeMarker(stock, p.color, 'down', qty);
+        checkMarginCalls();
+        logEvent(`${p.name} whale-shorted ${qty} ${stock} for $${proceeds} — price dropped, collateral locked.`, true);
+      } else {
+        logEvent(`${p.name} held off — no whale trade made.`);
+      }
+      break;
+    }
+    case 'freeze': {
+      const { stock } = choice;
+      state.stocks[stock].frozen = true;
+      logEvent(`${p.name} froze ${stock} against the next dictated move.`);
+      break;
+    }
+  }
+  return true;
+}
+
+/* ============================= TRADING ============================= */
+function tickerLabel(id){ return id==='SP' ? 'SP8' : id; }
+
+function snapshotForUndo(){
+  return JSON.parse(JSON.stringify({
+    stocks: state.stocks, sp: state.sp, players: state.players,
+    turnUsage: state.turnUsage, turnFills: state.turnFills,
+    log: state.log, gameOver: state.gameOver, winner: state.winner,
+  }));
+}
+function pushUndoSnapshot(){
+  state.turnUndoStack.push(snapshotForUndo());
+}
+function undoLastTrade(){
+  if(!isMyTurn() || !state.turnUndoStack || state.turnUndoStack.length===0) return;
+  const snap = state.turnUndoStack.pop();
+  state.stocks = snap.stocks; state.sp = snap.sp; state.players = snap.players;
+  state.turnUsage = snap.turnUsage; state.turnFills = snap.turnFills;
+  state.log = snap.log; state.gameOver = snap.gameOver; state.winner = snap.winner;
+  logEvent('Last trade undone.');
+  persist(); render();
+}
+
+/* Records a volume marker on the stock's price-history timeline — buys and
+   covers (buy-pressure) stack as bars from the bottom; sells and shorts
+   (sell-pressure) stack as bars from the top. Colored per player. */
+function recordTradeMarker(id, color, side, qty){
+  const obj = id==='SP' ? state.sp : state.stocks[id];
+  obj.tradeMarkers.push({ historyIdx: obj.history.length-1, color, side, qty });
+}
+
+function buyShares(id, qtyRequested){
+  if(!isMyTurn() || !id || state.gameOver) return;
+  if(id!=='SP' && state.stocks[id].worthless) return;
+  const p = state.players[state.current];
+  const qty = Math.min(qtyRequested||0, capRemaining(), capRemainingForStock(id));
+  if(qty<=0){ logEvent(`No cap left this turn to buy ${tickerLabel(id)}.`); render(); return; }
+  const priorFilled = state.turnFills.up[id]||0;
+  const walk = walkOrderDetailed(id, qty, +1, priorFilled);
+  const totalCost = walk.total + walk.fee;
+  if(totalCost > freeCash(p)){ logEvent(`${p.name} doesn't have enough free cash to buy ${qty} ${tickerLabel(id)}.`); render(); return; }
+  pushUndoSnapshot();
+  p.cash -= totalCost;
+  addCostBasis(p, id, totalCost, id==='SP');
+  if(id==='SP'){ p.spShares += qty; } else { p.shares[id] += qty; }
+  const obj = id==='SP' ? state.sp : state.stocks[id];
+  obj.prevIdx = obj.idx; obj.idx = walk.finalIdx;
+  state.turnUsage.total += qty;
+  state.turnUsage.perStock[id] = (state.turnUsage.perStock[id]||0) + qty;
+  state.turnFills.up[id] = priorFilled + qty;
+  const feeNote = walk.fee>0 ? ` (incl. $${walk.fee} fee)` : '';
+  logEvent(`${p.name} bought ${qty} ${tickerLabel(id)} for $${totalCost}${feeNote} — now $${obj.track[obj.idx]}.`);
+  checkMarginCalls(); checkGameOver(); recordTradeMarker(id, p.color, 'up', qty); persist(); render();
+}
+
+function sellShares(id, qtyRequested){
+  if(!isMyTurn() || !id || state.gameOver) return;
+  const p = state.players[state.current];
+  const held = id==='SP' ? p.spShares : p.shares[id];
+  const qty = Math.min(qtyRequested||0, held);
+  if(qty<=0){ render(); return; }
+  const priorFilled = state.turnFills.down[id]||0;
+  const walk = walkOrderDetailed(id, qty, -1, priorFilled);
+  const proceeds = walk.total - walk.fee;
+  pushUndoSnapshot();
+  p.cash += proceeds;
+  reduceCostBasisOnSell(p, id, qty, id==='SP');
+  if(id==='SP'){ p.spShares -= qty; } else { p.shares[id] -= qty; }
+  const obj = id==='SP' ? state.sp : state.stocks[id];
+  obj.prevIdx = obj.idx; obj.idx = walk.finalIdx;
+  state.turnFills.down[id] = priorFilled + qty;
+  const feeNote = walk.fee>0 ? ` (after $${walk.fee} fee)` : '';
+  logEvent(`${p.name} sold ${qty} ${tickerLabel(id)} for $${proceeds}${feeNote} — now $${obj.track[obj.idx]}.`);
+  checkMarginCalls(); checkGameOver(); recordTradeMarker(id, p.color, 'down', qty); persist(); render();
+}
+
+function openShort(id, qtyRequested){
+  if(!isMyTurn() || !id || id==='SP' || state.gameOver) return; // SP8 can't be shorted
+  if(state.stocks[id].worthless) return;
+  const p = state.players[state.current];
+  const qty = Math.min(qtyRequested||0, capRemaining(), capRemainingForStock(id));
+  if(qty<=0){ logEvent(`No cap left this turn to short ${id}.`); render(); return; }
+  const requiredMargin = qty*price(id);
+  if(requiredMargin > freeCash(p)){ logEvent(`${p.name} doesn't have enough free cash to short ${qty} ${id}.`); render(); return; }
+  const priorFilled = state.turnFills.down[id]||0;
+  const walk = walkOrderDetailed(id, qty, -1, priorFilled); // shorting is sell pressure — walks down
+  const proceeds = walk.total - walk.fee;
+  pushUndoSnapshot();
+  p.cash += proceeds;
+  addShortBasis(p, id, proceeds);
+  p.shorts[id] = (p.shorts[id]||0) + qty;
+  const obj = state.stocks[id];
+  obj.prevIdx = obj.idx; obj.idx = walk.finalIdx;
+  state.turnUsage.total += qty;
+  state.turnUsage.perStock[id] = (state.turnUsage.perStock[id]||0) + qty;
+  state.turnFills.down[id] = priorFilled + qty;
+  const feeNote = walk.fee>0 ? ` (after $${walk.fee} fee)` : '';
+  logEvent(`${p.name} opened a short on ${qty} ${id} for $${proceeds}${feeNote} — collateral locked, now $${obj.track[obj.idx]}.`, true);
+  checkMarginCalls(); checkGameOver(); recordTradeMarker(id, p.color, 'down', qty); persist(); render();
+}
+
+function coverShort(id, qtyRequested){
+  if(!isMyTurn() || !id || state.gameOver) return;
+  const p = state.players[state.current];
+  const held = p.shorts[id]||0;
+  const qty = Math.min(qtyRequested||0, held);
+  if(qty<=0){ render(); return; }
+  const priorFilled = state.turnFills.up[id]||0; // covering is buy-pressure — shares the "up" channel with Buy
+  const walk = walkOrderDetailed(id, qty, +1, priorFilled);
+  const totalCost = walk.total + walk.fee;
+  if(totalCost > p.cash){ logEvent(`${p.name} doesn't have enough cash to cover ${qty} ${id}.`); render(); return; }
+  pushUndoSnapshot();
+  p.cash -= totalCost;
+  reduceShortBasisOnCover(p, id, qty);
+  p.shorts[id] -= qty;
+  const obj = state.stocks[id];
+  obj.prevIdx = obj.idx; obj.idx = walk.finalIdx;
+  state.turnFills.up[id] = priorFilled + qty;
+  const feeNote = walk.fee>0 ? ` (incl. $${walk.fee} fee)` : '';
+  logEvent(`${p.name} covered ${qty} ${id} for $${totalCost}${feeNote} — now $${obj.track[obj.idx]}.`);
+  checkMarginCalls(); checkGameOver(); recordTradeMarker(id, p.color, 'up', qty); persist(); render();
+}
+
+function endTurn(){
+  const wasLastPlayer = state.current === state.players.length-1;
+  let next = state.current;
+  do { next = (next+1)%state.players.length; } while(state.players[next].eliminated && next!==state.current);
+  state.current = next;
+  state.phase = 'draw';
+  state.turnStage = 'start';
+  state.tradeSelection = null;
+  state.turnUsage = { total: 0, perStock: {} };
+  state.turnFills = { up: {}, down: {} };
+  state.turnUndoStack = [];
+  state.cardsDrawnThisTurn = 0;
+  if(wasLastPlayer) paySP8Dividend();
+  persist(); render();
+}
+
+/* S&P 8 pays a 10% dividend on holdings at the end of every round (once
+   every player has taken a turn) — a steady reward for parking cash in the
+   "safe" index instead of chasing individual stocks. */
+function paySP8Dividend(){
+  state.players.forEach(pl=>{
+    if(pl.spShares>0){
+      const pay = Math.round(pl.spShares*spPrice()*0.10);
+      pl.cash += pay;
+      logEvent(`${pl.name} collected a $${pay} S&P 8 dividend (10% of holding value).`, true);
+    }
+  });
+}
+
+/* The trade-phase button means different things depending on where you are
+   in the turn: after the opening draw, it kicks off the mandatory closing
+   draw (you still land back in trade to react to it). After THAT draw has
+   already been seen and resolved, the same button actually ends the turn. */
+function requestEndTurn(){
+  if(!isMyTurn()) return;
+  if(!state.gameOver && capRemaining()>0){
+    state.confirmEndTurn = true;
+    render();
+  } else {
+    proceedPastTrade();
+  }
+}
+
+function proceedPastTrade(){
+  state.confirmEndTurn = false;
+  if(state.turnStage==='start'){
+    beginClosingDraw();
+  } else {
+    endTurn();
+  }
+}
+
+function beginClosingDraw(){
+  state.turnStage = 'end';
+  state.phase = 'draw';
+  state.cardsDrawnThisTurn = 0;
+  persist(); render();
+}
+
+function renderEndTurnConfirm(){
+  if(!state.confirmEndTurn) return '';
+  const left = capRemaining();
+  const isStart = state.turnStage==='start';
+  return `<div class="overlay">
+    <div class="modal">
+      <h2>${isStart ? 'Draw your closing card?' : 'End your turn?'}</h2>
+      <div class="sub">You still have ${left} buy/short action${left===1?'':'s'} left this turn. Sure you don't want to use them${isStart ? ' before drawing your closing card' : ''}?</div>
+      <div class="btn-row">
+        <button class="btn secondary full" id="cancelEndTurnBtn">Keep Trading</button>
+        <button class="btn full" id="confirmEndTurnBtn">${isStart ? 'Draw Closing Card' : 'End Turn'}</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderRestartConfirm(){
+  if(!state || !state.confirmRestart) return '';
+  return `<div class="overlay">
+    <div class="modal">
+      <h2>Restart the game?</h2>
+      <div class="sub">This ends the current game for everyone and goes back to setup. There's no undoing this.</div>
+      <div class="btn-row">
+        <button class="btn secondary full" id="cancelRestartBtn">Keep Playing</button>
+        <button class="btn full" id="confirmRestartBtn">Restart</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+/* ============================= RENDER ============================= */
+const app = document.getElementById('app');
+
+function esc(s){ return s; }
+
+function renderSetup(){
+  if(!state){ renderCreateGameScreen(); return; }
+  if(state.phase==='lobby'){ renderLobbyScreen(); return; }
+  renderWhoAreYouScreen();
+}
+
+function renderCreateGameScreen(){
+  app.innerHTML = `
+    <div class="overlay">
+      <div class="modal">
+        <h2><span style="color:#FFFFFF;">Up</span><span style="color:var(--up);">Trend</span></h2>
+        <div class="sub">A turn-based stock market game, playable live with friends on separate screens.</div>
+        <div class="setup-field"><label>Number of players</label>
+          <div class="player-count-row" id="countRow"></div>
+        </div>
+        <button class="btn full" id="createBtn">Create Game</button>
+        <div class="hint">No game is running yet. Pick a player count and create one — everyone else who opens this page will be able to join and claim a seat.</div>
+      </div>
+    </div>`;
+  let count = window._setupCount || 2;
+  const countRow = document.getElementById('countRow');
+  [2,3,4].forEach(n=>{
+    const d = document.createElement('div');
+    d.className = 'count-opt'+(n===count?' selected':'');
+    d.textContent = n+' players';
+    d.onclick = ()=>{ window._setupCount = n; renderCreateGameScreen(); };
+    countRow.appendChild(d);
+  });
+  document.getElementById('createBtn').onclick = ()=>{ createLobby(count); };
+}
+
+function createLobby(count){
+  state = { phase:'lobby', lobbySeats: Array(count).fill(null), version:0, ...localDefaults() };
+  persist(); render();
+}
+
+function claimSeat(idx){
+  const input = document.getElementById('claimName'+idx);
+  const name = (input && input.value.trim()) || `Player ${idx+1}`;
+  if(!state || state.phase!=='lobby' || state.lobbySeats[idx]) return;
+  state.lobbySeats[idx] = name;
+  myPlayerIndex = idx;
+  persist(); render();
+}
+
+function startGameFromLobby(){
+  if(!state || state.phase!=='lobby' || state.lobbySeats.some(s=>!s)) return;
+  const names = state.lobbySeats.slice();
+  const locals = localDefaults();
+  state = freshState(names);
+  Object.assign(state, locals);
+  persist(); render();
+}
+
+function renderLobbyScreen(){
+  const seats = state.lobbySeats;
+  const allFilled = seats.every(s=>!!s);
+  const iHaveASeat = myPlayerIndex!==null && seats[myPlayerIndex];
+  app.innerHTML = `
+    <div class="overlay">
+      <div class="modal">
+        <h2><span style="color:#FFFFFF;">Up</span><span style="color:var(--up);">Trend</span> — Lobby</h2>
+        <div class="sub">${seats.filter(s=>s).length}/${seats.length} seats claimed. Everyone needs to claim a seat before the game can start.</div>
+        ${seats.map((name,i)=>{
+          if(name){
+            return `<div class="selected-ticker-box" style="margin-bottom:8px;">
+              <span class="stx" style="color:${PLAYER_COLORS[i%PLAYER_COLORS.length]};">${name}</span>
+              <span class="spx">Seat ${i+1}${myPlayerIndex===i?' — you':''}</span>
+            </div>`;
+          }
+          return `<div class="setup-field" style="display:flex;gap:8px;align-items:flex-end;">
+            <div style="flex:1;"><label>Seat ${i+1} — open</label><input type="text" id="claimName${i}" placeholder="Your name" value="Player ${i+1}"></div>
+            <button class="btn secondary" id="claimBtn${i}" style="height:38px;">Claim</button>
+          </div>`;
+        }).join('')}
+        ${iHaveASeat ? `<button class="btn full" id="startLobbyBtn" ${allFilled?'':'disabled'} style="margin-top:8px;">${allFilled?'Start Game':'Waiting for everyone to claim a seat...'}</button>` : `<div class="hint">Claim an open seat above to join.</div>`}
+      </div>
+    </div>`;
+  seats.forEach((name,i)=>{
+    if(!name){
+      const btn = document.getElementById('claimBtn'+i);
+      if(btn) btn.onclick = ()=>claimSeat(i);
+    }
+  });
+  const startBtn = document.getElementById('startLobbyBtn');
+  if(startBtn) startBtn.onclick = startGameFromLobby;
+}
+
+function renderWhoAreYouScreen(){
+  app.innerHTML = `
+    <div class="overlay">
+      <div class="modal">
+        <h2>Which player are you?</h2>
+        <div class="sub">A game is already in progress. Pick your seat, or just watch.</div>
+        ${state.players.map((pl,i)=>`<button class="btn secondary full" style="margin-bottom:8px;color:${pl.color};" id="whoAmI${i}">${pl.name}</button>`).join('')}
+        <button class="btn full" id="spectateBtn">Just Spectate</button>
+      </div>
+    </div>`;
+  state.players.forEach((pl,i)=>{
+    document.getElementById('whoAmI'+i).onclick = ()=>{ myPlayerIndex = i; render(); };
+  });
+  document.getElementById('spectateBtn').onclick = ()=>{ myPlayerIndex = -1; render(); };
+}
+
+function priceDeltaBadge(cur, prev){
+  if(cur===prev) return `<span class="price-delta flat">—</span>`;
+  return cur>prev ? `<span class="price-delta up">▲ up</span>` : `<span class="price-delta down">▼ down</span>`;
+}
+
+function renderTrack(track, curIdx, prevIdx, colorVar){
+  let html = `<div class="track">`;
+  const centerIdx = (track.length-1)/2;
+  track.forEach((pr,i)=>{
+    const filled = i===curIdx;
+    const edge = i===0 || i===track.length-1;
+    const isCenter = i===centerIdx;
+    html += `<div class="dot-wrap ${filled?'active':''} ${edge?'edge':''} ${isCenter?'center':''}">
+      <div class="dot ${filled?'filled':''}" style="${filled?`background:${colorVar};color:${colorVar};`:''}"></div>
+      <div class="dot-price">${pr}</div>
+    </div>`;
+  });
+  html += `</div>`;
+  return html;
+}
+
+/* Small inline line chart of a stock's price history, scaled to its fixed
+   track range (not just the visible history's min/max) so a stock sitting
+   near its floor/ceiling visibly reads as such at a glance. */
+/* Shared volume-bar builder for both chart sizes. Buys/covers (side:'up')
+   stack as bars growing up from the bottom of the plot area; sells/shorts
+   (side:'down') stack as bars growing down from the top. Bar height scales
+   with quantity, normalized against the single biggest stack anywhere on
+   this chart so one huge trade doesn't blow out the whole scale. Bars are
+   colored per player and stack in trade order. Returns SVG <rect> markup,
+   meant to be drawn BEHIND the price line. */
+function buildVolumeBars(markers, numPoints, stepX, offsetX, topY, plotH, maxBarFrac, minBarWidth, maxBarWidth){
+  const upTotals = {}, downTotals = {};
+  (markers||[]).forEach(m=>{
+    const idx = Math.max(0, Math.min(numPoints-1, m.historyIdx));
+    const bucket = m.side==='down' ? downTotals : upTotals;
+    bucket[idx] = (bucket[idx]||0) + (m.qty||1);
+  });
+  const allTotals = [...Object.values(upTotals), ...Object.values(downTotals)];
+  const maxTotal = allTotals.length ? Math.max(...allTotals) : 1;
+  const maxBarPx = plotH*maxBarFrac;
+  const pxPerShare = maxTotal>0 ? maxBarPx/maxTotal : 0;
+  const barWidth = Math.max(minBarWidth, Math.min(maxBarWidth, stepX*0.7));
+
+  const upStack = {}, downStack = {};
+  return (markers||[]).map(m=>{
+    const idx = Math.max(0, Math.min(numPoints-1, m.historyIdx));
+    const x = offsetX + idx*stepX - barWidth/2;
+    const qty = m.qty||1;
+    const segH = Math.max(1.2, qty*pxPerShare);
+    let y;
+    if(m.side==='down'){
+      const prev = downStack[idx]||0;
+      y = topY + prev;
+      downStack[idx] = prev+segH;
+    } else {
+      const prev = upStack[idx]||0;
+      y = topY + plotH - prev - segH;
+      upStack[idx] = prev+segH;
+    }
+    return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${segH.toFixed(1)}" fill="${m.color}" opacity="0.62" rx="0.6"/>`;
+  }).join('');
+}
+
+function renderSparkline(history, top, bottom, color, markers){
+  const W = 56, H = 84;
+  const pts = history.length>=2 ? history : [history[0], history[0]];
+  const range = (top-bottom) || 1;
+  const stepX = W/(pts.length-1);
+  const coords = pts.map((v,i)=>{
+    const x = i*stepX;
+    const y = H - ((v-bottom)/range)*H;
+    return `${x.toFixed(1)},${Math.max(1,Math.min(H-1,y)).toFixed(1)}`;
+  }).join(' ');
+  const lastX = (pts.length-1)*stepX;
+  const lastY = H - ((pts[pts.length-1]-bottom)/range)*H;
+
+  const bars = buildVolumeBars(markers, pts.length, stepX, 0, 0, H, 0.2, 1.4, 2.8);
+
+  return `<svg class="sparkline" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+    ${bars}
+    <polyline points="${coords}" fill="none" stroke="${color}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="${lastX.toFixed(1)}" cy="${Math.max(1,Math.min(H-1,lastY)).toFixed(1)}" r="2" fill="${color}"/>
+  </svg>`;
+}
+
+/* The big, click-to-expand version: gridlines, real price labels on the
+   y-axis, volume bars, and a legend mapping each bar's color back to a
+   player. */
+function renderExpandedChart(history, top, bottom, color, markers){
+  const W = 640, H = 340, padL = 54, padR = 16, padT = 16, padB = 16;
+  const plotW = W-padL-padR, plotH = H-padT-padB;
+  const pts = history.length>=2 ? history : [history[0], history[0]];
+  const range = (top-bottom) || 1;
+  const stepX = plotW/(pts.length-1);
+  const yFor = v => padT + plotH - ((v-bottom)/range)*plotH;
+
+  const coords = pts.map((v,i)=> `${(padL+i*stepX).toFixed(1)},${Math.max(padT,Math.min(padT+plotH,yFor(v))).toFixed(1)}`).join(' ');
+  const lastX = padL+(pts.length-1)*stepX, lastY = yFor(pts[pts.length-1]);
+
+  // 5 horizontal gridlines with real dollar labels, evenly spaced across the range
+  const GRID_LINES = 5;
+  let gridSvg = '';
+  for(let i=0;i<=GRID_LINES;i++){
+    const val = bottom + (range*i/GRID_LINES);
+    const y = yFor(val);
+    gridSvg += `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${W-padR}" y2="${y.toFixed(1)}" stroke="#232A38" stroke-width="1"/>
+      <text x="${padL-8}" y="${(y+3.5).toFixed(1)}" text-anchor="end" font-size="11" font-family="IBM Plex Mono" fill="#7C879C">$${Math.round(val)}</text>`;
+  }
+
+  const bars = buildVolumeBars(markers, pts.length, stepX, padL, padT, plotH, 0.18, 3, 10);
+
+  return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" style="display:block;">
+    ${gridSvg}
+    <line x1="${padL}" y1="${padT}" x2="${padL}" y2="${padT+plotH}" stroke="#232A38" stroke-width="1"/>
+    ${bars}
+    <polyline points="${coords}" fill="none" stroke="${color}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="${lastX.toFixed(1)}" cy="${Math.max(padT,Math.min(padT+plotH,lastY)).toFixed(1)}" r="4" fill="${color}"/>
+  </svg>`;
+}
+
+function renderExpandedChartModal(){
+  if(!state.expandedChart) return '';
+  const id = state.expandedChart;
+  const isSP = id==='SP';
+  const obj = isSP ? state.sp : state.stocks[id];
+  const color = isSP ? 'var(--sp)' : SECTORS[STOCKS[id].sector].color;
+  const label = isSP ? 'SP8' : `${id} — ${STOCKS[id].name}`;
+  const top = obj.track[obj.track.length-1], bottom = obj.track[0];
+  const cur = obj.track[obj.idx];
+
+  // Legend: only players who've actually got a marker on this chart
+  const seenColors = new Set((obj.tradeMarkers||[]).map(m=>m.color));
+  const legendPlayers = state.players.filter(pl=>seenColors.has(pl.color));
+  const legendHtml = legendPlayers.length
+    ? `<div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:10px;">${legendPlayers.map(pl=>
+        `<span style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);">
+          <span style="width:9px;height:9px;border-radius:50%;background:${pl.color};display:inline-block;"></span>${pl.name}
+        </span>`).join('')}</div>`
+    : '';
+
+  return `<div class="overlay" id="chartOverlay">
+    <div class="modal" style="max-width:700px;">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;">
+        <h2 style="margin:0;color:${color};">${label}</h2>
+        <span class="mono" style="font-size:20px;font-weight:600;">$${cur}</span>
+      </div>
+      <div class="sub">Full price history${(obj.tradeMarkers||[]).length ? ' — bars from the bottom are buy/cover volume, bars from the top are sell/short volume' : ''}</div>
+      <div style="margin:14px 0;overflow-x:auto;">${renderExpandedChart(obj.history, top, bottom, color, obj.tradeMarkers)}</div>
+      ${legendHtml}
+      <button class="btn full" id="closeChartBtn" style="margin-top:16px;">Close</button>
+    </div>
+  </div>`;
+}
+
+function renderBoard(){
+  let html = `<div class="board">`;
+  Object.keys(SECTORS).forEach(secKey=>{
+    const sec = SECTORS[secKey];
+    html += `<div class="sector-panel">
+      <div class="sector-head"><span class="sector-dot" style="background:${sec.color}"></span>${sec.label||secKey}</div>`;
+    sec.stocks.forEach(id=>{
+      const s = state.stocks[id];
+      const cur = s.track[s.idx];
+      const isSel = state.tradeSelection===id;
+      const drip = state.recurringEffects.find(e=>e.stock===id);
+      html += `<div class="stock-row ${isSel?'selected':''} ${s.worthless?'worthless':''}" data-trade-id="${id}">
+        <div class="stock-row-inner">
+          <div class="stock-chart-col" data-chart-id="${id}">${renderSparkline(s.history, s.track[s.track.length-1], s.track[0], sec.color, s.tradeMarkers)}</div>
+          <div class="stock-main-col">
+            <div class="row-top">
+              <span class="ticker" style="color:${sec.color}">${id}</span>
+              <span class="price-now ${s.idx!==s.prevIdx?'flash':''}">$${cur}</span>
+              ${priceDeltaBadge(s.idx, s.prevIdx)}
+              ${s.worthless?'<span class="worthless-badge">Worthless</span>':''}
+              ${s.frozen?'<span class="frozen-badge">Frozen</span>':''}
+              ${drip?`<span class="frozen-badge" style="color:${drip.dir>0?'var(--up)':'var(--down)'};background:${drip.dir>0?'rgba(62,207,142,0.12)':'rgba(255,92,92,0.12)'};">Earnings ${drip.dir>0?'+':'-'}${drip.bubblesPerTurn}/turn ×${drip.turnsLeft}</span>`:''}
+              <span style="margin-left:auto;font-size:11px;color:var(--muted);white-space:nowrap;">${STOCKS[id].name}</span>
+              ${isSel?'<span class="tap-hint">Selected</span>':'<span class="tap-hint">Tap to trade</span>'}
+            </div>
+            ${renderTrack(s.track, s.idx, s.prevIdx, sec.color)}
+          </div>
+        </div>
+      </div>`;
+    });
+    html += `</div>`;
+  });
+  html += `</div>`;
+
+  // SP panel
+  const sp = state.sp;
+  const spSel = state.tradeSelection==='SP';
+  html += `<div class="sp-panel ${spSel?'selected':''}" data-trade-id="SP" style="margin-top:12px;">
+    <div class="sector-head"><span class="sector-dot" style="background:var(--sp)"></span>S&amp;P 8 Index</div>
+    <div class="stock-row-inner">
+      <div class="stock-chart-col" data-chart-id="SP">${renderSparkline(sp.history, sp.track[sp.track.length-1], sp.track[0], 'var(--sp)', sp.tradeMarkers)}</div>
+      <div class="stock-main-col">
+        <div class="row-top" style="margin-bottom:8px;">
+          <span class="ticker" style="color:var(--sp)">SP8</span>
+          <span class="price-now ${sp.idx!==sp.prevIdx?'flash':''}">$${sp.track[sp.idx]}</span>
+          ${priceDeltaBadge(sp.idx, sp.prevIdx)}
+          <span style="margin-left:auto;font-size:11px;color:var(--muted);white-space:nowrap;">Stable index — market-wide events &amp; S&amp;P +1 cards only</span>
+          ${spSel?'<span class="tap-hint">Selected</span>':'<span class="tap-hint">Tap to trade</span>'}
+        </div>
+        ${renderTrack(sp.track, sp.idx, sp.prevIdx, 'var(--sp)')}
+      </div>
+    </div>
+  </div>`;
+  return html;
+}
+
+function renderSidebar(){
+  const p = state.players[state.current];
+  let html = `<div class="sidebar">`;
+
+  // players
+  html += `<div class="panel"><h3>Players</h3>`;
+  state.players.forEach((pl,i)=>{
+    const locked = lockedCash(pl);
+    html += `<div class="player-card ${i===state.current?'active':''}" style="border-left-color:${pl.color};${pl.eliminated?'opacity:0.5;':''}">
+      <div class="p-top"><span class="p-name" style="color:${pl.color};">${pl.name}${i===state.current?' • turn':''}${pl.eliminated?' <span class="worthless-badge">Eliminated</span>':''}</span><span class="p-cash">$${pl.cash}${locked>0?` <span style="color:var(--muted);font-weight:400;">($${locked} locked)</span>`:''}</span></div>
+      <div class="p-net">Net worth: $${netWorth(pl)}</div>
+    </div>`;
+  });
+  html += `</div>`;
+
+  // your active insider info — only shows on the OWNING player's own device
+  // during their own turn, since it's private information. Everyone else's
+  // screen (even though it's the same shared state) never sees it.
+  const myInsider = (myPlayerIndex===state.current) ? state.scheduled.filter(item=>item.ownerIndex===state.current) : [];
+  if(myInsider.length){
+    html += `<div class="panel"><h3 style="color:${p.color};">${p.name}'s Insider Info</h3>`;
+    myInsider.forEach(item=>{
+      html += `<div class="log-entry event" style="margin-bottom:6px;">
+        <div>${item.description||'A prediction is pending'}</div>
+        <div style="color:var(--muted);font-size:11px;margin-top:2px;">${item.turnsLeft} of your turn${item.turnsLeft===1?'':'s'} left</div>
+      </div>`;
+    });
+    html += `</div>`;
+  }
+
+  // action panel
+  html += `<div class="panel"><h3>Action</h3>`;
+  if(!state.gameOver && !isMyTurn()){
+    html += `<div style="font-size:14px;color:var(--muted);">Waiting for <b style="color:${p.color};">${p.name}</b> to play${myPlayerIndex===-1?' (you\'re spectating)':''}...</div>`;
+  } else if(state.gameOver){
+    html += `<div style="font-size:14px;">Game over — <b style="color:${state.winner.color};">${state.winner.name}</b> wins with $${netWorth(state.winner)} net worth!</div>
+      <button class="btn full" style="margin-top:10px;" id="newGameBtn">New Game</button>`;
+  } else if(p.eliminated){
+    html += `<div class="choice-error" style="margin-bottom:10px;">${p.name} is eliminated — net worth went negative with no way to recover. Their turns are skipped from here on.</div>
+      <button class="btn full" id="eliminatedContinueBtn">Continue</button>`;
+  } else if(state.phase==='draw' && p.cash<0){
+    const sel = state.tradeSelection;
+    html += `<div class="choice-error" style="margin-bottom:10px;">${p.name}'s cash is negative ($${p.cash}) after a margin call. Sell or cover holdings until you're back to $0 or more before you can draw a card.</div>`;
+    if(!sel){
+      html += `<div class="no-selection">Tap any stock row or the S&amp;P 8 panel on the left to sell or cover it.</div>`;
+    } else {
+      const label = sel==='SP' ? 'SP8' : sel;
+      const pr = sel==='SP' ? spPrice() : price(sel);
+      const held = sel==='SP' ? p.spShares : p.shares[sel];
+      const shortHeld = sel==='SP' ? 0 : (p.shorts[sel]||0);
+      html += `<div class="selected-ticker-box">
+        <span class="stx">${label}</span>
+        <span class="spx">$${pr} &middot; long ${held}${sel!=='SP'?` &middot; short ${shortHeld}`:''}</span>
+      </div>
+      <div class="btn-row" style="margin-bottom:12px;">
+        <button class="btn sell full" id="sellBtn" ${canSellOne(sel)?'':'disabled'}>Sell</button>
+        ${sel!=='SP'?`<button class="btn cover full" id="coverBtn" ${canCoverOne(sel)?'':'disabled'}>Cover</button>`:''}
+      </div>`;
+    }
+    html += `<button class="btn full" id="drawBtn" disabled>Draw Card (raise cash to $0+ first)</button>`;
+  } else if(state.phase==='draw'){
+    const drawMsg = state.turnStage==='end'
+      ? `${p.name}, draw your closing card to end the turn.`
+      : `${p.name}, draw a card to start your turn.`;
+    html += `<div style="font-size:13px;color:var(--muted);margin-bottom:10px;">${drawMsg}</div>
+      <button class="btn full" id="drawBtn">Draw Card</button>`;
+  } else if(state.phase==='resolve' && state.cardMinimized){
+    html += `<div style="font-size:13px;color:var(--muted);">Card minimized — check your holdings below, then use the "Resume Card" button to make your choice.</div>`;
+  } else if(state.phase==='trade'){
+    const sel = state.tradeSelection;
+    const tradeIntro = state.turnStage==='end'
+      ? `Closing card resolved — react if you need to, then click End Turn.`
+      : `Trading phase — tap a ticker on the board, then click Buy, Sell, Short, or Cover. Each click trades 1 share.`;
+    html += `<div style="font-size:13px;color:var(--muted);margin-bottom:6px;">${tradeIntro}</div>
+      <div class="cap-meter">Shares left this turn: <b>${capRemaining()}/10</b> &nbsp;(sells &amp; covers are free)</div>`;
+    if(!sel){
+      html += `<div class="no-selection">No ticker selected. Tap any stock row or the S&amp;P 8 panel on the left to trade it.</div>`;
+    } else {
+      const label = sel==='SP' ? 'SP8' : sel;
+      const pr = sel==='SP' ? spPrice() : price(sel);
+      const held = sel==='SP' ? p.spShares : p.shares[sel];
+      const shortHeld = sel==='SP' ? 0 : (p.shorts[sel]||0);
+      html += `<div class="selected-ticker-box">
+        <span class="stx">${label}</span>
+        <span class="spx">$${pr} &middot; long ${held}${sel!=='SP'?` &middot; short ${shortHeld}`:''}</span>
+      </div>
+      ${sel!=='SP'?`<div class="cap-meter">${label} cap this turn: <b>${Math.max(0,capRemainingForStock(sel))}/4</b> (buy + short)</div>`:''}
+      <div class="btn-row" style="margin-bottom:8px;">
+        <button class="btn buy full" id="buyBtn" ${canBuyOne(sel)?'':'disabled'}>Buy</button>
+        <button class="btn sell full" id="sellBtn" ${canSellOne(sel)?'':'disabled'}>Sell</button>
+      </div>`;
+      if(sel!=='SP'){
+        html += `<div class="btn-row" style="margin-bottom:12px;">
+          <button class="btn short full" id="shortBtn" ${canShortOne(sel)?'':'disabled'}>Short</button>
+          <button class="btn cover full" id="coverBtn" ${canCoverOne(sel)?'':'disabled'}>Cover</button>
+        </div>`;
+      }
+    }
+    if(state.turnUndoStack && state.turnUndoStack.length>0){
+      html += `<button class="btn secondary full" id="undoBtn" style="margin-bottom:8px;">Undo Last Trade</button>`;
+    }
+    html += `<button class="btn full" id="endTurnBtn">${state.turnStage==='start' ? 'Draw Closing Card' : 'End Turn'}</button>`;
+  }
+  html += `</div>`;
+
+  // holdings — collect every row first so we can sort by value, biggest first
+  const glCell = (gl)=> `<td style="color:${gl>=0?'var(--up)':'var(--down)'};">${gl>=0?'+':'-'}$${Math.abs(Math.round(gl))}</td>`;
+  const holdingRows = [];
+  STOCK_IDS.forEach(id=>{
+    if(p.shares[id]>0){
+      const sectorLabel = SECTORS[STOCKS[id].sector].label || STOCKS[id].sector;
+      const value = p.shares[id]*price(id);
+      holdingRows.push({ value, html: `<tr><td>${id} (${sectorLabel})</td><td>${p.shares[id]}</td><td>$${value}</td>${glCell(longGainLoss(p,id,false))}</tr>` });
+    }
+  });
+  if(p.spShares>0){
+    const value = p.spShares*spPrice();
+    holdingRows.push({ value, html: `<tr><td>SP8</td><td>${p.spShares}</td><td>$${value}</td>${glCell(longGainLoss(p,'SP',true))}</tr>` });
+  }
+  STOCK_IDS.forEach(id=>{
+    if((p.shorts[id]||0)>0){
+      const sectorLabel = SECTORS[STOCKS[id].sector].label || STOCKS[id].sector;
+      const value = -(p.shorts[id]*price(id));
+      holdingRows.push({ value, html: `<tr><td>${id} (${sectorLabel}, short)</td><td>${p.shorts[id]}</td><td style="color:var(--down);">-$${Math.abs(value)}</td>${glCell(shortGainLoss(p,id))}</tr>` });
+    }
+  });
+  holdingRows.sort((a,b)=>b.value-a.value);
+
+  html += `<div class="panel"><h3 style="color:${p.color};">${p.name}'s Holdings</h3>
+    <table class="holdings-table"><tr><th>Ticker</th><th>Shares</th><th>Value</th><th>Gain/Loss</th></tr>`;
+  holdingRows.forEach(r=>{ html += r.html; });
+  html += `</table></div>`;
+
+  // log — moved to an on-demand modal instead of always-on-screen
+  html += `<button class="btn secondary full" id="openLogBtn">Market Log (${state.log.length})</button>`;
+
+  html += `</div>`;
+  return html;
+}
+
+function renderLogModal(){
+  if(!state.showLog) return '';
+  return `<div class="overlay" id="logOverlay">
+    <div class="modal">
+      <h2>Market Log</h2>
+      <div class="sub">Everything that's happened this game, most recent first.</div>
+      <div class="log" style="max-height:60vh;">
+        ${state.log.slice().reverse().map(l=>`<div class="log-entry ${l.event?'event':''}">${l.text}</div>`).join('')}
+      </div>
+      <button class="btn full" id="closeLogBtn" style="margin-top:14px;">Close</button>
+    </div>
+  </div>`;
+}
+
+function renderCardModal(){
+  if(!state.pendingCard || !isMyTurn()) return ''; // only the acting player's own device gets the popup
+  const card = state.pendingCard;
+  const p = state.players[state.current];
+
+  if(state.cardMinimized) return ''; // tucked away so the player can check their holdings first
+
+  const minimizeBtn = `<button class="btn secondary full" id="minimizeCardBtn" style="margin-top:8px;">Minimize — check my holdings</button>`;
+
+  if(card.type==='peek' && state.pendingChoice && state.pendingChoice.kind==='info'){
+    return `<div class="overlay"><div class="modal">
+      <div class="card-face"><div class="card-kind">Insider Info</div><div class="card-text">${card.text}</div></div>
+      <div style="font-size:13px;color:var(--muted);margin-bottom:8px;">Next up in the deck:</div>
+      ${state.pendingChoice.lines.map(l=>`<div class="log-entry" style="margin-bottom:6px;">${l}</div>`).join('')}
+      <button class="btn full" id="ackBtn" style="margin-top:10px;">Got it</button>
+      ${minimizeBtn}
+    </div></div>`;
+  }
+
+  if(needsChoice(card)){
+    return `<div class="overlay"><div class="modal">
+      <div class="card-face"><div class="card-kind">${p.name}'s turn</div><div class="card-text">${card.text}</div></div>
+      ${state.choiceError ? `<div class="choice-error">${state.choiceError}</div>` : ''}
+      ${renderChoiceUI(card)}
+      ${minimizeBtn}
+    </div></div>`;
+  }
+
+  return `<div class="overlay"><div class="modal">
+    <div class="card-face"><div class="card-kind">${p.name}'s turn</div><div class="card-text">${card.text}</div></div>
+    <button class="btn full" id="ackBtn">Continue</button>
+    ${minimizeBtn}
+  </div></div>`;
+}
+
+function renderResumeCardBanner(){
+  if(!state.pendingCard || !state.cardMinimized || !isMyTurn()) return '';
+  const p = state.players[state.current];
+  return `<div class="resume-card-banner">
+    <div>
+      <div class="resume-card-label">Card paused</div>
+      <div class="resume-card-sub">${p.name} still needs to resolve a card</div>
+    </div>
+    <button class="btn" id="resumeCardBtn">Resume Card</button>
+  </div>`;
+}
+
+function renderChoiceUI(card){
+  const p = state.players[state.current];
+  switch(card.type){
+    case 'sched_swing':
+      return `
+        <div class="trade-row"><select id="c_stock">${STOCK_IDS.map(id=>`<option value="${id}">${id}</option>`).join('')}</select></div>
+        <div class="choice-grid">
+          <button class="btn secondary" id="c_up">Swing Up</button>
+          <button class="btn secondary" id="c_down">Swing Down</button>
+        </div>`;
+    case 'split': {
+      const owned = STOCK_IDS.filter(id=>p.shares[id]>0);
+      if(owned.length===0) return `<div class="hint">You own no shares — this card has no effect.</div><button class="btn full" id="ackBtn">Continue</button>`;
+      return `<div class="trade-row"><select id="c_stock">${owned.map(id=>`<option value="${id}">${id} (${p.shares[id]} shares)</option>`).join('')}</select></div>
+        <button class="btn full" id="c_split">Split</button>`;
+    }
+    case 'choose_stock_move':
+      return `
+        <div class="trade-row"><select id="c_stock">${STOCK_IDS.map(id=>`<option value="${id}">${id}</option>`).join('')}</select></div>
+        <div class="choice-grid">
+          <button class="btn secondary" id="c_up">Move Up</button>
+          <button class="btn secondary" id="c_down">Move Down</button>
+        </div>`;
+    case 'choose_sector_move':
+      return `
+        <div class="trade-row"><select id="c_sector">${Object.keys(SECTORS).map(s=>`<option value="${s}">${SECTORS[s].label||s}</option>`).join('')}</select></div>
+        <div class="choice-grid">
+          <button class="btn secondary" id="c_up">Move Up</button>
+          <button class="btn secondary" id="c_down">Move Down</button>
+        </div>`;
+    case 'whale':
+      return `
+        <div class="trade-row">
+          <select id="c_stock">${STOCK_IDS.map(id=>`<option value="${id}">${id} — $${price(id)}</option>`).join('')}</select>
+          <input type="number" id="c_qty" min="1" value="1">
+        </div>
+        <div class="choice-grid">
+          <button class="btn buy" id="c_buy">Buy (pushes price up)</button>
+          <button class="btn sell" id="c_sell">Sell (pushes price down)</button>
+          <button class="btn short" id="c_short">Short (pushes price down)</button>
+          <button class="btn secondary" id="c_hold">Hold — no trade</button>
+        </div>`;
+    case 'freeze':
+      return `<div class="trade-row"><select id="c_stock">${STOCK_IDS.map(id=>`<option value="${id}">${id}</option>`).join('')}</select></div>
+        <button class="btn full" id="c_freeze">Freeze</button>`;
+    default: return '';
+  }
+}
+
+function wireChoiceHandlers(card){
+  const byId = x=>document.getElementById(x);
+  const done = (choice)=>{
+    const ok = resolveChoice(card, choice);
+    if(ok===false){ render(); return; } // keep the card open so they can adjust and retry
+    finishCardResolution();
+  };
+  switch(card.type){
+    case 'sched_swing':
+      if(byId('c_up')) byId('c_up').onclick = ()=>done({ stock: byId('c_stock').value, dir:1 });
+      if(byId('c_down')) byId('c_down').onclick = ()=>done({ stock: byId('c_stock').value, dir:-1 });
+      break;
+    case 'split':
+      if(byId('c_split')) byId('c_split').onclick = ()=>done({ stock: byId('c_stock').value });
+      if(byId('ackBtn')) byId('ackBtn').onclick = ()=>finishCardResolution();
+      break;
+    case 'choose_stock_move':
+      if(byId('c_up')) byId('c_up').onclick = ()=>done({ stock: byId('c_stock').value, dir:1 });
+      if(byId('c_down')) byId('c_down').onclick = ()=>done({ stock: byId('c_stock').value, dir:-1 });
+      break;
+    case 'choose_sector_move':
+      if(byId('c_up')) byId('c_up').onclick = ()=>done({ sector: byId('c_sector').value, dir:1 });
+      if(byId('c_down')) byId('c_down').onclick = ()=>done({ sector: byId('c_sector').value, dir:-1 });
+      break;
+    case 'whale':
+      if(byId('c_buy')) byId('c_buy').onclick = ()=>done({ stock: byId('c_stock').value, qty: parseInt(byId('c_qty').value)||1, side:'buy' });
+      if(byId('c_sell')) byId('c_sell').onclick = ()=>done({ stock: byId('c_stock').value, qty: parseInt(byId('c_qty').value)||1, side:'sell' });
+      if(byId('c_short')) byId('c_short').onclick = ()=>done({ stock: byId('c_stock').value, qty: parseInt(byId('c_qty').value)||1, side:'short' });
+      if(byId('c_hold')) byId('c_hold').onclick = ()=>done({ side:'hold' });
+      break;
+    case 'freeze':
+      if(byId('c_freeze')) byId('c_freeze').onclick = ()=>done({ stock: byId('c_stock').value });
+      break;
+  }
+}
+
+function render(){
+  if(!state || state.phase==='lobby' || myPlayerIndex===null){ renderSetup(); return; }
+  const p = state.players[state.current];
+  app.innerHTML = `
+    <div class="topbar">
+      <div class="title">
+        <svg class="logo-mark" width="28" height="22" viewBox="0 0 28 22" xmlns="http://www.w3.org/2000/svg" fill="none">
+          <polyline points="2,19 9,12 13,15 19,6" stroke="var(--up)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M14,5 L20,4.3 L20.7,10.3" stroke="var(--up)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span><span class="word-up">Up</span><span class="word-trend">Trend</span></span>
+      </div>
+      <div class="meta">
+        <div class="item"><div class="label">S&amp;P 8</div><div class="value mono">$${spPrice()}</div></div>
+        <div class="item"><div class="label">Turn</div><div class="value" style="color:${p.color};">${p.name}</div></div>
+        <div class="item"><div class="label">Deck</div><div class="value mono">${state.deck.length} left</div></div>
+        <button class="btn secondary" id="restartBtn" style="padding:8px 12px;font-size:12px;">Restart</button>
+      </div>
+    </div>
+    <div class="layout">
+      <div>${renderBoard()}</div>
+      ${renderSidebar()}
+    </div>
+    ${renderCardModal()}
+    ${renderLogModal()}
+    ${renderEndTurnConfirm()}
+    ${renderResumeCardBanner()}
+    ${renderRestartConfirm()}
+    ${renderExpandedChartModal()}
+  `;
+
+  // wire buttons
+  const byId = x=>document.getElementById(x);
+  if(byId('drawBtn')) byId('drawBtn').onclick = drawCard;
+  if(byId('endTurnBtn')) byId('endTurnBtn').onclick = requestEndTurn;
+  if(byId('eliminatedContinueBtn')) byId('eliminatedContinueBtn').onclick = ()=>{ if(isMyTurn()) endTurn(); };
+  if(byId('newGameBtn')) byId('newGameBtn').onclick = wipeGame;
+  if(byId('buyBtn')) byId('buyBtn').onclick = ()=>buyShares(state.tradeSelection, 1);
+  if(byId('sellBtn')) byId('sellBtn').onclick = ()=>sellShares(state.tradeSelection, 1);
+  if(byId('shortBtn')) byId('shortBtn').onclick = ()=>openShort(state.tradeSelection, 1);
+  if(byId('coverBtn')) byId('coverBtn').onclick = ()=>coverShort(state.tradeSelection, 1);
+  if(byId('undoBtn')) byId('undoBtn').onclick = undoLastTrade;
+  if(byId('openLogBtn')) byId('openLogBtn').onclick = ()=>{ state.showLog = true; render(); };
+  if(byId('closeLogBtn')) byId('closeLogBtn').onclick = ()=>{ state.showLog = false; render(); };
+  if(byId('confirmEndTurnBtn')) byId('confirmEndTurnBtn').onclick = proceedPastTrade;
+  if(byId('cancelEndTurnBtn')) byId('cancelEndTurnBtn').onclick = ()=>{ state.confirmEndTurn=false; render(); };
+  if(byId('restartBtn')) byId('restartBtn').onclick = ()=>{ state.confirmRestart=true; render(); };
+  if(byId('confirmRestartBtn')) byId('confirmRestartBtn').onclick = wipeGame;
+  if(byId('cancelRestartBtn')) byId('cancelRestartBtn').onclick = ()=>{ state.confirmRestart=false; render(); };
+  if(byId('minimizeCardBtn')) byId('minimizeCardBtn').onclick = ()=>{ state.cardMinimized=true; render(); };
+  if(byId('resumeCardBtn')) byId('resumeCardBtn').onclick = ()=>{ state.cardMinimized=false; render(); };
+  document.querySelectorAll('[data-trade-id]').forEach(el=>{
+    el.onclick = ()=>{ state.tradeSelection = el.getAttribute('data-trade-id'); render(); };
+  });
+  document.querySelectorAll('[data-chart-id]').forEach(el=>{
+    el.onclick = (ev)=>{ ev.stopPropagation(); state.expandedChart = el.getAttribute('data-chart-id'); render(); };
+  });
+  if(byId('closeChartBtn')) byId('closeChartBtn').onclick = ()=>{ state.expandedChart = null; render(); };
+  if(byId('ackBtn')) byId('ackBtn').onclick = ()=>{
+    if(state.pendingCard && state.pendingCard.type==='peek'){ finishCardResolution(); }
+    else finishCardResolution();
+  };
+  if(state.pendingCard && needsChoice(state.pendingCard)) wireChoiceHandlers(state.pendingCard);
+}
+
+render();
+</script>
+</body>
+</html>
