@@ -1374,7 +1374,7 @@ function startGameFromLobby(){
 
 function renderLobbyScreen(){
   const seats = state.lobbySeats;
-  const allFilled = seats.every(s=>!!s);
+  const allFilled = seats.every(s=>!!s) && seats.length>=2;
   const iHaveASeat = myPlayerIndex!==null && seats[myPlayerIndex];
   app.innerHTML = `
     <div class="overlay">
@@ -1394,6 +1394,7 @@ function renderLobbyScreen(){
           </div>`;
         }).join('')}
         ${iHaveASeat ? `<button class="btn full" id="startLobbyBtn" ${allFilled?'':'disabled'} style="margin-top:8px;">${allFilled?'Start Game':'Waiting for everyone to claim a seat...'}</button>` : `<div class="hint">Claim an open seat above to join.</div>`}
+        <button class="btn secondary full" id="resetLobbyBtn" style="margin-top:8px;">Cancel — Reset Lobby</button>
       </div>
     </div>`;
   seats.forEach((name,i)=>{
@@ -1404,6 +1405,7 @@ function renderLobbyScreen(){
   });
   const startBtn = document.getElementById('startLobbyBtn');
   if(startBtn) startBtn.onclick = startGameFromLobby;
+  document.getElementById('resetLobbyBtn').onclick = wipeGame;
 }
 
 function renderWhoAreYouScreen(){
@@ -1414,12 +1416,14 @@ function renderWhoAreYouScreen(){
         <div class="sub">A game is already in progress. Pick your seat, or just watch.</div>
         ${state.players.map((pl,i)=>`<button class="btn secondary full" style="margin-bottom:8px;color:${pl.color};" id="whoAmI${i}">${pl.name}</button>`).join('')}
         <button class="btn full" id="spectateBtn">Just Spectate</button>
+        <button class="btn secondary full" id="resetFromReconnectBtn" style="margin-top:8px;">End This Game — Start Fresh</button>
       </div>
     </div>`;
   state.players.forEach((pl,i)=>{
     document.getElementById('whoAmI'+i).onclick = ()=>{ myPlayerIndex = i; render(); };
   });
   document.getElementById('spectateBtn').onclick = ()=>{ myPlayerIndex = -1; render(); };
+  document.getElementById('resetFromReconnectBtn').onclick = wipeGame;
 }
 
 function priceDeltaBadge(cur, prev){
