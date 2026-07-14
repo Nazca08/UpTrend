@@ -427,7 +427,15 @@ function mergeRemote(remote){
 
 onValue(gameRef, (snap)=>{
   const remote = snap.val();
-  if(!remote){ if(!state) render(); return; } // nothing in the DB yet — show "create a game"
+  if(!remote){
+    // The database is empty — either nothing's been created yet, or someone
+    // (possibly THIS tab, possibly another) just wiped it. Either way, clear
+    // any stale local game data so this screen actually reflects that, rather
+    // than silently continuing to show old data that no longer exists.
+    if(state!==null){ state = null; myPlayerIndex = null; }
+    render();
+    return;
+  }
   const prevVersion = state ? state.version : -1;
   mergeRemote(remote);
   if(state.version !== prevVersion) render();
