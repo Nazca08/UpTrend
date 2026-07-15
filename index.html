@@ -1836,6 +1836,14 @@ function renderLogModal(){
   </div>`;
 }
 
+/* "Insider Info" cards stay private to whoever drew them — everyone else
+   only ever sees the generic label, never the actual stock/price/direction.
+   Every other card type is public: any player can see what got drawn, even
+   though only the drawer can act on it. */
+function isInsiderCard(card){
+  return card && (card.type==='peek' || card.type==='sched_swing' || card.type==='sched_price');
+}
+
 function renderCardModal(){
   if(!state.pendingCard || !isMyTurn()) return ''; // only the acting player's own device gets the popup
   const card = state.pendingCard;
@@ -1869,6 +1877,23 @@ function renderCardModal(){
     <button class="btn full" id="ackBtn">Continue</button>
     ${minimizeBtn}
   </div></div>`;
+}
+
+/* For everyone who ISN'T the drawer — a small non-blocking banner (doesn't
+   stop them checking their own holdings/charts) showing what got drawn.
+   Public cards show their real text; Insider Info cards show only the
+   generic label, never the actual prediction. */
+function renderSpectatorCardBanner(){
+  if(!state.pendingCard || isMyTurn()) return '';
+  const card = state.pendingCard;
+  const drawer = state.players[state.current];
+  const label = isInsiderCard(card) ? 'Insider Info' : card.text;
+  return `<div class="resume-card-banner" style="border-color:${drawer.color};">
+    <div>
+      <div class="resume-card-label" style="color:${drawer.color};">${drawer.name} drew a card</div>
+      <div class="resume-card-sub">${label}</div>
+    </div>
+  </div>`;
 }
 
 function renderResumeCardBanner(){
@@ -1996,6 +2021,7 @@ function render(){
     ${renderLogModal()}
     ${renderEndTurnConfirm()}
     ${renderResumeCardBanner()}
+    ${renderSpectatorCardBanner()}
     ${renderRestartConfirm()}
     ${renderExpandedChartModal()}
   `;
