@@ -903,10 +903,25 @@ function tickScheduled(ownerIndex){
   state.scheduled.forEach(item=>{
     if(item.ownerIndex!==ownerIndex){ remaining.push(item); return; }
     item.turnsLeft -= 1;
-    if(item.turnsLeft<=0){ item.resolve(); }
+    if(item.turnsLeft<=0){ resolveScheduledItem(item); }
     else remaining.push(item);
   });
   state.scheduled = remaining;
+}
+
+/* Scheduled items store plain data (never functions — Firebase can't sync
+   those) and get dispatched here by `kind` once their countdown hits 0. */
+function resolveScheduledItem(item){
+  if(item.kind==='sched_price'){
+    if(state.stocks[item.stock].worthless){ logEvent(`${item.stock} went worthless before its price target could land.`, true); return; }
+    state.stocks[item.stock].prevIdx = state.stocks[item.stock].idx;
+    state.stocks[item.stock].idx = item.targetIdx;
+    logEvent(`Insider Info came true: ${item.stock} hit $${item.snappedPrice} as predicted.`, true);
+  } else if(item.kind==='sched_swing'){
+    const dir = item.dir;
+    moveStock(item.stock, dir*2>0?1:-1, false); moveStock(item.stock, dir*2>0?1:-1, false);
+    logEvent(`Scheduled Swing triggered: ${item.stock} moved 2 steps ${dir>0?'up':'down'}.`, true);
+  }
 }
 
 /* Advances active Earnings Report drips owned by `ownerIndex` by one step —
@@ -963,12 +978,7 @@ function resolveAuto(card){
       // modal (seen only in this private moment) shows the real prediction
       // instead of the generic "a random stock..." placeholder.
       card.text = `Insider Info: ${stock} will be $${snappedPrice} in ${turns} turn${turns===1?'':'s'} — no matter what happens in between.`;
-      state.scheduled.push({ turnsLeft: turns, ownerIndex: state.current, description: `${stock} will hit $${snappedPrice}`, resolve:()=>{
-        if(state.stocks[stock].worthless){ logEvent(`${stock} went worthless before its price target could land.`, true); return; }
-        state.stocks[stock].prevIdx = state.stocks[stock].idx;
-        state.stocks[stock].idx = targetIdx;
-        logEvent(`Insider Info came true: ${stock} hit $${snappedPrice} as predicted.`, true);
-      }});
+      state.scheduled.push({ turnsLeft: turns, ownerIndex: state.current, kind:'sched_price', stock, targetIdx, snappedPrice, description: `${stock} will hit $${snappedPrice}` });
       logEvent(`Insider Info was set up by ${p.name} — details stay hidden until it plays out.`);
       break;
     }
@@ -1070,10 +1080,7 @@ function resolveChoice(card, choice){
   switch(card.type){
     case 'sched_swing': {
       const { stock, dir } = choice;
-      state.scheduled.push({ turnsLeft:2, ownerIndex: state.current, description: `${stock} will swing 2 steps ${dir>0?'up':'down'}`, resolve:()=>{
-        moveStock(stock, dir*2>0?1:-1, false); moveStock(stock, dir*2>0?1:-1, false);
-        logEvent(`Scheduled Swing triggered: ${stock} moved 2 steps ${dir>0?'up':'down'}.`, true);
-      }});
+      state.scheduled.push({ turnsLeft:2, ownerIndex: state.current, kind:'sched_swing', stock, dir, description: `${stock} will swing 2 steps ${dir>0?'up':'down'}` });
       logEvent(`Insider Info was set up by ${p.name} — details stay hidden until it plays out.`);
       break;
     }
