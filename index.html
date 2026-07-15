@@ -1917,7 +1917,8 @@ function renderCreateGameScreen(){
         </div>
         <button class="btn full" id="createBtn">Create Game</button>
         <div class="hint">No game is running yet in this room. Pick a player count and create one — everyone else who opens this room will be able to join and claim a seat.</div>
-        <button class="btn secondary full" id="changeRoomBtn" style="margin-top:10px;">Use a Different Room</button>
+        <button class="btn secondary full" id="vsBotBtn" style="margin-top:10px;">Play vs Bot (1 Player)</button>
+        <button class="btn secondary full" id="changeRoomBtn" style="margin-top:8px;">Use a Different Room</button>
       </div>
     </div>`;
   let count = window._setupCount || 2;
@@ -1930,6 +1931,7 @@ function renderCreateGameScreen(){
     countRow.appendChild(d);
   });
   document.getElementById('createBtn').onclick = ()=>{ createLobby(count); };
+  document.getElementById('vsBotBtn').onclick = startBotGame;
   document.getElementById('changeRoomBtn').onclick = leaveRoom;
 }
 
