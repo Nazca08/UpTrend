@@ -1491,8 +1491,8 @@ function recordTradeMarker(id, color, side, qty){
   if(obj.tradeMarkers.length > MAX_TRADE_MARKERS) obj.tradeMarkers = obj.tradeMarkers.slice(-MAX_TRADE_MARKERS);
 }
 
-function buyShares(id, qtyRequested){
-  if(!isMyTurn() || !id || state.gameOver) return;
+function buyShares(id, qtyRequested, force){
+  if((!force && !isMyTurn()) || !id || state.gameOver) return;
   if(id!=='SP' && state.stocks[id].worthless) return;
   const p = state.players[state.current];
   const qty = Math.min(qtyRequested||0, capRemaining(), capRemainingForStock(id));
@@ -1515,8 +1515,8 @@ function buyShares(id, qtyRequested){
   checkMarginCalls(); checkGameOver(); recordTradeMarker(id, p.color, 'up', qty); schedulePersist(); render();
 }
 
-function sellShares(id, qtyRequested){
-  if(!isMyTurn() || !id || state.gameOver) return;
+function sellShares(id, qtyRequested, force){
+  if((!force && !isMyTurn()) || !id || state.gameOver) return;
   const p = state.players[state.current];
   const held = id==='SP' ? p.spShares : p.shares[id];
   const qty = Math.min(qtyRequested||0, held);
@@ -1536,8 +1536,8 @@ function sellShares(id, qtyRequested){
   checkMarginCalls(); checkGameOver(); recordTradeMarker(id, p.color, 'down', qty); schedulePersist(); render();
 }
 
-function openShort(id, qtyRequested){
-  if(!isMyTurn() || !id || id==='SP' || state.gameOver) return; // SP8 can't be shorted
+function openShort(id, qtyRequested, force){
+  if((!force && !isMyTurn()) || !id || id==='SP' || state.gameOver) return; // SP8 can't be shorted
   if(state.stocks[id].worthless) return;
   const p = state.players[state.current];
   const qty = Math.min(qtyRequested||0, capRemaining(), capRemainingForStock(id));
@@ -1561,8 +1561,8 @@ function openShort(id, qtyRequested){
   checkMarginCalls(); checkGameOver(); recordTradeMarker(id, p.color, 'down', qty); schedulePersist(); render();
 }
 
-function coverShort(id, qtyRequested){
-  if(!isMyTurn() || !id || state.gameOver) return;
+function coverShort(id, qtyRequested, force){
+  if((!force && !isMyTurn()) || !id || state.gameOver) return;
   const p = state.players[state.current];
   const held = p.shorts[id]||0;
   const qty = Math.min(qtyRequested||0, held);
@@ -1643,6 +1643,195 @@ function beginClosingDraw(){
   persist(); render();
 }
 
+/* ============================= BOT (1-PLAYER MODE) ============================= */
+/* A bot seat is just a regular player with `bot:true`. Whenever it becomes
+   the bot's turn, the human's own browser (the only one connected in a
+   1-player game) drives it — drawing cards, making reasonably sensible
+   choices, trading a bit, and ending its turn — using the same underlying
+   functions a human's clicks would call, just invoked directly instead of
+   through the UI. Runs as a short chain of setTimeout steps so it visibly
+   plays out as a turn rather than jumping to the result instantly. */
+const BOT_STEP_DELAY = 450;
+let botTurnRunning = false;
+
+/* -1..1 — how far a stock sits from its own track's center, negative means
+   cheap relative to its own range, positive means rich. Comparable across
+   stocks even though they now have very different dollar centers. */
+function botRelativeIdx(id){
+  const s = state.stocks[id];
+  const center = (s.track.length-1)/2;
+  return center>0 ? (s.idx-center)/center : 0;
+}
+function botCheapestStock(){
+  let best=null, bestScore=Infinity;
+  STOCK_IDS.forEach(id=>{
+    if(state.stocks[id].worthless) return;
+    const score = botRelativeIdx(id);
+    if(score<bestScore){ bestScore=score; best=id; }
+  });
+  return best;
+}
+function botLargestHolding(bot){
+  let best=null, bestQty=0;
+  STOCK_IDS.forEach(id=>{
+    if((bot.shares[id]||0)>bestQty){ bestQty=bot.shares[id]; best=id; }
+  });
+  return best;
+}
+
+/* Sells down the bot's biggest long holding, repeatedly, until its cash is
+   back to $0+ — the same forced-liquidation a human faces after a margin
+   call, just handled automatically. */
+function botFixNegativeCash(){
+  const bot = state.players[state.current];
+  let guard = 0;
+  while(bot.cash<0 && guard<20){
+    guard++;
+    const held = botLargestHolding(bot);
+    if(!held) break; // nothing left to sell — stuck (shouldn't normally happen)
+    sellShares(held, bot.shares[held], true);
+  }
+}
+
+/* Makes a sensible pick for whatever choice card is up, then resolves it —
+   mirrors what a human would do via renderChoiceUI, just decided for them. */
+function botResolveChoice(){
+  const card = state.pendingCard;
+  const bot = state.players[state.current];
+  let choice = null;
+  switch(card.type){
+    case 'sched_swing':
+      choice = { stock: botCheapestStock() || STOCK_IDS[0], dir: 1 };
+      break;
+    case 'split': {
+      const held = botLargestHolding(bot);
+      if(!held){ finishCardResolution(); return; } // owns nothing — same as the human "no effect" path
+      choice = { stock: held };
+      break;
+    }
+    case 'choose_stock_move': {
+      const held = botLargestHolding(bot);
+      choice = { stock: held || botCheapestStock() || STOCK_IDS[0], dir: 1 };
+      break;
+    }
+    case 'choose_sector_move': {
+      const held = botLargestHolding(bot);
+      const sectorKeys = Object.keys(SECTORS);
+      const sector = held ? STOCKS[held].sector : sectorKeys[Math.floor(Math.random()*sectorKeys.length)];
+      choice = { sector, dir: 1 };
+      break;
+    }
+    case 'whale': {
+      const cheap = botCheapestStock();
+      const qty = 2;
+      if(cheap && price(cheap)*qty <= freeCash(bot)){ choice = { stock:cheap, side:'buy', qty }; }
+      else { choice = { side:'hold' }; }
+      break;
+    }
+    case 'freeze': {
+      const held = botLargestHolding(bot);
+      choice = { stock: held || STOCK_IDS[0] };
+      break;
+    }
+    default:
+      finishCardResolution();
+      return;
+  }
+  const ok = resolveChoice(card, choice);
+  finishCardResolution(); // resolveChoice's picks above are always valid, so this always fires next
+  void ok;
+}
+
+/* One trading decision per call, checked in priority order: cover a short
+   that's paid off, sell a long holding that's gotten rich, open a new short
+   on something overextended, or buy into something that looks cheap —
+   keeping a cash buffer in reserve throughout. Returns false once nothing
+   more looks worth doing, which is the bot's signal to end its turn. */
+function botTakeOneTradeAction(){
+  const bot = state.players[state.current];
+
+  // 1. Cover a short that's swung back down — lock in the profit.
+  const coverable = STOCK_IDS.find(id=> (bot.shorts[id]||0)>0 && botRelativeIdx(id) < -0.3 );
+  if(coverable){ coverShort(coverable, Math.min(2, bot.shorts[coverable]), true); return true; }
+
+  // 2. Sell a long holding that's gotten rich.
+  const richHeld = STOCK_IDS.find(id=> bot.shares[id]>0 && botRelativeIdx(id) > 0.5 );
+  if(richHeld){ sellShares(richHeld, Math.min(2, bot.shares[richHeld]), true); return true; }
+
+  // 3. Open a short on something clearly overextended, as long as it isn't
+  // also a stock the bot is long in (no point betting both ways at once).
+  if(capRemaining()>0){
+    const rich = STOCK_IDS.find(id=> !state.stocks[id].worthless && bot.shares[id]<=0 && botRelativeIdx(id) > 0.6 );
+    if(rich && capRemainingForStock(rich)>0){
+      const qty = Math.min(2, capRemaining(), capRemainingForStock(rich));
+      const buffer = freeCash(bot)*0.25;
+      if(qty>0 && price(rich)*qty <= (freeCash(bot)-buffer)){
+        openShort(rich, qty, true);
+        return true;
+      }
+    }
+  }
+
+  // 4. Buy a stock that looks cheap.
+  if(capRemaining()>0){
+    const cheap = botCheapestStock();
+    if(cheap && capRemainingForStock(cheap)>0 && botRelativeIdx(cheap) < 0.15){
+      const buffer = freeCash(bot)*0.25; // keep ~25% of free cash in reserve
+      const qty = Math.min(2, capRemaining(), capRemainingForStock(cheap));
+      if(qty>0){
+        const priorFilled = state.turnFills.up[cheap]||0;
+        const walk = walkOrderDetailed(cheap, qty, +1, priorFilled);
+        if((walk.total+walk.fee) <= (freeCash(bot)-buffer)){
+          buyShares(cheap, qty, true);
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+/* Kicks off the bot's turn if it isn't already running. Safe to call from
+   render() on every re-render — the running flag makes it a no-op once a
+   chain of steps is already in flight. */
+function maybeStartBotTurn(){
+  if(botTurnRunning || !state || state.gameOver || state.phase==='lobby') return;
+  const cur = state.players[state.current];
+  if(!cur || !cur.bot) return;
+  botTurnRunning = true;
+  setTimeout(runBotStep, BOT_STEP_DELAY);
+}
+
+function runBotStep(){
+  if(!state || state.gameOver){ botTurnRunning = false; return; }
+  const cur = state.players[state.current];
+  if(!cur || !cur.bot){ botTurnRunning = false; return; } // turn already moved on to a human
+  if(cur.eliminated){ endTurn(); botTurnRunning = false; return; }
+  if(cur.cash<0){ botFixNegativeCash(); setTimeout(runBotStep, BOT_STEP_DELAY); return; }
+  if(isTurnProtectedFromTimeout()){ botResolveChoice(); setTimeout(runBotStep, BOT_STEP_DELAY); return; }
+  if(state.phase==='draw'){ drawCard(true); setTimeout(runBotStep, BOT_STEP_DELAY); return; }
+  if(state.phase==='resolve'){ finishCardResolution(); setTimeout(runBotStep, BOT_STEP_DELAY); return; }
+  if(state.phase==='trade'){
+    if(botTakeOneTradeAction()){ setTimeout(runBotStep, 300); return; }
+    proceedPastTrade();
+    setTimeout(runBotStep, BOT_STEP_DELAY);
+    return;
+  }
+  botTurnRunning = false;
+}
+
+/* Sets up a fresh 1-player-vs-bot game directly, skipping the lobby
+   entirely (there's nothing to wait on — only one human seat exists). */
+function startBotGame(){
+  state = freshState(['You', 'Bot']);
+  state.players[1].bot = true;
+  state.createdAt = Date.now();
+  myPlayerIndex = 0;
+  saveLocalRoom(roomCode, 0, 'You');
+  lastKnownSnapshot = {};
+  persistFull(); render();
+}
+
 function renderEndTurnConfirm(){
   if(!state.confirmEndTurn) return '';
   const left = capRemaining();
@@ -1694,6 +1883,7 @@ function renderLandingScreen(){
         <h2><span style="color:#FFFFFF;">Up</span><span style="color:var(--up);">Trend</span></h2>
         <div class="sub">A turn-based stock market game, playable live with friends on separate screens.</div>
         <button class="btn full" id="createRoomBtn">Create Game</button>
+        <button class="btn secondary full" id="vsBotBtn" style="margin-top:8px;">Play vs Bot (1 Player)</button>
         <div class="hint" style="margin:14px 0 8px 0;">— or join a game already running —</div>
         <div class="trade-row">
           <input type="text" id="joinCodeInput" inputmode="numeric" maxlength="6" placeholder="6-digit room code" style="flex:1;padding:9px 10px;border-radius:8px;background:var(--panel-2);border:1px solid var(--line);color:var(--text);font-family:'IBM Plex Mono';">
@@ -1703,6 +1893,7 @@ function renderLandingScreen(){
       </div>
     </div>`;
   document.getElementById('createRoomBtn').onclick = ()=>{ subscribeToRoom(genRoomCode()); render(); };
+  document.getElementById('vsBotBtn').onclick = ()=>{ subscribeToRoom(genRoomCode()); startBotGame(); };
   document.getElementById('joinRoomBtn').onclick = ()=>{
     const code = document.getElementById('joinCodeInput').value.trim().replace(/\D/g,'');
     if(code.length!==6){ document.getElementById('joinError').textContent = 'Enter the 6-digit code your host shared with you.'; return; }
@@ -1815,12 +2006,13 @@ function renderWhoAreYouScreen(){
       <div class="modal">
         <h2>Which player are you?</h2>
         <div class="sub">A game is already in progress. Pick your seat, or just watch.</div>
-        ${state.players.map((pl,i)=>`<button class="btn secondary full" style="margin-bottom:8px;color:${pl.color};" id="whoAmI${i}">${pl.name}</button>`).join('')}
+        ${state.players.map((pl,i)=>pl.bot?'':`<button class="btn secondary full" style="margin-bottom:8px;color:${pl.color};" id="whoAmI${i}">${pl.name}</button>`).join('')}
         <button class="btn full" id="spectateBtn">Just Spectate</button>
         <button class="btn secondary full" id="resetFromReconnectBtn" style="margin-top:8px;">End This Game — Start Fresh</button>
       </div>
     </div>`;
   state.players.forEach((pl,i)=>{
+    if(pl.bot) return;
     document.getElementById('whoAmI'+i).onclick = ()=>{ myPlayerIndex = i; saveLocalRoom(roomCode, i, pl.name); render(); };
   });
   document.getElementById('spectateBtn').onclick = ()=>{ myPlayerIndex = -1; render(); };
@@ -2047,7 +2239,7 @@ function renderSidebar(){
   state.players.forEach((pl,i)=>{
     const locked = lockedCash(pl);
     html += `<div class="player-card ${i===state.current?'active':''}" style="border-left-color:${pl.color};${pl.eliminated?'opacity:0.5;':''}">
-      <div class="p-top"><span class="p-name" style="color:${pl.color};">${pl.name}${i===state.current?' • turn':''}${pl.eliminated?' <span class="worthless-badge">Eliminated</span>':''}</span><span class="p-cash">$${pl.cash}${locked>0?` <span style="color:var(--muted);font-weight:400;">($${locked} locked)</span>`:''}</span></div>
+      <div class="p-top"><span class="p-name" style="color:${pl.color};">${pl.name}${pl.bot?' 🤖':''}${i===state.current?' • turn':''}${pl.eliminated?' <span class="worthless-badge">Eliminated</span>':''}</span><span class="p-cash">$${pl.cash}${locked>0?` <span style="color:var(--muted);font-weight:400;">($${locked} locked)</span>`:''}</span></div>
       <div class="p-net">Net worth: $${netWorth(pl)}</div>
     </div>`;
   });
@@ -2426,6 +2618,7 @@ function render(){
     else finishCardResolution();
   };
   if(state.pendingCard && needsChoice(state.pendingCard)) wireChoiceHandlers(state.pendingCard);
+  maybeStartBotTurn();
 }
 
 /* Entry point: a shareable ?room=CODE link wins over anything saved
