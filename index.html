@@ -376,7 +376,7 @@ function shuffle(arr){
 
 /* ============================= MULTIPLAYER SYNC (Firebase) ============================= */
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-import { getDatabase, ref, set, onValue } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+import { getDatabase, ref, set, onValue, get } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyCIvy56Q7bbmowhiXGbiIpkp-jVakaOZI0",
@@ -410,11 +410,27 @@ function extractSynced(s){
 }
 
 let applyingRemote = false; // guards against re-persisting a change we just received
+let syncFailed = false; // true if a write ultimately failed even after retries — shown as a banner
+
 async function persist(){
   if(!state || applyingRemote) return;
   state.version = (state.version||0) + 1;
-  try{ await set(gameRef, extractSynced(state)); }
-  catch(e){ console.error('UpTrend: failed to sync to Firebase', e); }
+  const payload = extractSynced(state);
+  const MAX_ATTEMPTS = 4;
+  for(let attempt=1; attempt<=MAX_ATTEMPTS; attempt++){
+    try{
+      await set(gameRef, payload);
+      if(syncFailed){ syncFailed = false; render(); } // recovered — clear the warning
+      return;
+    }catch(e){
+      console.error(`UpTrend: sync attempt ${attempt}/${MAX_ATTEMPTS} failed`, e);
+      if(attempt<MAX_ATTEMPTS) await new Promise(r=>setTimeout(r, 400*attempt)); // brief backoff before retrying
+    }
+  }
+  // Every retry failed — make sure the player actually sees this instead of
+  // silently drifting out of sync with everyone else.
+  syncFailed = true;
+  render();
 }
 
 /* Firebase Realtime Database silently omits ANY empty array or object when
@@ -467,6 +483,35 @@ onValue(gameRef, (snap)=>{
   mergeRemote(remote);
   if(state.version !== prevVersion) render();
 });
+
+/* Safety net: does a one-time direct fetch of the current game state,
+   bypassing the live listener entirely. If a screen ever seems stuck
+   (waiting on a turn that's already moved on), this forces it to catch up
+   without needing a full page reload. */
+async function forceSyncNow(){
+  try{
+    const snap = await get(gameRef);
+    const remote = snap.val();
+    if(!remote){ state = null; myPlayerIndex = null; }
+    else mergeRemote(remote);
+    syncFailed = false;
+    render();
+  }catch(e){ console.error('UpTrend: manual sync failed', e); }
+}
+
+/* Shown whenever a write genuinely failed even after retries — makes sure
+   the player notices immediately instead of quietly drifting out of sync
+   with everyone else until something looks wrong several turns later. */
+function renderSyncFailedBanner(){
+  if(!syncFailed) return '';
+  return `<div class="resume-card-banner" style="border-color:var(--down);bottom:auto;top:22px;">
+    <div>
+      <div class="resume-card-label" style="color:var(--down);">Sync failed</div>
+      <div class="resume-card-sub">Your last action may not have saved. Click Sync Now, or try it again.</div>
+    </div>
+    <button class="btn" id="retrySyncBtn">Sync Now</button>
+  </div>`;
+}
 
 async function wipeGame(){
   state = null; myPlayerIndex = null;
@@ -687,8 +732,10 @@ function checkMarginCalls(){
 }
 
 
+const MAX_LOG_ENTRIES = 150;
 function logEvent(text, isEvent){
   state.log.push({ text, event: !!isEvent });
+  if(state.log.length > MAX_LOG_ENTRIES) state.log = state.log.slice(-MAX_LOG_ENTRIES);
 }
 
 function moveStock(id, dir, respectFreeze){
@@ -787,14 +834,21 @@ function checkEliminations(){
 /* Appends the current price to each stock's (and SP8's) history whenever it
    has actually changed since the last recorded point — used to draw the
    little line chart next to each price track. */
+const MAX_HISTORY_POINTS = 150;
 function recordHistory(){
   STOCK_IDS.forEach(id=>{
     const s = state.stocks[id];
     const cur = price(id);
-    if(s.history[s.history.length-1]!==cur) s.history.push(cur);
+    if(s.history[s.history.length-1]!==cur){
+      s.history.push(cur);
+      if(s.history.length > MAX_HISTORY_POINTS) s.history = s.history.slice(-MAX_HISTORY_POINTS);
+    }
   });
   const spCur = spPrice();
-  if(state.sp.history[state.sp.history.length-1]!==spCur) state.sp.history.push(spCur);
+  if(state.sp.history[state.sp.history.length-1]!==spCur){
+    state.sp.history.push(spCur);
+    if(state.sp.history.length > MAX_HISTORY_POINTS) state.sp.history = state.sp.history.slice(-MAX_HISTORY_POINTS);
+  }
 }
 
 function checkGameOver(){
@@ -1169,9 +1223,11 @@ function undoLastTrade(){
 /* Records a volume marker on the stock's price-history timeline — buys and
    covers (buy-pressure) stack as bars from the bottom; sells and shorts
    (sell-pressure) stack as bars from the top. Colored per player. */
+const MAX_TRADE_MARKERS = 150;
 function recordTradeMarker(id, color, side, qty){
   const obj = id==='SP' ? state.sp : state.stocks[id];
   obj.tradeMarkers.push({ historyIdx: obj.history.length-1, color, side, qty });
+  if(obj.tradeMarkers.length > MAX_TRADE_MARKERS) obj.tradeMarkers = obj.tradeMarkers.slice(-MAX_TRADE_MARKERS);
 }
 
 function buyShares(id, qtyRequested){
@@ -2010,6 +2066,7 @@ function render(){
         <div class="item"><div class="label">S&amp;P 8</div><div class="value mono">$${spPrice()}</div></div>
         <div class="item"><div class="label">Turn</div><div class="value" style="color:${p.color};">${p.name}</div></div>
         <div class="item"><div class="label">Deck</div><div class="value mono">${state.deck.length} left</div></div>
+        <button class="btn secondary" id="syncNowBtn" style="padding:8px 12px;font-size:12px;">Sync Now</button>
         <button class="btn secondary" id="restartBtn" style="padding:8px 12px;font-size:12px;">Restart</button>
       </div>
     </div>
@@ -2024,6 +2081,7 @@ function render(){
     ${renderSpectatorCardBanner()}
     ${renderRestartConfirm()}
     ${renderExpandedChartModal()}
+    ${renderSyncFailedBanner()}
   `;
 
   // wire buttons
@@ -2041,6 +2099,8 @@ function render(){
   if(byId('closeLogBtn')) byId('closeLogBtn').onclick = ()=>{ state.showLog = false; render(); };
   if(byId('confirmEndTurnBtn')) byId('confirmEndTurnBtn').onclick = proceedPastTrade;
   if(byId('cancelEndTurnBtn')) byId('cancelEndTurnBtn').onclick = ()=>{ state.confirmEndTurn=false; render(); };
+  if(byId('syncNowBtn')) byId('syncNowBtn').onclick = forceSyncNow;
+  if(byId('retrySyncBtn')) byId('retrySyncBtn').onclick = forceSyncNow;
   if(byId('restartBtn')) byId('restartBtn').onclick = ()=>{ state.confirmRestart=true; render(); };
   if(byId('confirmRestartBtn')) byId('confirmRestartBtn').onclick = wipeGame;
   if(byId('cancelRestartBtn')) byId('cancelRestartBtn').onclick = ()=>{ state.confirmRestart=false; render(); };
