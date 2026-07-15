@@ -1358,7 +1358,10 @@ function renderCreateGameScreen(){
 }
 
 function createLobby(count){
-  state = { phase:'lobby', lobbySeats: Array(count).fill(null), version:0, ...localDefaults() };
+  // Empty seats use '' (not null!) — Firebase Realtime Database silently
+  // strips null entries out of arrays/objects on write, which was quietly
+  // collapsing a 2-seat lobby down to 1 the moment it hit the database.
+  state = { phase:'lobby', lobbySeats: Array(count).fill(''), version:0, ...localDefaults() };
   persist(); render();
 }
 
