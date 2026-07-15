@@ -139,6 +139,10 @@
     35%{ transform:scale(1.22); text-shadow:0 0 12px currentColor; }
     100%{ transform:scale(1); text-shadow:none; }
   }
+  @keyframes pulseDot{
+    0%,100%{ opacity:1; }
+    50%{ opacity:0.25; }
+  }
 
   .trade-row{display:flex;gap:8px;align-items:center;margin-bottom:8px;}
   select, input[type=number]{
@@ -233,12 +237,13 @@ const STOCK_DOTS_PER_SIDE = 13;  // 13 left of center + center + 13 right, for e
 const SP_DOTS_PER_SIDE = 15;     // SP8 gets its own, wider track: 15 left + center + 15 right
 const STOCK_CENTER_IDX = STOCK_DOTS_PER_SIDE;
 const SP_CENTER_IDX = SP_DOTS_PER_SIDE;
-const CENTER_PRICE = 100;
+const CENTER_PRICE = 1000; // used for the S&P 8 index track only — individual stocks use STOCK_PRICE_CONFIG below
 const PLAYER_COLORS = ['#F5A623', '#4C8DFF', '#3ECF8E', '#FF6FD8'];
-const START_CASH = 3000;
+const START_CASH = 30000;
 
-/* Builds a price track centered on `center` (defaults to the shared $100
-   center; NOVA overrides this to $250), running from `bottom` to `top` over
+/* Builds a price track centered on `center` (each stock passes its own
+   center/top/bottom from STOCK_PRICE_CONFIG; the S&P 8 uses the shared
+   CENTER_PRICE default), running from `bottom` to `top` over
    `dotsPerSide` dots on each side. Uses a mild power curve (1.6) so gaps
    grow smoothly and moderately the further out you go — no flat repeated
    segments near the edges, and no runaway exponential blowup. A sector with
@@ -323,9 +328,9 @@ function buildDeck(){
   add(4, { type:'bull', text:'Bull Market: all 8 stocks and the S&P 8 rise 1 step.' });
 
   // Cash Bonus — 6
-  add(3, { type:'cash', amount:500,  text:'Cash Bonus: +$500.' });
-  add(2, { type:'cash', amount:1000, text:'Cash Bonus: +$1,000.' });
-  add(1, { type:'cash', amount:2500, text:'Cash Bonus: +$2,500.' });
+  add(3, { type:'cash', amount:5000,  text:'Cash Bonus: +$5,000.' });
+  add(2, { type:'cash', amount:10000, text:'Cash Bonus: +$10,000.' });
+  add(1, { type:'cash', amount:25000, text:'Cash Bonus: +$25,000.' });
 
   // Stock Gift — 1 per stock = 8
   STOCK_IDS.forEach(id=>{
@@ -348,12 +353,12 @@ function buildDeck(){
   add(3, { type:'parachute', text:'Golden Parachute: if your net worth is under $3,000, receive a $2,000 bailout.' });
 
   // Steady Hand — 4
-  add(4, { type:'steady', text:'Steady Hand: gain $25 for every distinct stock you currently hold shares in.' });
+  add(4, { type:'steady', text:'Steady Hand: gain $250 for every distinct stock you currently hold shares in.' });
 
   // Dividend Day — 4 (one per sector)
   Object.keys(SECTORS).forEach(sec=>{
     const label = SECTORS[sec].label || sec;
-    add(1, { type:'dividend', sector:sec, text:`Dividend Day — ${label}: you get $10/share owned in ${label}'s two stocks. Everyone else gets $5/share owned in those stocks.` });
+    add(1, { type:'dividend', sector:sec, text:`Dividend Day — ${label}: you get $100/share owned in ${label}'s two stocks. Everyone else gets $50/share owned in those stocks.` });
   });
 
   // Freeze — 3
@@ -376,7 +381,7 @@ function shuffle(arr){
 
 /* ============================= MULTIPLAYER SYNC (Firebase) ============================= */
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-import { getDatabase, ref, set, onValue, get } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+import { getDatabase, ref, set, update, onValue, get, runTransaction } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyCIvy56Q7bbmowhiXGbiIpkp-jVakaOZI0",
@@ -389,8 +394,25 @@ const firebaseConfig = {
 };
 const fbApp = initializeApp(firebaseConfig);
 const db = getDatabase(fbApp);
-const GAME_PATH = 'uptrend_game';
-const gameRef = ref(db, GAME_PATH);
+const rootRef = ref(db); // needed for multi-path update() calls
+
+/* --- room codes: many concurrent games can now run side by side, each
+   under its own `games/{roomCode}` path instead of one shared fixed path --- */
+let roomCode = null; // 6-digit code for the room this browser tab is in — null until created/joined
+function gamePath(){ return `games/${roomCode}`; }
+function gameRef(){ return ref(db, gamePath()); }
+function lockRef(){ return ref(db, `${gamePath()}/turnTimeoutLock`); }
+function genRoomCode(){ return String(Math.floor(100000 + Math.random()*900000)); }
+const ROOM_EXPIRY_MS = 24*60*60*1000; // 24h — cleaned up opportunistically, not on a hard timer
+
+const LS_KEY = 'uptrend_last_room';
+function saveLocalRoom(code, seatIdx, name){
+  try{ localStorage.setItem(LS_KEY, JSON.stringify({ code, seatIdx, name })); }catch(e){}
+}
+function loadLocalRoom(){
+  try{ const raw = localStorage.getItem(LS_KEY); return raw ? JSON.parse(raw) : null; }catch(e){ return null; }
+}
+function clearLocalRoom(){ try{ localStorage.removeItem(LS_KEY); }catch(e){} }
 
 // Fields that live only in THIS browser tab and are never written to Firebase
 // or overwritten by a remote update — pure UI state, not real game state.
@@ -412,25 +434,101 @@ function extractSynced(s){
 let applyingRemote = false; // guards against re-persisting a change we just received
 let syncFailed = false; // true if a write ultimately failed even after retries — shown as a banner
 
+/* --- 1 & 2: live connection status + auto-resync the instant we reconnect --- */
+let isConnected = true;
+let everConnected = false;
+onValue(ref(db, '.info/connected'), (snap)=>{
+  const nowConnected = snap.val()===true;
+  const wasConnected = isConnected;
+  isConnected = nowConnected;
+  if(nowConnected && !wasConnected && everConnected){
+    forceSyncNow(); // just came back online — immediately pull the latest instead of waiting
+  }
+  if(nowConnected) everConnected = true;
+  render();
+});
+
+/* --- 3: quiet background heartbeat — cheap insurance in case the live
+   listener ever silently stalls without visibly disconnecting --- */
+setInterval(()=>{
+  if(roomCode && state && state.phase && state.phase!=='lobby') forceSyncNow();
+}, 18000);
+
+/* --- 4: only send what actually changed, instead of the whole ~30KB game
+   state on every single click. We keep a snapshot of what we last
+   successfully wrote (or received) and diff against it — Firebase's
+   update() then only touches the specific fields that differ, while every
+   OTHER client's listener still receives the full merged state as normal,
+   so nothing about how updates are received needs to change. */
+let lastKnownSnapshot = {};
+function snapshotFields(payload){
+  const out = {};
+  Object.keys(payload).forEach(k=>{ out[k] = JSON.stringify(payload[k]); });
+  return out;
+}
+
+async function writeWithRetry(doWrite){
+  const MAX_ATTEMPTS = 4;
+  for(let attempt=1; attempt<=MAX_ATTEMPTS; attempt++){
+    try{
+      await doWrite();
+      if(syncFailed){ syncFailed = false; render(); } // recovered — clear the warning
+      return true;
+    }catch(e){
+      console.error(`UpTrend: sync attempt ${attempt}/${MAX_ATTEMPTS} failed`, e);
+      if(attempt<MAX_ATTEMPTS) await new Promise(r=>setTimeout(r, 400*attempt));
+    }
+  }
+  syncFailed = true;
+  render();
+  return false;
+}
+
+/* Normal in-game persist: diff against the last known snapshot, write only
+   the changed top-level fields via update(). */
+/* Last line of defense: Firebase's update()/set() both reject `undefined`
+   outright (unlike `null`, which just means "delete this"). repairCollections
+   already restores the fields we know can go missing after a round trip,
+   but this catches ANY top-level field that ends up undefined for any
+   reason, so this class of bug can't quietly reappear on some future field
+   we forget to add there. */
+function nullifyUndefined(value){ return value===undefined ? null : value; }
+
 async function persist(){
   if(!state || applyingRemote) return;
   state.version = (state.version||0) + 1;
   const payload = extractSynced(state);
-  const MAX_ATTEMPTS = 4;
-  for(let attempt=1; attempt<=MAX_ATTEMPTS; attempt++){
-    try{
-      await set(gameRef, payload);
-      if(syncFailed){ syncFailed = false; render(); } // recovered — clear the warning
-      return;
-    }catch(e){
-      console.error(`UpTrend: sync attempt ${attempt}/${MAX_ATTEMPTS} failed`, e);
-      if(attempt<MAX_ATTEMPTS) await new Promise(r=>setTimeout(r, 400*attempt)); // brief backoff before retrying
-    }
-  }
-  // Every retry failed — make sure the player actually sees this instead of
-  // silently drifting out of sync with everyone else.
-  syncFailed = true;
-  render();
+  const newSnapshot = snapshotFields(payload);
+  const updates = {};
+  let changedCount = 0;
+  const gp = gamePath();
+  Object.keys(newSnapshot).forEach(k=>{
+    if(newSnapshot[k] !== lastKnownSnapshot[k]){ updates[`${gp}/${k}`] = nullifyUndefined(payload[k]); changedCount++; }
+  });
+  if(changedCount===0) return; // nothing actually changed — don't write at all
+  const ok = await writeWithRetry(()=>update(rootRef, updates));
+  if(ok) lastKnownSnapshot = newSnapshot;
+}
+
+/* Full replace — only for genuine structural transitions (creating a lobby,
+   turning a lobby into a real game) where the whole field set changes and a
+   partial update() could leave stale fields lingering behind. */
+async function persistFull(){
+  if(!state || applyingRemote) return;
+  state.version = (state.version||0) + 1;
+  const payload = {};
+  Object.entries(extractSynced(state)).forEach(([k,v])=>{ payload[k] = nullifyUndefined(v); });
+  const ok = await writeWithRetry(()=>set(gameRef(), payload));
+  if(ok) lastKnownSnapshot = snapshotFields(payload);
+}
+
+/* --- 5: rapid clicks (spamming Buy) get batched into one eventual write
+   instead of one network round-trip per click. Turn-ending actions never
+   go through this — those still persist immediately. --- */
+let tradeDebounceTimer = null;
+function schedulePersist(){
+  if(tradeDebounceTimer) clearTimeout(tradeDebounceTimer);
+  tradeDebounceTimer = setTimeout(()=>{ tradeDebounceTimer=null; persist(); }, 180);
 }
 
 /* Firebase Realtime Database silently omits ANY empty array or object when
@@ -439,24 +537,31 @@ async function persist(){
    turnFills.up: {}. When that data comes back down, those fields are just
    missing, not empty — so we have to restore them to their proper empty
    form after every merge, or code that expects them to exist (like
-   .find()/.push() calls) crashes on undefined. */
+   .find()/.push() calls) crashes on undefined. The same thing happens to
+   ordinary nullable fields (pendingCard, choiceError, etc.) — they come
+   back as `undefined` instead of `null`, which crashes the diff-based
+   persist() since Firebase's update() rejects undefined values outright. */
 function repairCollections(s){
   if(!s || s.phase==='lobby') return;
-  if(!s.discard) s.discard = [];
-  if(!s.scheduled) s.scheduled = [];
-  if(!s.recurringEffects) s.recurringEffects = [];
-  if(!s.log) s.log = [];
-  if(!s.turnUsage) s.turnUsage = { total:0, perStock:{} };
-  if(!s.turnUsage.perStock) s.turnUsage.perStock = {};
-  if(!s.turnFills) s.turnFills = { up:{}, down:{} };
-  if(!s.turnFills.up) s.turnFills.up = {};
-  if(!s.turnFills.down) s.turnFills.down = {};
+  if(s.discard===undefined) s.discard = [];
+  if(s.scheduled===undefined) s.scheduled = [];
+  if(s.recurringEffects===undefined) s.recurringEffects = [];
+  if(s.log===undefined) s.log = [];
+  if(s.turnUsage===undefined) s.turnUsage = { total:0, perStock:{} };
+  if(s.turnUsage.perStock===undefined) s.turnUsage.perStock = {};
+  if(s.turnFills===undefined) s.turnFills = { up:{}, down:{} };
+  if(s.turnFills.up===undefined) s.turnFills.up = {};
+  if(s.turnFills.down===undefined) s.turnFills.down = {};
+  if(s.pendingCard===undefined) s.pendingCard = null;
+  if(s.pendingChoice===undefined) s.pendingChoice = null;
+  if(s.choiceError===undefined) s.choiceError = null;
+  if(s.winner===undefined) s.winner = null;
   if(s.stocks){
     Object.keys(s.stocks).forEach(id=>{
-      if(!s.stocks[id].tradeMarkers) s.stocks[id].tradeMarkers = [];
+      if(s.stocks[id].tradeMarkers===undefined) s.stocks[id].tradeMarkers = [];
     });
   }
-  if(s.sp && !s.sp.tradeMarkers) s.sp.tradeMarkers = [];
+  if(s.sp && s.sp.tradeMarkers===undefined) s.sp.tradeMarkers = [];
 }
 
 function mergeRemote(remote){
@@ -465,32 +570,66 @@ function mergeRemote(remote){
   if(state) LOCAL_ONLY_KEYS.forEach(k=>{ locals[k] = state[k]; });
   state = { ...remote, ...locals };
   repairCollections(state);
+  lastKnownSnapshot = snapshotFields(extractSynced(state)); // our diff baseline is now up to date too
   applyingRemote = false;
 }
 
-onValue(gameRef, (snap)=>{
-  const remote = snap.val();
-  if(!remote){
-    // The database is empty — either nothing's been created yet, or someone
-    // (possibly THIS tab, possibly another) just wiped it. Either way, clear
-    // any stale local game data so this screen actually reflects that, rather
-    // than silently continuing to show old data that no longer exists.
-    if(state!==null){ state = null; myPlayerIndex = null; }
-    render();
-    return;
+let unsubscribeGame = null; // detach handle for the current room's live listener
+
+/* Subscribes this tab to `games/{code}` — tearing down any previous room's
+   listener first. Used when creating a room, joining one by code, joining
+   via a shareable ?room= link, or auto-rejoining from localStorage. */
+function subscribeToRoom(code){
+  if(unsubscribeGame){ unsubscribeGame(); unsubscribeGame = null; }
+  roomCode = code;
+  state = null; myPlayerIndex = null; lastKnownSnapshot = {};
+  unsubscribeGame = onValue(gameRef(), (snap)=>{
+    const remote = snap.val();
+    if(!remote){
+      // The room is empty — either nothing's been created yet, or someone
+      // (possibly THIS tab, possibly another) just wiped it. Either way, clear
+      // any stale local game data so this screen actually reflects that, rather
+      // than silently continuing to show old data that no longer exists.
+      if(state!==null){ state = null; myPlayerIndex = null; }
+      render();
+      return;
+    }
+    // Opportunistic 24h expiry cleanup — no server-side timer, just: whoever
+    // next touches a stale room clears it out instead of resurrecting it.
+    if(remote.createdAt && (Date.now()-remote.createdAt) > ROOM_EXPIRY_MS){
+      set(gameRef(), null).catch(e=>console.error('UpTrend: expiry cleanup failed', e));
+      state = null; myPlayerIndex = null; render();
+      return;
+    }
+    const prevVersion = state ? state.version : -1;
+    mergeRemote(remote);
+    if(state.version !== prevVersion) render();
+    tryAutoRejoin();
+  });
+}
+
+/* If this browser has a saved seat (from localStorage) for the room it's
+   currently in, and that seat still matches by name, silently reclaim it —
+   so refreshing the page doesn't force re-picking who you are. */
+function tryAutoRejoin(){
+  if(myPlayerIndex!==null || !state) return;
+  const saved = loadLocalRoom();
+  if(!saved || saved.code!==roomCode) return;
+  if(state.phase==='lobby'){
+    if(state.lobbySeats[saved.seatIdx]===saved.name){ myPlayerIndex = saved.seatIdx; render(); }
+  } else if(state.players && state.players[saved.seatIdx] && state.players[saved.seatIdx].name===saved.name){
+    myPlayerIndex = saved.seatIdx; render();
   }
-  const prevVersion = state ? state.version : -1;
-  mergeRemote(remote);
-  if(state.version !== prevVersion) render();
-});
+}
 
 /* Safety net: does a one-time direct fetch of the current game state,
    bypassing the live listener entirely. If a screen ever seems stuck
    (waiting on a turn that's already moved on), this forces it to catch up
    without needing a full page reload. */
 async function forceSyncNow(){
+  if(!roomCode) return;
   try{
-    const snap = await get(gameRef);
+    const snap = await get(gameRef());
     const remote = snap.val();
     if(!remote){ state = null; myPlayerIndex = null; }
     else mergeRemote(remote);
@@ -515,7 +654,18 @@ function renderSyncFailedBanner(){
 
 async function wipeGame(){
   state = null; myPlayerIndex = null;
-  try{ await set(gameRef, null); }catch(e){ console.error('UpTrend: failed to clear game', e); }
+  lastKnownSnapshot = {};
+  if(!roomCode){ render(); return; }
+  try{ await set(gameRef(), null); }catch(e){ console.error('UpTrend: failed to clear game', e); }
+  render();
+}
+
+/* Leaves the current room entirely and returns to the true landing screen
+   (Create Game / Join Game), forgetting the saved seat for this room. */
+function leaveRoom(){
+  if(unsubscribeGame){ unsubscribeGame(); unsubscribeGame = null; }
+  roomCode = null; state = null; myPlayerIndex = null; lastKnownSnapshot = {};
+  clearLocalRoom();
   render();
 }
 
@@ -524,22 +674,32 @@ let myPlayerIndex = null; // which seat THIS browser tab is playing — resets o
 /* ============================= STATE ============================= */
 let state = null;
 
-// NOVA is the one stock that starts off-center — same $400 range width as
-// the rest of Tech, just shifted up so it opens at $250 instead of $100.
-const STOCK_PRICE_OVERRIDES = { NOVA: { center:250, top:550, bottom:0 } };
+// Individual starting prices per the agreed price ladder (each stock opens
+// at its own `center`; `top`/`bottom` preserve the same volatility ratio
+// each stock's sector had before this ladder — e.g. Health stocks always
+// ranged from 2.2x center down to a floor of 0.15x center, so VITA/RXCO
+// keep that same shape scaled to their new center price. Tech/Energy still
+// bottom out at exactly $0 (so they can go worthless); Health/Consumer keep
+// a positive floor and never can.
+const STOCK_PRICE_CONFIG = {
+  NOVA: { center:5000, top:11000, bottom:0 },
+  QBIT: { center:1200, top:4800,  bottom:0 },
+  PWR:  { center:2800, top:8400,  bottom:0 },
+  OILX: { center:1800, top:5400,  bottom:0 },
+  VITA: { center:2200, top:4840,  bottom:330 },
+  RXCO: { center:1400, top:3080,  bottom:210 },
+  LUXE: { center:3200, top:5120,  bottom:1120 },
+  SPRE: { center:800,  top:1280,  bottom:280 },
+};
 
 function freshState(players){
   const stocks = {};
   STOCK_IDS.forEach(id=>{
-    const sec = SECTORS[STOCKS[id].sector];
-    const ov = STOCK_PRICE_OVERRIDES[id];
-    const center = ov ? ov.center : CENTER_PRICE;
-    const top = ov ? ov.top : sec.top;
-    const bottom = ov ? ov.bottom : sec.bottom;
-    const track = generateTrack(top, bottom, center, STOCK_DOTS_PER_SIDE);
+    const cfg = STOCK_PRICE_CONFIG[id];
+    const track = generateTrack(cfg.top, cfg.bottom, cfg.center, STOCK_DOTS_PER_SIDE);
     stocks[id] = { idx: STOCK_CENTER_IDX, track, frozen:false, worthless:false, prevIdx: STOCK_CENTER_IDX, history:[track[STOCK_CENTER_IDX]], tradeMarkers:[] };
   });
-  const spTrack = generateTrack(200, 50, CENTER_PRICE, SP_DOTS_PER_SIDE);
+  const spTrack = generateTrack(2000, 500, CENTER_PRICE, SP_DOTS_PER_SIDE);
   const sp = { idx: 0, track: spTrack, prevIdx: 0, history:[spTrack[0]], tradeMarkers:[] };
   return {
     stocks, sp,
@@ -553,6 +713,7 @@ function freshState(players){
       spShares:0, spCostBasis:0, eliminated:false
     })),
     current: 0,
+    turnStartedAt: Date.now(), // for the 45-second turn timer
     deck: shuffle(buildDeck()),
     discard: [],
     scheduled: [], // {turnsLeft, resolve}
@@ -580,6 +741,106 @@ function freshState(players){
 }
 
 function isMyTurn(){ return state && myPlayerIndex!==null && myPlayerIndex===state.current; }
+
+const TURN_TIME_LIMIT = 120; // seconds — 2 minutes; enforced by the timeout-enforcement logic below once it expires
+function turnTimerSecondsLeft(){
+  if(!state || !state.turnStartedAt || state.gameOver) return TURN_TIME_LIMIT;
+  const elapsed = Math.floor((Date.now()-state.turnStartedAt)/1000);
+  return Math.max(0, TURN_TIME_LIMIT-elapsed);
+}
+function formatTurnTimer(secs){
+  const m = Math.floor(secs/60), s = secs%60;
+  return `${m}:${s<10?'0':''}${s}`;
+}
+/* Updates just the timer's text/color every second, without a full
+   re-render — avoids disrupting anything else on screen (like someone mid-
+   type in a name field) purely to tick a clock. */
+setInterval(()=>{
+  const el = document.getElementById('turnTimerValue');
+  if(!el || !state || state.gameOver || state.phase==='lobby') return;
+  const secs = turnTimerSecondsLeft();
+  el.textContent = formatTurnTimer(secs);
+  el.style.color = secs<=0 ? 'var(--down)' : (secs<=10 ? 'var(--amber)' : '');
+}, 1000);
+
+/* ============================= TURN TIMEOUT ENFORCEMENT ============================= */
+/* A card that still needs a choice protects the turn from being force-ended
+   regardless of the clock — an auto-resolved card just sitting in its
+   "Continue" acknowledgment modal does NOT protect it, since its effect
+   already happened and nothing is left to decide. */
+function isTurnProtectedFromTimeout(){
+  return !!(state && state.pendingCard && needsChoice(state.pendingCard));
+}
+
+/* Any connected browser can notice a stalled turn, but only one of them
+   should actually act on it. Firebase's transaction API gives us that for
+   free: every client tries to atomically move the lock from the previous
+   turn's timestamp to the current one, but only the first to reach the
+   server actually succeeds — everyone else's transaction sees the lock
+   already matches state.turnStartedAt and aborts without writing. */
+async function claimTimeoutLock(turnStartedAt){
+  if(!roomCode) return false;
+  try{
+    const result = await runTransaction(lockRef(), (current)=>{
+      if(current === turnStartedAt) return; // already claimed for this turn — abort
+      return turnStartedAt;
+    });
+    return result.committed;
+  }catch(e){
+    console.error('UpTrend: timeout lock claim failed', e);
+    return false;
+  }
+}
+
+/* Pushes a stalled player's turn forward using neutral, no-op choices —
+   drawing whatever card comes up, auto-acknowledging anything that doesn't
+   need a decision, and skipping trading — until either their turn actually
+   ends or a real choice-needing card appears (at which point they're
+   protected and enforcement backs off). Stops after a bounded number of
+   steps as a safety net against ever looping forever. */
+function forceAdvanceStalledTurn(){
+  if(!state || state.gameOver) return;
+  const stalledIndex = state.current;
+  const stalledName = state.players[stalledIndex].name;
+  let steps = 0;
+  while(steps < 12 && state.current===stalledIndex && !state.gameOver){
+    steps++;
+    if(isTurnProtectedFromTimeout()) break; // a real choice is pending — back off
+    const before = JSON.stringify({ phase:state.phase, turnStage:state.turnStage, cardsDrawnThisTurn:state.cardsDrawnThisTurn, pendingCard: state.pendingCard && state.pendingCard._id });
+    if(state.phase==='draw'){
+      drawCard(true);
+    } else if(state.phase==='resolve'){
+      finishCardResolution(); // only reached when the pending card doesn't need a choice
+    } else if(state.phase==='trade'){
+      proceedPastTrade();
+    } else {
+      break;
+    }
+    const after = JSON.stringify({ phase:state.phase, turnStage:state.turnStage, cardsDrawnThisTurn:state.cardsDrawnThisTurn, pendingCard: state.pendingCard && state.pendingCard._id });
+    if(before===after) break; // no progress possible (e.g. stuck on negative cash) — stop rather than spin
+  }
+  if(state.current!==stalledIndex || state.gameOver){
+    logEvent(`${stalledName} ran out of time — turn auto-advanced.`, true);
+  }
+  persist(); render();
+}
+
+/* Runs every tick alongside the visible countdown: once time's up and the
+   turn isn't protected by a pending choice card, try to claim the lock and
+   push the stalled player's turn forward. */
+let timeoutCheckInFlight = false;
+setInterval(async ()=>{
+  if(timeoutCheckInFlight || !roomCode || !state || state.gameOver || state.phase==='lobby') return;
+  if(turnTimerSecondsLeft() > 0) return;
+  if(isTurnProtectedFromTimeout()) return;
+  timeoutCheckInFlight = true;
+  try{
+    const won = await claimTimeoutLock(state.turnStartedAt);
+    if(won) forceAdvanceStalledTurn();
+  } finally {
+    timeoutCheckInFlight = false;
+  }
+}, 1000);
 
 function price(stockId){ return state.stocks[stockId].track[state.stocks[stockId].idx]; }
 function spPrice(){ return state.sp.track[state.sp.idx]; }
@@ -878,12 +1139,12 @@ function checkGameOver(){
     return;
   }
 
-  // 3. A player reaches $50,000 net worth — they win outright
-  const bigWinner = state.players.find(p=>!p.eliminated && netWorth(p)>=50000);
+  // 3. A player reaches $500,000 net worth — they win outright
+  const bigWinner = state.players.find(p=>!p.eliminated && netWorth(p)>=500000);
   if(bigWinner){
     state.gameOver = true;
     state.winner = bigWinner;
-    logEvent(`${bigWinner.name} reached $50,000 net worth — game over!`, true);
+    logEvent(`${bigWinner.name} reached $500,000 net worth — game over!`, true);
     return;
   }
 }
@@ -896,8 +1157,8 @@ function drawsNeededThisStage(){
   return state.turnStage==='start' ? state.cardsPerTurn : 1;
 }
 
-function drawCard(){
-  if(!isMyTurn()) return;
+function drawCard(force){
+  if(!force && !isMyTurn()) return;
   const p = state.players[state.current];
   if(p.eliminated) return;
   if(p.cash<0) return; // must raise cash back to $0+ first — see the forced-liquidation Action panel
@@ -1096,12 +1357,12 @@ function resolveAuto(card){
       }
       break;
     case 'parachute':
-      if(netWorth(p) < START_CASH){ p.cash += 2000; logEvent(`${p.name} was below starting capital ($${START_CASH}) — Golden Parachute pays $2,000.`, true); }
+      if(netWorth(p) < START_CASH){ p.cash += 20000; logEvent(`${p.name} was below starting capital ($${START_CASH}) — Golden Parachute pays $20,000.`, true); }
       else logEvent(`${p.name}'s net worth is healthy — Golden Parachute has no effect.`);
       break;
     case 'steady': {
       const heldCount = STOCK_IDS.filter(id=>p.shares[id]>0).length;
-      const gain = heldCount*25;
+      const gain = heldCount*250;
       p.cash += gain;
       logEvent(`${p.name} holds ${heldCount} stock(s) — Steady Hand pays $${gain}.`);
       break;
@@ -1111,11 +1372,11 @@ function resolveAuto(card){
       state.players.forEach(pl=>{
         const isDrawer = pl===p;
         let shares = 0; ids.forEach(id=>shares+=pl.shares[id]);
-        const rate = isDrawer?10:5;
+        const rate = isDrawer?100:50;
         const pay = shares*rate;
         pl.cash += pay;
       });
-      logEvent(`Dividend Day — ${SECTORS[card.sector].label||card.sector}: ${p.name} collects $10/share, others $5/share.`, true);
+      logEvent(`Dividend Day — ${SECTORS[card.sector].label||card.sector}: ${p.name} collects $100/share, others $50/share.`, true);
       break;
     }
     default:
@@ -1251,7 +1512,7 @@ function buyShares(id, qtyRequested){
   state.turnFills.up[id] = priorFilled + qty;
   const feeNote = walk.fee>0 ? ` (incl. $${walk.fee} fee)` : '';
   logEvent(`${p.name} bought ${qty} ${tickerLabel(id)} for $${totalCost}${feeNote} — now $${obj.track[obj.idx]}.`);
-  checkMarginCalls(); checkGameOver(); recordTradeMarker(id, p.color, 'up', qty); persist(); render();
+  checkMarginCalls(); checkGameOver(); recordTradeMarker(id, p.color, 'up', qty); schedulePersist(); render();
 }
 
 function sellShares(id, qtyRequested){
@@ -1272,7 +1533,7 @@ function sellShares(id, qtyRequested){
   state.turnFills.down[id] = priorFilled + qty;
   const feeNote = walk.fee>0 ? ` (after $${walk.fee} fee)` : '';
   logEvent(`${p.name} sold ${qty} ${tickerLabel(id)} for $${proceeds}${feeNote} — now $${obj.track[obj.idx]}.`);
-  checkMarginCalls(); checkGameOver(); recordTradeMarker(id, p.color, 'down', qty); persist(); render();
+  checkMarginCalls(); checkGameOver(); recordTradeMarker(id, p.color, 'down', qty); schedulePersist(); render();
 }
 
 function openShort(id, qtyRequested){
@@ -1297,7 +1558,7 @@ function openShort(id, qtyRequested){
   state.turnFills.down[id] = priorFilled + qty;
   const feeNote = walk.fee>0 ? ` (after $${walk.fee} fee)` : '';
   logEvent(`${p.name} opened a short on ${qty} ${id} for $${proceeds}${feeNote} — collateral locked, now $${obj.track[obj.idx]}.`, true);
-  checkMarginCalls(); checkGameOver(); recordTradeMarker(id, p.color, 'down', qty); persist(); render();
+  checkMarginCalls(); checkGameOver(); recordTradeMarker(id, p.color, 'down', qty); schedulePersist(); render();
 }
 
 function coverShort(id, qtyRequested){
@@ -1319,7 +1580,7 @@ function coverShort(id, qtyRequested){
   state.turnFills.up[id] = priorFilled + qty;
   const feeNote = walk.fee>0 ? ` (incl. $${walk.fee} fee)` : '';
   logEvent(`${p.name} covered ${qty} ${id} for $${totalCost}${feeNote} — now $${obj.track[obj.idx]}.`);
-  checkMarginCalls(); checkGameOver(); recordTradeMarker(id, p.color, 'up', qty); persist(); render();
+  checkMarginCalls(); checkGameOver(); recordTradeMarker(id, p.color, 'up', qty); schedulePersist(); render();
 }
 
 function endTurn(){
@@ -1327,6 +1588,7 @@ function endTurn(){
   let next = state.current;
   do { next = (next+1)%state.players.length; } while(state.players[next].eliminated && next!==state.current);
   state.current = next;
+  state.turnStartedAt = Date.now();
   state.phase = 'draw';
   state.turnStage = 'start';
   state.tradeSelection = null;
@@ -1417,22 +1679,54 @@ const app = document.getElementById('app');
 function esc(s){ return s; }
 
 function renderSetup(){
+  if(!roomCode){ renderLandingScreen(); return; }
   if(!state){ renderCreateGameScreen(); return; }
   if(state.phase==='lobby'){ renderLobbyScreen(); return; }
   renderWhoAreYouScreen();
 }
 
-function renderCreateGameScreen(){
+/* True entry point — no room chosen yet. Create a fresh room (random
+   6-digit code) or join one someone else already made. */
+function renderLandingScreen(){
   app.innerHTML = `
     <div class="overlay">
       <div class="modal">
         <h2><span style="color:#FFFFFF;">Up</span><span style="color:var(--up);">Trend</span></h2>
         <div class="sub">A turn-based stock market game, playable live with friends on separate screens.</div>
+        <button class="btn full" id="createRoomBtn">Create Game</button>
+        <div class="hint" style="margin:14px 0 8px 0;">— or join a game already running —</div>
+        <div class="trade-row">
+          <input type="text" id="joinCodeInput" inputmode="numeric" maxlength="6" placeholder="6-digit room code" style="flex:1;padding:9px 10px;border-radius:8px;background:var(--panel-2);border:1px solid var(--line);color:var(--text);font-family:'IBM Plex Mono';">
+        </div>
+        <button class="btn secondary full" id="joinRoomBtn">Join Game</button>
+        <div class="hint" id="joinError" style="color:var(--down);"></div>
+      </div>
+    </div>`;
+  document.getElementById('createRoomBtn').onclick = ()=>{ subscribeToRoom(genRoomCode()); render(); };
+  document.getElementById('joinRoomBtn').onclick = ()=>{
+    const code = document.getElementById('joinCodeInput').value.trim().replace(/\D/g,'');
+    if(code.length!==6){ document.getElementById('joinError').textContent = 'Enter the 6-digit code your host shared with you.'; return; }
+    subscribeToRoom(code); render();
+  };
+}
+
+function renderCreateGameScreen(){
+  const shareUrl = `${location.origin}${location.pathname}?room=${roomCode}`;
+  app.innerHTML = `
+    <div class="overlay">
+      <div class="modal">
+        <h2><span style="color:#FFFFFF;">Up</span><span style="color:var(--up);">Trend</span></h2>
+        <div class="selected-ticker-box" style="margin-bottom:12px;">
+          <span class="stx">Room Code</span>
+          <span class="spx mono" style="font-size:18px;letter-spacing:1px;">${roomCode}</span>
+        </div>
+        <div class="hint" style="margin-bottom:14px;word-break:break-all;">Share this link so friends can join directly: <span class="mono">${shareUrl}</span></div>
         <div class="setup-field"><label>Number of players</label>
           <div class="player-count-row" id="countRow"></div>
         </div>
         <button class="btn full" id="createBtn">Create Game</button>
-        <div class="hint">No game is running yet. Pick a player count and create one — everyone else who opens this page will be able to join and claim a seat.</div>
+        <div class="hint">No game is running yet in this room. Pick a player count and create one — everyone else who opens this room will be able to join and claim a seat.</div>
+        <button class="btn secondary full" id="changeRoomBtn" style="margin-top:10px;">Use a Different Room</button>
       </div>
     </div>`;
   let count = window._setupCount || 2;
@@ -1445,14 +1739,16 @@ function renderCreateGameScreen(){
     countRow.appendChild(d);
   });
   document.getElementById('createBtn').onclick = ()=>{ createLobby(count); };
+  document.getElementById('changeRoomBtn').onclick = leaveRoom;
 }
 
 function createLobby(count){
   // Empty seats use '' (not null!) — Firebase Realtime Database silently
   // strips null entries out of arrays/objects on write, which was quietly
   // collapsing a 2-seat lobby down to 1 the moment it hit the database.
-  state = { phase:'lobby', lobbySeats: Array(count).fill(''), version:0, ...localDefaults() };
-  persist(); render();
+  state = { phase:'lobby', lobbySeats: Array(count).fill(''), version:0, createdAt: Date.now(), ...localDefaults() };
+  lastKnownSnapshot = {}; // this is a whole new structure — nothing to diff against yet
+  persistFull(); render();
 }
 
 function claimSeat(idx){
@@ -1461,6 +1757,7 @@ function claimSeat(idx){
   if(!state || state.phase!=='lobby' || state.lobbySeats[idx]) return;
   state.lobbySeats[idx] = name;
   myPlayerIndex = idx;
+  saveLocalRoom(roomCode, idx, name);
   persist(); render();
 }
 
@@ -1468,9 +1765,12 @@ function startGameFromLobby(){
   if(!state || state.phase!=='lobby' || state.lobbySeats.some(s=>!s)) return;
   const names = state.lobbySeats.slice();
   const locals = localDefaults();
+  const createdAt = state.createdAt || Date.now();
   state = freshState(names);
+  state.createdAt = createdAt;
   Object.assign(state, locals);
-  persist(); render();
+  lastKnownSnapshot = {}; // structure changed completely — full replace, not a diff
+  persistFull(); render();
 }
 
 function renderLobbyScreen(){
@@ -1521,7 +1821,7 @@ function renderWhoAreYouScreen(){
       </div>
     </div>`;
   state.players.forEach((pl,i)=>{
-    document.getElementById('whoAmI'+i).onclick = ()=>{ myPlayerIndex = i; render(); };
+    document.getElementById('whoAmI'+i).onclick = ()=>{ myPlayerIndex = i; saveLocalRoom(roomCode, i, pl.name); render(); };
   });
   document.getElementById('spectateBtn').onclick = ()=>{ myPlayerIndex = -1; render(); };
   document.getElementById('resetFromReconnectBtn').onclick = wipeGame;
@@ -2063,8 +2363,16 @@ function render(){
         <span><span class="word-up">Up</span><span class="word-trend">Trend</span></span>
       </div>
       <div class="meta">
+        <div class="item" title="${isConnected?'Connected to Firebase':'Reconnecting…'}">
+          <div class="label">Status</div>
+          <div class="value" style="display:flex;align-items:center;gap:5px;font-size:13px;">
+            <span style="width:8px;height:8px;border-radius:50%;background:${isConnected?'var(--up)':'var(--down)'};${isConnected?'':'animation:pulseDot 1s infinite;'}"></span>
+            ${isConnected?'Connected':'Reconnecting…'}
+          </div>
+        </div>
         <div class="item"><div class="label">S&amp;P 8</div><div class="value mono">$${spPrice()}</div></div>
         <div class="item"><div class="label">Turn</div><div class="value" style="color:${p.color};">${p.name}</div></div>
+        <div class="item"><div class="label">Time Left</div><div class="value mono" id="turnTimerValue" style="${turnTimerSecondsLeft()<=0?'color:var(--down);':''}">${formatTurnTimer(turnTimerSecondsLeft())}</div></div>
         <div class="item"><div class="label">Deck</div><div class="value mono">${state.deck.length} left</div></div>
         <button class="btn secondary" id="syncNowBtn" style="padding:8px 12px;font-size:12px;">Sync Now</button>
         <button class="btn secondary" id="restartBtn" style="padding:8px 12px;font-size:12px;">Restart</button>
@@ -2086,7 +2394,7 @@ function render(){
 
   // wire buttons
   const byId = x=>document.getElementById(x);
-  if(byId('drawBtn')) byId('drawBtn').onclick = drawCard;
+  if(byId('drawBtn')) byId('drawBtn').onclick = ()=>drawCard();
   if(byId('endTurnBtn')) byId('endTurnBtn').onclick = requestEndTurn;
   if(byId('eliminatedContinueBtn')) byId('eliminatedContinueBtn').onclick = ()=>{ if(isMyTurn()) endTurn(); };
   if(byId('newGameBtn')) byId('newGameBtn').onclick = wipeGame;
@@ -2120,7 +2428,17 @@ function render(){
   if(state.pendingCard && needsChoice(state.pendingCard)) wireChoiceHandlers(state.pendingCard);
 }
 
-render();
+/* Entry point: a shareable ?room=CODE link wins over anything saved
+   locally; otherwise fall back to the last room this browser was in;
+   otherwise show the plain Create/Join landing screen. */
+(function boot(){
+  const params = new URLSearchParams(window.location.search);
+  const urlRoom = (params.get('room')||'').replace(/\D/g,'');
+  if(urlRoom.length===6){ subscribeToRoom(urlRoom); return; }
+  const saved = loadLocalRoom();
+  if(saved && saved.code){ subscribeToRoom(saved.code); return; }
+  render();
+})();
 </script>
 </body>
 </html>
