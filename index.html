@@ -417,11 +417,38 @@ async function persist(){
   catch(e){ console.error('UpTrend: failed to sync to Firebase', e); }
 }
 
+/* Firebase Realtime Database silently omits ANY empty array or object when
+   storing data — not just null values (the lobbySeats bug), but genuinely
+   empty collections like a fresh game's recurringEffects: [] or
+   turnFills.up: {}. When that data comes back down, those fields are just
+   missing, not empty — so we have to restore them to their proper empty
+   form after every merge, or code that expects them to exist (like
+   .find()/.push() calls) crashes on undefined. */
+function repairCollections(s){
+  if(!s || s.phase==='lobby') return;
+  if(!s.discard) s.discard = [];
+  if(!s.scheduled) s.scheduled = [];
+  if(!s.recurringEffects) s.recurringEffects = [];
+  if(!s.log) s.log = [];
+  if(!s.turnUsage) s.turnUsage = { total:0, perStock:{} };
+  if(!s.turnUsage.perStock) s.turnUsage.perStock = {};
+  if(!s.turnFills) s.turnFills = { up:{}, down:{} };
+  if(!s.turnFills.up) s.turnFills.up = {};
+  if(!s.turnFills.down) s.turnFills.down = {};
+  if(s.stocks){
+    Object.keys(s.stocks).forEach(id=>{
+      if(!s.stocks[id].tradeMarkers) s.stocks[id].tradeMarkers = [];
+    });
+  }
+  if(s.sp && !s.sp.tradeMarkers) s.sp.tradeMarkers = [];
+}
+
 function mergeRemote(remote){
   applyingRemote = true;
   const locals = state ? {} : localDefaults();
   if(state) LOCAL_ONLY_KEYS.forEach(k=>{ locals[k] = state[k]; });
   state = { ...remote, ...locals };
+  repairCollections(state);
   applyingRemote = false;
 }
 
@@ -1936,6 +1963,7 @@ function wireChoiceHandlers(card){
 
 function render(){
   if(!state || state.phase==='lobby' || myPlayerIndex===null){ renderSetup(); return; }
+  repairCollections(state); // belt-and-suspenders: guarantee these exist no matter how state got here
   const p = state.players[state.current];
   app.innerHTML = `
     <div class="topbar">
