@@ -94,6 +94,10 @@
   .dot-wrap.edge .dot{outline:1px solid rgba(255,255,255,0.15);outline-offset:2px;}
   .dot-wrap.center .dot{box-shadow:0 0 0 2px rgba(255,255,255,0.28);}
   .dot-wrap.center .dot-price{color:var(--text);font-weight:600;background:rgba(255,255,255,0.08);border-radius:4px;padding:0 4px;}
+  .dot-wrap.div-zone{background:rgba(62,207,142,0.10);border-top:1px solid rgba(62,207,142,0.45);border-bottom:1px solid rgba(62,207,142,0.45);padding-top:1px;}
+  .dot-wrap.div-zone-start{border-left:1px solid rgba(62,207,142,0.45);border-top-left-radius:6px;border-bottom-left-radius:6px;}
+  .dot-wrap.div-zone-end{border-right:1px solid rgba(62,207,142,0.45);border-top-right-radius:6px;border-bottom-right-radius:6px;}
+  .div-zone-rate{font-size:8px;font-family:'IBM Plex Mono';color:var(--up);font-weight:700;white-space:nowrap;margin-bottom:2px;}
 
   .sp-panel{
     background:linear-gradient(180deg,#1A1508,#12161F);
@@ -233,7 +237,7 @@ const STOCKS = {
   SPRE:{ name:'SpreeMart',     sector:'Consumer' },
 };
 const STOCK_IDS = Object.keys(STOCKS);
-const STOCK_DOTS_PER_SIDE = 13;  // 13 left of center + center + 13 right, for every individual stock
+const STOCK_DOTS_PER_SIDE = 15;  // 15 left of center + center + 15 right, for every individual stock
 const SP_DOTS_PER_SIDE = 15;     // SP8 gets its own, wider track: 15 left + center + 15 right
 const STOCK_CENTER_IDX = STOCK_DOTS_PER_SIDE;
 const SP_CENTER_IDX = SP_DOTS_PER_SIDE;
@@ -680,17 +684,38 @@ let state = null;
 // ranged from 2.2x center down to a floor of 0.15x center, so VITA/RXCO
 // keep that same shape scaled to their new center price. Tech/Energy still
 // bottom out at exactly $0 (so they can go worthless); Health/Consumer keep
-// a positive floor and never can.
+// a positive floor and never can. Tops are widened ~15% and Health/Consumer
+// floors lowered ~25% over the original ladder to give the 2 extra dots on
+// each end (below) genuinely bigger jumps rather than finer subdivisions of
+// the same old range.
 const STOCK_PRICE_CONFIG = {
-  NOVA: { center:5000, top:11000, bottom:0 },
-  QBIT: { center:1200, top:4800,  bottom:0 },
-  PWR:  { center:2800, top:8400,  bottom:0 },
-  OILX: { center:1800, top:5400,  bottom:0 },
-  VITA: { center:2200, top:4840,  bottom:330 },
-  RXCO: { center:1400, top:3080,  bottom:210 },
-  LUXE: { center:3200, top:5120,  bottom:1120 },
-  SPRE: { center:800,  top:1280,  bottom:280 },
+  NOVA: { center:5000, top:12650, bottom:0 },
+  QBIT: { center:1200, top:5500,  bottom:0 },
+  PWR:  { center:2800, top:9650,  bottom:0 },
+  OILX: { center:1800, top:6200,  bottom:0 },
+  VITA: { center:2200, top:5550,  bottom:250 },
+  RXCO: { center:1400, top:3550,  bottom:160 },
+  LUXE: { center:3200, top:5900,  bottom:840 },
+  SPRE: { center:800,  top:1450,  bottom:210 },
 };
+
+/* Dividend zones: the top `dots` bubbles of a stock's own track pay a
+   per-turn dividend to whoever holds it while it's up there — a reward for
+   riding a stock all the way to its high end instead of selling early.
+   6 of the 8 stocks have one (NOVA and RXCO don't); smaller zones pay a
+   higher rate, bigger zones pay less, so neither is strictly better.
+   Shorts sitting in a zone pay HALF the zone's rate as a penalty (on top
+   of the flat 1% per-turn short carrying fee every open short pays,
+   regardless of zone) — mirrors Dividend Day's drawer/everyone-else split. */
+const DIVIDEND_ZONES = {
+  QBIT: { dots:2, rate:0.04  },
+  VITA: { dots:2, rate:0.035 },
+  LUXE: { dots:3, rate:0.025 },
+  PWR:  { dots:3, rate:0.03  },
+  OILX: { dots:4, rate:0.02  },
+  SPRE: { dots:4, rate:0.015 },
+};
+const SHORT_CARRY_FEE_RATE = 0.01; // 1% of a short's current liability, charged every one of your own turns
 
 function freshState(players){
   const stocks = {};
@@ -944,7 +969,7 @@ function canCoverOne(id){
    order. A big enough sell/cover order (uncapped) can cross this boundary
    more than once, walking and getting fee'd once per complete group of 4. */
 function walkOrderDetailed(id, qty, direction, priorFilled){
-  const GROUP = 4, FEE_RATE = 0.20;
+  const GROUP = 4, FEE_RATE = 0.80;
   const obj = id==='SP' ? state.sp : state.stocks[id];
   let idx = obj.idx;
   const chunks = [];
@@ -1170,6 +1195,8 @@ function drawCard(force){
   if(state.turnStage==='start' && state.cardsDrawnThisTurn===0){
     tickScheduled(state.current);
     tickRecurringEffects(state.current);
+    tickShortFeesAndDividends(state.current);
+    checkMarginCalls(); // fees/payouts above can push cash negative — same safety net as any other cash event
     checkGameOver();
     if(state.gameOver){ persist(); render(); return; } // a scheduled prediction landing just ended the game
   }
@@ -1257,6 +1284,50 @@ function tickRecurringEffects(ownerIndex){
     if(eff.turnsLeft>0) remaining.push(eff);
   });
   state.recurringEffects = remaining;
+}
+
+/* True while a stock currently sits in its own dividend zone (the top N
+   bubbles of its track) — worthless stocks never qualify. */
+function inDividendZone(id){
+  const zone = DIVIDEND_ZONES[id];
+  if(!zone) return false;
+  const s = state.stocks[id];
+  if(s.worthless) return false;
+  return s.idx >= s.track.length - zone.dots;
+}
+
+/* Runs once at the start of each player's own turn: every open short pays
+   a flat 1% carrying fee on its current liability, and any stock currently
+   sitting in its dividend zone pays longs the zone's full rate — while
+   shorts in that same zone pay an extra HALF the zone's rate on top of
+   their normal carrying fee, since being short into a company that's
+   paying out is a real cost, just half of what a long holder actually
+   earns. */
+function tickShortFeesAndDividends(ownerIndex){
+  const p = state.players[ownerIndex];
+  let totalFee = 0, totalDiv = 0;
+  STOCK_IDS.forEach(id=>{
+    const heldLong = p.shares[id]||0;
+    const heldShort = p.shorts[id]||0;
+    const pr = price(id);
+    if(heldShort>0){
+      const carry = Math.round(heldShort*pr*SHORT_CARRY_FEE_RATE);
+      if(carry>0){ p.cash -= carry; totalFee += carry; }
+    }
+    if(inDividendZone(id)){
+      const zone = DIVIDEND_ZONES[id];
+      if(heldLong>0){
+        const pay = Math.round(heldLong*pr*zone.rate);
+        if(pay>0){ p.cash += pay; totalDiv += pay; }
+      }
+      if(heldShort>0){
+        const penalty = Math.round(heldShort*pr*zone.rate*0.5);
+        if(penalty>0){ p.cash -= penalty; totalFee += penalty; }
+      }
+    }
+  });
+  if(totalDiv>0) logEvent(`${p.name} collected $${totalDiv} in dividend-zone payouts.`, true);
+  if(totalFee>0) logEvent(`${p.name} paid $${totalFee} in short fees.`, true);
 }
 
 function resolveAuto(card){
@@ -2026,14 +2097,20 @@ function priceDeltaBadge(cur, prev){
   return cur>prev ? `<span class="price-delta up">▲ up</span>` : `<span class="price-delta down">▼ down</span>`;
 }
 
-function renderTrack(track, curIdx, prevIdx, colorVar){
+function renderTrack(track, curIdx, prevIdx, colorVar, id){
+  const zone = id ? DIVIDEND_ZONES[id] : null;
+  const zoneStartIdx = zone ? track.length - zone.dots : -1;
+  const rateLabel = zone ? `${(zone.rate*100).toFixed(1).replace(/\.0$/,'')}%` : '';
   let html = `<div class="track">`;
   const centerIdx = (track.length-1)/2;
   track.forEach((pr,i)=>{
     const filled = i===curIdx;
     const edge = i===0 || i===track.length-1;
     const isCenter = i===centerIdx;
-    html += `<div class="dot-wrap ${filled?'active':''} ${edge?'edge':''} ${isCenter?'center':''}">
+    const inZone = zone && i>=zoneStartIdx;
+    const zoneClasses = inZone ? ` div-zone${i===zoneStartIdx?' div-zone-start':''}${i===track.length-1?' div-zone-end':''}` : '';
+    html += `<div class="dot-wrap ${filled?'active':''} ${edge?'edge':''} ${isCenter?'center':''}${zoneClasses}">
+      ${inZone?`<div class="div-zone-rate">${rateLabel}</div>`:''}
       <div class="dot ${filled?'filled':''}" style="${filled?`background:${colorVar};color:${colorVar};`:''}"></div>
       <div class="dot-price">${pr}</div>
     </div>`;
@@ -2085,7 +2162,7 @@ function buildVolumeBars(markers, numPoints, stepX, offsetX, topY, plotH, maxBar
   }).join('');
 }
 
-function renderSparkline(history, top, bottom, color, markers){
+function renderSparkline(history, top, bottom, color, markers, zoneBottomPrice){
   const W = 56, H = 84;
   const pts = history.length>=2 ? history : [history[0], history[0]];
   const range = (top-bottom) || 1;
@@ -2099,8 +2176,14 @@ function renderSparkline(history, top, bottom, color, markers){
   const lastY = H - ((pts[pts.length-1]-bottom)/range)*H;
 
   const bars = buildVolumeBars(markers, pts.length, stepX, 0, 0, H, 0.2, 1.4, 2.8);
+  let zoneRect = '';
+  if(zoneBottomPrice!=null && zoneBottomPrice<top){
+    const zoneY = Math.max(0, H - ((zoneBottomPrice-bottom)/range)*H);
+    zoneRect = `<rect x="0" y="0" width="${W}" height="${zoneY.toFixed(1)}" fill="var(--up)" opacity="0.10"/>`;
+  }
 
   return `<svg class="sparkline" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+    ${zoneRect}
     ${bars}
     <polyline points="${coords}" fill="none" stroke="${color}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
     <circle cx="${lastX.toFixed(1)}" cy="${Math.max(1,Math.min(H-1,lastY)).toFixed(1)}" r="2" fill="${color}"/>
@@ -2110,7 +2193,7 @@ function renderSparkline(history, top, bottom, color, markers){
 /* The big, click-to-expand version: gridlines, real price labels on the
    y-axis, volume bars, and a legend mapping each bar's color back to a
    player. */
-function renderExpandedChart(history, top, bottom, color, markers){
+function renderExpandedChart(history, top, bottom, color, markers, zoneBottomPrice){
   const W = 640, H = 340, padL = 54, padR = 16, padT = 16, padB = 16;
   const plotW = W-padL-padR, plotH = H-padT-padB;
   const pts = history.length>=2 ? history : [history[0], history[0]];
@@ -2132,9 +2215,15 @@ function renderExpandedChart(history, top, bottom, color, markers){
   }
 
   const bars = buildVolumeBars(markers, pts.length, stepX, padL, padT, plotH, 0.18, 3, 10);
+  let zoneRect = '';
+  if(zoneBottomPrice!=null && zoneBottomPrice<top){
+    const zoneY = Math.max(padT, yFor(zoneBottomPrice));
+    zoneRect = `<rect x="${padL}" y="${padT}" width="${plotW}" height="${(zoneY-padT).toFixed(1)}" fill="var(--up)" opacity="0.08"/>`;
+  }
 
   return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" style="display:block;">
     ${gridSvg}
+    ${zoneRect}
     <line x1="${padL}" y1="${padT}" x2="${padL}" y2="${padT+plotH}" stroke="#232A38" stroke-width="1"/>
     ${bars}
     <polyline points="${coords}" fill="none" stroke="${color}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
@@ -2151,6 +2240,8 @@ function renderExpandedChartModal(){
   const label = isSP ? 'SP8' : `${id} — ${STOCKS[id].name}`;
   const top = obj.track[obj.track.length-1], bottom = obj.track[0];
   const cur = obj.track[obj.idx];
+  const zone = !isSP ? DIVIDEND_ZONES[id] : null;
+  const zoneBottomPrice = zone ? obj.track[obj.track.length-zone.dots] : null;
 
   // Legend: only players who've actually got a marker on this chart
   const seenColors = new Set((obj.tradeMarkers||[]).map(m=>m.color));
@@ -2168,8 +2259,8 @@ function renderExpandedChartModal(){
         <h2 style="margin:0;color:${color};">${label}</h2>
         <span class="mono" style="font-size:20px;font-weight:600;">$${cur}</span>
       </div>
-      <div class="sub">Full price history${(obj.tradeMarkers||[]).length ? ' — bars from the bottom are buy/cover volume, bars from the top are sell/short volume' : ''}</div>
-      <div style="margin:14px 0;overflow-x:auto;">${renderExpandedChart(obj.history, top, bottom, color, obj.tradeMarkers)}</div>
+      <div class="sub">Full price history${(obj.tradeMarkers||[]).length ? ' — bars from the bottom are buy/cover volume, bars from the top are sell/short volume' : ''}${zone ? ` — shaded band is the ${(zone.rate*100).toFixed(1).replace(/\.0$/,'')}% dividend zone` : ''}</div>
+      <div style="margin:14px 0;overflow-x:auto;">${renderExpandedChart(obj.history, top, bottom, color, obj.tradeMarkers, zoneBottomPrice)}</div>
       ${legendHtml}
       <button class="btn full" id="closeChartBtn" style="margin-top:16px;">Close</button>
     </div>
@@ -2187,9 +2278,11 @@ function renderBoard(){
       const cur = s.track[s.idx];
       const isSel = state.tradeSelection===id;
       const drip = state.recurringEffects.find(e=>e.stock===id);
+      const zone = DIVIDEND_ZONES[id];
+      const inZoneNow = inDividendZone(id);
       html += `<div class="stock-row ${isSel?'selected':''} ${s.worthless?'worthless':''}" data-trade-id="${id}">
         <div class="stock-row-inner">
-          <div class="stock-chart-col" data-chart-id="${id}">${renderSparkline(s.history, s.track[s.track.length-1], s.track[0], sec.color, s.tradeMarkers)}</div>
+          <div class="stock-chart-col" data-chart-id="${id}">${renderSparkline(s.history, s.track[s.track.length-1], s.track[0], sec.color, s.tradeMarkers, zone ? s.track[s.track.length-zone.dots] : null)}</div>
           <div class="stock-main-col">
             <div class="row-top">
               <span class="ticker" style="color:${sec.color}">${id}</span>
@@ -2197,11 +2290,12 @@ function renderBoard(){
               ${priceDeltaBadge(s.idx, s.prevIdx)}
               ${s.worthless?'<span class="worthless-badge">Worthless</span>':''}
               ${s.frozen?'<span class="frozen-badge">Frozen</span>':''}
+              ${inZoneNow?`<span class="frozen-badge" style="color:var(--up);background:rgba(62,207,142,0.12);">Dividend Zone ${(zone.rate*100).toFixed(1).replace(/\.0$/,'')}%</span>`:''}
               ${drip?`<span class="frozen-badge" style="color:${drip.dir>0?'var(--up)':'var(--down)'};background:${drip.dir>0?'rgba(62,207,142,0.12)':'rgba(255,92,92,0.12)'};">Earnings ${drip.dir>0?'+':'-'}${drip.bubblesPerTurn}/turn ×${drip.turnsLeft}</span>`:''}
               <span style="margin-left:auto;font-size:11px;color:var(--muted);white-space:nowrap;">${STOCKS[id].name}</span>
               ${isSel?'<span class="tap-hint">Selected</span>':'<span class="tap-hint">Tap to trade</span>'}
             </div>
-            ${renderTrack(s.track, s.idx, s.prevIdx, sec.color)}
+            ${renderTrack(s.track, s.idx, s.prevIdx, sec.color, id)}
           </div>
         </div>
       </div>`;
@@ -2234,6 +2328,7 @@ function renderBoard(){
 
 function renderSidebar(){
   const p = state.players[state.current];
+  const me = (myPlayerIndex!==null && myPlayerIndex>=0) ? state.players[myPlayerIndex] : null;
   let html = `<div class="sidebar">`;
 
   // players
@@ -2247,12 +2342,12 @@ function renderSidebar(){
   });
   html += `</div>`;
 
-  // your active insider info — only shows on the OWNING player's own device
-  // during their own turn, since it's private information. Everyone else's
-  // screen (even though it's the same shared state) never sees it.
-  const myInsider = (myPlayerIndex===state.current) ? state.scheduled.filter(item=>item.ownerIndex===state.current) : [];
+  // your own active insider info — private to you, and now always visible
+  // on your own screen regardless of whose turn it currently is, since it's
+  // YOUR information to track, not tied to when you happen to be acting.
+  const myInsider = me ? state.scheduled.filter(item=>item.ownerIndex===myPlayerIndex) : [];
   if(myInsider.length){
-    html += `<div class="panel"><h3 style="color:${p.color};">${p.name}'s Insider Info</h3>`;
+    html += `<div class="panel"><h3 style="color:${me.color};">${me.name}'s Insider Info</h3>`;
     myInsider.forEach(item=>{
       html += `<div class="log-entry event" style="margin-bottom:6px;">
         <div>${item.description||'A prediction is pending'}</div>
@@ -2337,33 +2432,44 @@ function renderSidebar(){
   }
   html += `</div>`;
 
-  // holdings — collect every row first so we can sort by value, biggest first
-  const glCell = (gl)=> `<td style="color:${gl>=0?'var(--up)':'var(--down)'};">${gl>=0?'+':'-'}$${Math.abs(Math.round(gl))}</td>`;
-  const holdingRows = [];
-  STOCK_IDS.forEach(id=>{
-    if(p.shares[id]>0){
-      const sectorLabel = SECTORS[STOCKS[id].sector].label || STOCKS[id].sector;
-      const value = p.shares[id]*price(id);
-      holdingRows.push({ value, html: `<tr><td>${id} (${sectorLabel})</td><td>${p.shares[id]}</td><td>$${value}</td>${glCell(longGainLoss(p,id,false))}</tr>` });
+  // your own holdings — always visible on your own screen, independent of
+  // whose turn it currently is. Spectators (no seat) get a simple notice
+  // instead, since they have no holdings of their own to show.
+  if(!me){
+    html += `<div class="panel"><h3>Your Holdings</h3><div class="hint" style="margin:0;">You're spectating — no holdings of your own to show.</div></div>`;
+  } else {
+    const glCell = (gl)=> `<td style="color:${gl>=0?'var(--up)':'var(--down)'};">${gl>=0?'+':'-'}$${Math.abs(Math.round(gl))}</td>`;
+    const holdingRows = [];
+    STOCK_IDS.forEach(id=>{
+      if(me.shares[id]>0){
+        const sectorLabel = SECTORS[STOCKS[id].sector].label || STOCKS[id].sector;
+        const value = me.shares[id]*price(id);
+        holdingRows.push({ value, html: `<tr><td>${id} (${sectorLabel})</td><td>${me.shares[id]}</td><td>$${value}</td>${glCell(longGainLoss(me,id,false))}</tr>` });
+      }
+    });
+    if(me.spShares>0){
+      const value = me.spShares*spPrice();
+      holdingRows.push({ value, html: `<tr><td>SP8</td><td>${me.spShares}</td><td>$${value}</td>${glCell(longGainLoss(me,'SP',true))}</tr>` });
     }
-  });
-  if(p.spShares>0){
-    const value = p.spShares*spPrice();
-    holdingRows.push({ value, html: `<tr><td>SP8</td><td>${p.spShares}</td><td>$${value}</td>${glCell(longGainLoss(p,'SP',true))}</tr>` });
-  }
-  STOCK_IDS.forEach(id=>{
-    if((p.shorts[id]||0)>0){
-      const sectorLabel = SECTORS[STOCKS[id].sector].label || STOCKS[id].sector;
-      const value = -(p.shorts[id]*price(id));
-      holdingRows.push({ value, html: `<tr><td>${id} (${sectorLabel}, short)</td><td>${p.shorts[id]}</td><td style="color:var(--down);">-$${Math.abs(value)}</td>${glCell(shortGainLoss(p,id))}</tr>` });
-    }
-  });
-  holdingRows.sort((a,b)=>b.value-a.value);
+    STOCK_IDS.forEach(id=>{
+      if((me.shorts[id]||0)>0){
+        const sectorLabel = SECTORS[STOCKS[id].sector].label || STOCKS[id].sector;
+        const value = -(me.shorts[id]*price(id));
+        holdingRows.push({ value, html: `<tr><td>${id} (${sectorLabel}, short)</td><td>${me.shorts[id]}</td><td style="color:var(--down);">-$${Math.abs(value)}</td>${glCell(shortGainLoss(me,id))}</tr>` });
+      }
+    });
+    holdingRows.sort((a,b)=>b.value-a.value);
 
-  html += `<div class="panel"><h3 style="color:${p.color};">${p.name}'s Holdings</h3>
-    <table class="holdings-table"><tr><th>Ticker</th><th>Shares</th><th>Value</th><th>Gain/Loss</th></tr>`;
-  holdingRows.forEach(r=>{ html += r.html; });
-  html += `</table></div>`;
+    html += `<div class="panel"><h3 style="color:${me.color};">Your Holdings</h3>`;
+    if(holdingRows.length===0){
+      html += `<div class="hint" style="margin:0;">No open positions yet.</div>`;
+    } else {
+      html += `<table class="holdings-table"><tr><th>Ticker</th><th>Shares</th><th>Value</th><th>Gain/Loss</th></tr>`;
+      holdingRows.forEach(r=>{ html += r.html; });
+      html += `</table>`;
+    }
+    html += `</div>`;
+  }
 
   // log — moved to an on-demand modal instead of always-on-screen
   html += `<button class="btn secondary full" id="openLogBtn">Market Log (${state.log.length})</button>`;
