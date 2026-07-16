@@ -22,6 +22,7 @@
     --health:#5CD6C0;
     --consumer:#6FA8FF;
     --sp:#F5A623;
+    --spx:#C77DFF;
   }
   *{box-sizing:border-box;}
   body{
@@ -331,9 +332,9 @@ function buildDeck(){
   add(8, { type:'earnings_report', text:'Earnings Report! A random stock beats or misses earnings and drifts up to 4 bubbles a turn, for up to 12 of your turns.' });
 
   // Market-wide events
-  add(1, { type:'covid', text:'COVID-19: markets crash. All 8 stocks and the S&P 8 drop 6 steps.' });
-  add(1, { type:'recession', text:'Recession: all 8 stocks and the S&P 8 drop 3 steps.' });
-  add(4, { type:'bull', text:'Bull Market: all 8 stocks and the S&P 8 rise 1 step.' });
+  add(1, { type:'covid', text:'COVID-19: markets crash. All 8 stocks and both S&P 8 indexes drop 6 steps.' });
+  add(1, { type:'recession', text:'Recession: all 8 stocks and both S&P 8 indexes drop 3 steps.' });
+  add(4, { type:'bull', text:'Bull Market: all 8 stocks and both S&P 8 indexes rise 1 step.' });
 
   // Cash Bonus — 6
   add(3, { type:'cash', amount:5000,  text:'Cash Bonus: +$5,000.' });
@@ -373,7 +374,10 @@ function buildDeck(){
   add(3, { type:'freeze', text:'Freeze: pick a stock — it ignores the next dictated movement card that targets it.' });
 
   // S&P +1 — 9 (new, no negative counterpart)
-  add(9, { type:'sp_up', text:'S&P 8 rises 1 step.' });
+  add(9, { type:'sp_up', text:'Both S&P 8 indexes rise 1 step.' });
+  add(5, { type:'sp_up', text:'Both S&P 8 indexes rise 1 step.' });
+  add(3, { type:'sp_up2', text:'Both S&P 8 indexes rise 2 steps.' });
+  add(2, { type:'sp_down', text:'Both S&P 8 indexes fall 1 step.' });
 
   // Loyalty Bonus — 3
   add(3, { type:'loyalty_bonus', text:'Loyalty Bonus: pays out based on how long you\u2019ve continuously held your longest-held stock.' });
@@ -396,6 +400,9 @@ function buildDeck(){
 
   // Margin Call Forgiveness — 2
   add(2, { type:'margin_forgiveness', text:'Margin Call Forgiveness: shields you from your next forced margin-call liquidation.' });
+
+  // Buyout — 4
+  add(4, { type:'buyout', text:'Buyout: a random stock has been bought out at a random price — every long position and short position in it is instantly settled at that price, then the stock reopens and trades normally.' });
 
   return deck;
 }
@@ -612,6 +619,7 @@ function repairCollections(s){
     });
   }
   if(s.sp && s.sp.tradeMarkers===undefined) s.sp.tradeMarkers = [];
+  if(s.spx && s.spx.tradeMarkers===undefined) s.spx.tradeMarkers = [];
   if(s.players){
     s.players.forEach(pl=>{
       if(pl.goldenGeese===undefined) pl.goldenGeese = [];
@@ -830,10 +838,16 @@ function freshState(players, gameLength){
     const track = generateTrack(cfg.top, cfg.bottom, cfg.center, STOCK_DOTS_PER_SIDE);
     stocks[id] = { idx: STOCK_CENTER_IDX, track, frozen:false, worthless:false, prevIdx: STOCK_CENTER_IDX, history:[track[STOCK_CENTER_IDX]], tradeMarkers:[] };
   });
+  // 'sp' is the original index fund, now labeled "Mini SP8" everywhere in
+  // the UI. 'spx' is the new "SP8" — same shape, same starting position
+  // (bottom of its range), just 10x the price — for whenever cash has
+  // piled up too high for anything else to meaningfully absorb it.
   const spTrack = generateTrack(2000, 500, CENTER_PRICE, SP_DOTS_PER_SIDE);
   const sp = { idx: 0, track: spTrack, prevIdx: 0, history:[spTrack[0]], tradeMarkers:[] };
+  const spxTrack = generateTrack(20000, 5000, CENTER_PRICE*10, SP_DOTS_PER_SIDE);
+  const spx = { idx: 0, track: spxTrack, prevIdx: 0, history:[spxTrack[0]], tradeMarkers:[] };
   return {
-    stocks, sp,
+    stocks, sp, spx,
     players: players.map((name,i)=>({
       name, cash: START_CASH,
       color: PLAYER_COLORS[i % PLAYER_COLORS.length],
@@ -841,7 +855,9 @@ function freshState(players, gameLength){
       shorts: Object.fromEntries(STOCK_IDS.map(id=>[id,0])),
       costBasis: Object.fromEntries(STOCK_IDS.map(id=>[id,0])), // $ currently invested in open long positions
       shortBasis: Object.fromEntries(STOCK_IDS.map(id=>[id,0])), // $ received for open short positions
-      spShares:0, spCostBasis:0, eliminated:false,
+      spShares:0, spCostBasis:0, // Mini SP8 holdings
+      spxShares:0, spxCostBasis:0, // SP8 (the big one) holdings
+      eliminated:false,
       holdStreak: Object.fromEntries(STOCK_IDS.map(id=>[id,0])), // consecutive own-turns held with shares>0, for Loyalty Bonus
       goldenGeese: [], // stock ids granting a permanent personal +10% dividend (Golden Goose card)
       marginShield: false, // one-time margin-call forgiveness (Margin Call Forgiveness card)
@@ -1030,6 +1046,9 @@ setInterval(async ()=>{
 
 function price(stockId){ return state.stocks[stockId].track[state.stocks[stockId].idx]; }
 function spPrice(){ return state.sp.track[state.sp.idx]; }
+function spxPrice(){ return state.spx.track[state.spx.idx]; }
+function priceOf(id){ return id==='SP' ? spPrice() : id==='SPX' ? spxPrice() : price(id); }
+function objFor(id){ return id==='SP' ? state.sp : id==='SPX' ? state.spx : state.stocks[id]; }
 
 function lockedCash(p){
   return STOCK_IDS.reduce((sum,id)=> sum + (p.shorts[id]||0)*price(id), 0);
@@ -1043,6 +1062,7 @@ function netWorth(p){
     v -= (p.shorts[id]||0)*price(id);
   });
   v += p.spShares*spPrice();
+  v += p.spxShares*spxPrice();
   return v;
 }
 
@@ -1050,18 +1070,24 @@ function netWorth(p){
    Longs: costBasis[id] is the total $ currently invested in open shares
    (average-cost method — selling removes a proportional slice, not FIFO).
    Shorts: shortBasis[id] is the total $ received when the open short
-   position(s) were opened; gain = basis received − current buy-back cost. */
-function addCostBasis(p, key, amount, isSP){
-  if(isSP) p.spCostBasis = (p.spCostBasis||0) + amount;
+   position(s) were opened; gain = basis received − current buy-back cost.
+   'SP' and 'SPX' (the two index funds) keep their own dedicated fields
+   instead of living in the STOCK_IDS-keyed objects, since they're not
+   part of STOCK_IDS — every function below branches on the id/key to
+   route to the right one. */
+function addCostBasis(p, key, amount){
+  if(key==='SP') p.spCostBasis = (p.spCostBasis||0) + amount;
+  else if(key==='SPX') p.spxCostBasis = (p.spxCostBasis||0) + amount;
   else p.costBasis[key] = (p.costBasis[key]||0) + amount;
 }
-function reduceCostBasisOnSell(p, key, qty, isSP){
-  const held = isSP ? p.spShares : p.shares[key];
+function reduceCostBasisOnSell(p, key, qty){
+  const held = key==='SP' ? p.spShares : key==='SPX' ? p.spxShares : p.shares[key];
   if(held<=0) return;
-  const total = isSP ? (p.spCostBasis||0) : (p.costBasis[key]||0);
+  const total = key==='SP' ? (p.spCostBasis||0) : key==='SPX' ? (p.spxCostBasis||0) : (p.costBasis[key]||0);
   const avg = total/held;
   const reduceBy = avg*qty;
-  if(isSP) p.spCostBasis = Math.max(0, total - reduceBy);
+  if(key==='SP') p.spCostBasis = Math.max(0, total - reduceBy);
+  else if(key==='SPX') p.spxCostBasis = Math.max(0, total - reduceBy);
   else p.costBasis[key] = Math.max(0, total - reduceBy);
 }
 function addShortBasis(p, id, amount){ p.shortBasis[id] = (p.shortBasis[id]||0) + amount; }
@@ -1072,10 +1098,10 @@ function reduceShortBasisOnCover(p, id, qty){
   const avg = total/held;
   p.shortBasis[id] = Math.max(0, total - avg*qty);
 }
-function longGainLoss(p, key, isSP){
-  const held = isSP ? p.spShares : p.shares[key];
-  const val = held * (isSP ? spPrice() : price(key));
-  const basis = isSP ? (p.spCostBasis||0) : (p.costBasis[key]||0);
+function longGainLoss(p, key){
+  const held = key==='SP' ? p.spShares : key==='SPX' ? p.spxShares : p.shares[key];
+  const val = held * priceOf(key);
+  const basis = key==='SP' ? (p.spCostBasis||0) : key==='SPX' ? (p.spxCostBasis||0) : (p.costBasis[key]||0);
   return val - basis;
 }
 function shortGainLoss(p, id){
@@ -1091,9 +1117,10 @@ function capRemainingForStock(id){ return 4 - (state.turnUsage.perStock[id]||0);
 
 function canBuyOne(id){
   if(!id || state.gameOver) return false;
-  if(id!=='SP' && state.stocks[id].worthless) return false;
+  if(id!=='SP' && id!=='SPX' && state.stocks[id].worthless) return false;
   if(capRemaining()<=0 || capRemainingForStock(id)<=0) return false;
   const p = state.players[state.current];
+  if(id==='SP') return priceOf(id) <= freeCash(p); // flat price, no walk, no fee
   const priorFilled = state.turnFills.up[id]||0;
   const walk = walkOrderDetailed(id, 1, +1, priorFilled);
   return (walk.total+walk.fee) <= freeCash(p);
@@ -1101,11 +1128,11 @@ function canBuyOne(id){
 function canSellOne(id){
   if(!id || state.gameOver) return false;
   const p = state.players[state.current];
-  const held = id==='SP' ? p.spShares : p.shares[id];
+  const held = id==='SP' ? p.spShares : id==='SPX' ? p.spxShares : p.shares[id];
   return held>0;
 }
 function canShortOne(id){
-  if(!id || id==='SP' || state.gameOver) return false;
+  if(!id || id==='SP' || id==='SPX' || state.gameOver) return false;
   if(state.stocks[id].worthless) return false;
   if(capRemaining()<=0 || capRemainingForStock(id)<=0) return false;
   const p = state.players[state.current];
@@ -1132,7 +1159,7 @@ function canCoverOne(id){
    more than once, walking and getting fee'd once per complete group of 4. */
 function walkOrderDetailed(id, qty, direction, priorFilled){
   const GROUP = 4, FEE_RATE = 0.20;
-  const obj = id==='SP' ? state.sp : state.stocks[id];
+  const obj = objFor(id);
   let idx = obj.idx;
   const chunks = [];
   let curChunkIdx = -1, curPrice = 0, curQty = 0, curSubtotal = 0, curWalked = false;
@@ -1167,7 +1194,7 @@ const BANKRUPTCY_RESET_CASH = 20000;
    there's no card-based or trade-based way out on their own. */
 function isBankrupt(p){
   if(p.cash>=0) return false;
-  let sellableValue = p.spShares*spPrice();
+  let sellableValue = p.spShares*spPrice() + p.spxShares*spxPrice();
   STOCK_IDS.forEach(id=>{ sellableValue += (p.shares[id]||0)*price(id); });
   return sellableValue < Math.abs(p.cash);
 }
@@ -1181,6 +1208,7 @@ function resetBankruptPlayer(p){
     p.shares[id]=0; p.shorts[id]=0; p.costBasis[id]=0; p.shortBasis[id]=0; p.holdStreak[id]=0;
   });
   p.spShares = 0; p.spCostBasis = 0;
+  p.spxShares = 0; p.spxCostBasis = 0;
   p.cash = BANKRUPTCY_RESET_CASH;
   p.goldenGeese = [];
   p.marginShield = false;
@@ -1245,6 +1273,19 @@ function moveStock(id, dir, respectFreeze){
 function moveSP(dir){
   state.sp.prevIdx = state.sp.idx;
   state.sp.idx = Math.max(0, Math.min(state.sp.track.length-1, state.sp.idx + dir));
+  state.spx.prevIdx = state.spx.idx;
+  state.spx.idx = Math.max(0, Math.min(state.spx.track.length-1, state.spx.idx + dir));
+}
+
+/* Trading SP8 is the only thing that can move either index's price — Mini
+   SP8 never has its own price impact (see buyShares/sellShares), so
+   whenever SP8 walks from a completed group-of-4, Mini SP8 has to walk the
+   exact same number of steps right alongside it, or "they always move
+   together" stops being true the moment anyone actually trades. */
+function mirrorOntoMiniSP8(delta){
+  if(!delta) return;
+  state.sp.prevIdx = state.sp.idx;
+  state.sp.idx = Math.max(0, Math.min(state.sp.track.length-1, state.sp.idx + delta));
 }
 
 /* Applies a dictated multi-step move to one stock, checking Freeze once for
@@ -1342,6 +1383,11 @@ function recordHistory(){
     state.sp.history.push(spCur);
     if(state.sp.history.length > MAX_HISTORY_POINTS) state.sp.history = state.sp.history.slice(-MAX_HISTORY_POINTS);
   }
+  const spxCur = spxPrice();
+  if(state.spx.history[state.spx.history.length-1]!==spxCur){
+    state.spx.history.push(spxCur);
+    if(state.spx.history.length > MAX_HISTORY_POINTS) state.spx.history = state.spx.history.slice(-MAX_HISTORY_POINTS);
+  }
 }
 
 /* One point per turn TAKEN (called from endTurn, not per-trade) — every
@@ -1366,7 +1412,7 @@ function checkGameOver(){
     let best=null;
     state.players.forEach(p=>{ if(!best || netWorth(p)>netWorth(best)) best=p; });
     state.winner = best;
-    logEvent(`S&P 8 hit its ceiling — game over!`, true);
+    logEvent(`Mini SP8 hit its ceiling — game over!`, true);
     return;
   }
 
@@ -1742,21 +1788,29 @@ function resolveAuto(card){
     case 'covid':
       STOCK_IDS.forEach(id=>moveStock(id,-6,false));
       moveSP(-6);
-      logEvent('COVID-19 crash hit every stock and the S&P 8.', true);
+      logEvent('COVID-19 crash hit every stock and both S&P 8 indexes.', true);
       break;
     case 'recession':
       STOCK_IDS.forEach(id=>moveStock(id,-3,false));
       moveSP(-3);
-      logEvent('Recession: all stocks and the S&P 8 dipped.', true);
+      logEvent('Recession: all stocks and both S&P 8 indexes dipped.', true);
       break;
     case 'bull':
       STOCK_IDS.forEach(id=>moveStock(id,1,false));
       moveSP(1);
-      logEvent('Bull Market: all stocks and the S&P 8 climbed.', true);
+      logEvent('Bull Market: all stocks and both S&P 8 indexes climbed.', true);
       break;
     case 'sp_up':
       moveSP(1);
-      logEvent(`S&P 8 rose to $${spPrice()}.`);
+      logEvent(`Both S&P 8 indexes rose — Mini SP8 to $${spPrice()}, SP8 to $${spxPrice()}.`);
+      break;
+    case 'sp_up2':
+      moveSP(2);
+      logEvent(`Both S&P 8 indexes rose 2 steps — Mini SP8 to $${spPrice()}, SP8 to $${spxPrice()}.`);
+      break;
+    case 'sp_down':
+      moveSP(-1);
+      logEvent(`Both S&P 8 indexes fell — Mini SP8 to $${spPrice()}, SP8 to $${spxPrice()}.`);
       break;
     case 'cash':
       p.cash += card.amount;
@@ -1844,6 +1898,54 @@ function resolveAuto(card){
       p.marginShield = true;
       logEvent(`${p.name} is now protected from their next margin call.`, true);
       break;
+    case 'buyout': {
+      const eligible = STOCK_IDS.filter(id=>!state.stocks[id].worthless);
+      if(eligible.length===0){ logEvent('Buyout fizzled — no stocks left to acquire.'); break; }
+      const stock = eligible[Math.floor(Math.random()*eligible.length)];
+      const s = state.stocks[stock];
+      const trackLen = s.track.length;
+      const curIdx = s.idx;
+      const wantsPremium = Math.random() < (2/3); // 66% premium, 33% lowball
+      let targetIdx;
+      if(wantsPremium && curIdx < trackLen-1){
+        targetIdx = curIdx + 1 + Math.floor(Math.random()*(trackLen-1-curIdx));
+      } else if(!wantsPremium && curIdx > 0){
+        targetIdx = Math.floor(Math.random()*curIdx);
+      } else if(curIdx < trackLen-1){
+        targetIdx = curIdx + 1 + Math.floor(Math.random()*(trackLen-1-curIdx)); // no room the intended way — take the other side
+      } else {
+        targetIdx = Math.max(0, curIdx-1);
+      }
+      const buyoutPrice = s.track[targetIdx];
+      const isPremium = targetIdx > curIdx;
+
+      state.players.forEach(pl=>{
+        const heldLong = pl.shares[stock]||0;
+        if(heldLong>0){
+          const proceeds = heldLong*buyoutPrice;
+          pl.cash += proceeds;
+          pl.shares[stock] = 0;
+          pl.costBasis[stock] = 0;
+          pl.holdStreak[stock] = 0;
+          logEvent(`${pl.name}'s ${heldLong} shares of ${stock} were bought out for $${proceeds}.`, true);
+        }
+        const heldShort = pl.shorts[stock]||0;
+        if(heldShort>0){
+          const cost = heldShort*buyoutPrice;
+          pl.cash -= cost;
+          reduceShortBasisOnCover(pl, stock, heldShort);
+          pl.shorts[stock] = 0;
+          logEvent(`${pl.name}'s ${heldShort}-share ${stock} short was forcibly covered in the buyout for $${cost}.`, true);
+        }
+      });
+
+      s.prevIdx = s.idx;
+      s.idx = targetIdx;
+      checkMarginCalls(); checkGameOver();
+      card.text = `Buyout: ${stock} has been bought out at $${buyoutPrice}/share${isPremium?' — a premium buyout':' — a lowball buyout'}. Every position in it was instantly settled; it reopens and trades normally from here.`;
+      logEvent(`Buyout! ${stock} was acquired at $${buyoutPrice}/share${isPremium?' (premium)':' (lowball)'} — every position in it was closed out.`, true);
+      break;
+    }
     case 'short_squeeze': {
       const eligible = STOCK_IDS.filter(id=>!state.stocks[id].worthless);
       if(eligible.length===0){ logEvent('Short Squeeze fizzled — no stocks left to squeeze.'); break; }
@@ -1910,13 +2012,13 @@ function resolveChoice(card, choice){
       if(side==='buy'){
         const cost = price(stock)*qty;
         if(cost>p.cash){ state.choiceError = `Not enough cash — whale-buying ${qty} ${stock} costs $${cost}, you have $${p.cash}.`; return false; }
-        p.cash -= cost; addCostBasis(p, stock, cost, false); p.shares[stock]+=qty;
+        p.cash -= cost; addCostBasis(p, stock, cost); p.shares[stock]+=qty;
         moveStock(stock,1,false); moveStock(stock,1,false);
         recordHistory(); recordTradeMarker(stock, p.color, 'up', qty);
         logEvent(`${p.name} whale-bought ${qty} ${stock} for $${cost} — price surged.`);
       } else if(side==='sell'){
         if(p.shares[stock]<qty){ state.choiceError = `You only hold ${p.shares[stock]} ${stock} — can't whale-sell ${qty}.`; return false; }
-        reduceCostBasisOnSell(p, stock, qty, false);
+        reduceCostBasisOnSell(p, stock, qty);
         p.shares[stock]-=qty; p.cash += price(stock)*qty;
         moveStock(stock,-1,false); moveStock(stock,-1,false);
         recordHistory(); recordTradeMarker(stock, p.color, 'down', qty);
@@ -1946,11 +2048,11 @@ function resolveChoice(card, choice){
 }
 
 /* ============================= TRADING ============================= */
-function tickerLabel(id){ return id==='SP' ? 'SP8' : id; }
+function tickerLabel(id){ return id==='SP' ? 'Mini SP8' : id==='SPX' ? 'SP8' : id; }
 
 function snapshotForUndo(){
   return JSON.parse(JSON.stringify({
-    stocks: state.stocks, sp: state.sp, players: state.players,
+    stocks: state.stocks, sp: state.sp, spx: state.spx, players: state.players,
     turnUsage: state.turnUsage, turnFills: state.turnFills,
     log: state.log, gameOver: state.gameOver, winner: state.winner,
   }));
@@ -1961,7 +2063,7 @@ function pushUndoSnapshot(){
 function undoLastTrade(){
   if(!isMyTurn() || !state.turnUndoStack || state.turnUndoStack.length===0) return;
   const snap = state.turnUndoStack.pop();
-  state.stocks = snap.stocks; state.sp = snap.sp; state.players = snap.players;
+  state.stocks = snap.stocks; state.sp = snap.sp; state.spx = snap.spx; state.players = snap.players;
   state.turnUsage = snap.turnUsage; state.turnFills = snap.turnFills;
   state.log = snap.log; state.gameOver = snap.gameOver; state.winner = snap.winner;
   logEvent('Last trade undone.');
@@ -1973,39 +2075,41 @@ function undoLastTrade(){
    (sell-pressure) stack as bars from the top. Colored per player. */
 const MAX_TRADE_MARKERS = 150;
 function recordTradeMarker(id, color, side, qty){
-  const obj = id==='SP' ? state.sp : state.stocks[id];
+  const obj = objFor(id);
   obj.tradeMarkers.push({ historyIdx: obj.history.length-1, color, side, qty });
   if(obj.tradeMarkers.length > MAX_TRADE_MARKERS) obj.tradeMarkers = obj.tradeMarkers.slice(-MAX_TRADE_MARKERS);
 }
 
 function buyShares(id, qtyRequested, force){
   if((!force && !isMyTurn()) || !id || state.gameOver) return;
-  if(id!=='SP' && state.stocks[id].worthless) return;
+  if(id!=='SP' && id!=='SPX' && state.stocks[id].worthless) return;
   const p = state.players[state.current];
   const qty = Math.min(qtyRequested||0, capRemaining(), capRemainingForStock(id));
   if(qty<=0){ logEvent(`No cap left this turn to buy ${tickerLabel(id)}.`); render(); return; }
   const offer = p.publicOffering;
-  const offerEligible = id!=='SP' && offer && offer.active && (offer.usedStocks.includes(id) || offer.usedStocks.length<3);
+  const offerEligible = id!=='SP' && id!=='SPX' && offer && offer.active && (offer.usedStocks.includes(id) || offer.usedStocks.length<3);
   const priorFilled = state.turnFills.up[id]||0;
-  const walk = offerEligible
-    ? { total: price(id)*qty, fee: 0, finalIdx: state.stocks[id].idx } // Public Offering: flat price, no fee, no walk
+  const walk = (id==='SP' || offerEligible)
+    ? { total: priceOf(id)*qty, fee: 0, finalIdx: objFor(id).idx } // Mini SP8 never has its own price impact; Public Offering waives it for stocks
     : walkOrderDetailed(id, qty, +1, priorFilled);
   const totalCost = walk.total + walk.fee;
   if(totalCost > freeCash(p)){ logEvent(`${p.name} doesn't have enough free cash to buy ${qty} ${tickerLabel(id)}.`); render(); return; }
   pushUndoSnapshot();
   p.cash -= totalCost;
-  addCostBasis(p, id, totalCost, id==='SP');
-  if(id==='SP'){ p.spShares += qty; } else { p.shares[id] += qty; }
-  const obj = id==='SP' ? state.sp : state.stocks[id];
+  addCostBasis(p, id, totalCost);
+  if(id==='SP'){ p.spShares += qty; } else if(id==='SPX'){ p.spxShares += qty; } else { p.shares[id] += qty; }
+  const obj = objFor(id);
+  const priorIdx = obj.idx;
   obj.prevIdx = obj.idx; obj.idx = walk.finalIdx;
+  if(id==='SPX') mirrorOntoMiniSP8(walk.finalIdx - priorIdx); // SP8 and Mini SP8 always move together
   state.turnUsage.total += qty;
   state.turnUsage.perStock[id] = (state.turnUsage.perStock[id]||0) + qty;
   if(offerEligible){
     if(!offer.usedStocks.includes(id)) offer.usedStocks.push(id);
-  } else {
+  } else if(id!=='SP') {
     state.turnFills.up[id] = priorFilled + qty;
   }
-  const feeNote = walk.fee>0 ? ` (incl. $${walk.fee} fee)` : (offerEligible ? ' (Public Offering — no fee, no price impact)' : '');
+  const feeNote = walk.fee>0 ? ` (incl. $${walk.fee} fee)` : (id==='SP' ? ' (no price impact)' : offerEligible ? ' (Public Offering — no fee, no price impact)' : '');
   logEvent(`${p.name} bought ${qty} ${tickerLabel(id)} for $${totalCost}${feeNote} — now $${obj.track[obj.idx]}.`);
   checkMarginCalls(); checkGameOver(); recordTradeMarker(id, p.color, 'up', qty); schedulePersist(); render();
 }
@@ -2013,26 +2117,30 @@ function buyShares(id, qtyRequested, force){
 function sellShares(id, qtyRequested, force){
   if((!force && !isMyTurn()) || !id || state.gameOver) return;
   const p = state.players[state.current];
-  const held = id==='SP' ? p.spShares : p.shares[id];
+  const held = id==='SP' ? p.spShares : id==='SPX' ? p.spxShares : p.shares[id];
   const qty = Math.min(qtyRequested||0, held);
   if(qty<=0){ render(); return; }
   const priorFilled = state.turnFills.down[id]||0;
-  const walk = walkOrderDetailed(id, qty, -1, priorFilled);
+  const walk = id==='SP'
+    ? { total: priceOf(id)*qty, fee: 0, finalIdx: objFor(id).idx } // Mini SP8 never has its own price impact
+    : walkOrderDetailed(id, qty, -1, priorFilled);
   const proceeds = walk.total - walk.fee;
   pushUndoSnapshot();
   p.cash += proceeds;
-  reduceCostBasisOnSell(p, id, qty, id==='SP');
-  if(id==='SP'){ p.spShares -= qty; } else { p.shares[id] -= qty; }
-  const obj = id==='SP' ? state.sp : state.stocks[id];
+  reduceCostBasisOnSell(p, id, qty);
+  if(id==='SP'){ p.spShares -= qty; } else if(id==='SPX'){ p.spxShares -= qty; } else { p.shares[id] -= qty; }
+  const obj = objFor(id);
+  const priorIdx = obj.idx;
   obj.prevIdx = obj.idx; obj.idx = walk.finalIdx;
-  state.turnFills.down[id] = priorFilled + qty;
-  const feeNote = walk.fee>0 ? ` (after $${walk.fee} fee)` : '';
+  if(id==='SPX') mirrorOntoMiniSP8(walk.finalIdx - priorIdx); // SP8 and Mini SP8 always move together
+  if(id!=='SP') state.turnFills.down[id] = priorFilled + qty;
+  const feeNote = walk.fee>0 ? ` (after $${walk.fee} fee)` : (id==='SP' ? ' (no price impact)' : '');
   logEvent(`${p.name} sold ${qty} ${tickerLabel(id)} for $${proceeds}${feeNote} — now $${obj.track[obj.idx]}.`);
   checkMarginCalls(); checkGameOver(); recordTradeMarker(id, p.color, 'down', qty); schedulePersist(); render();
 }
 
 function openShort(id, qtyRequested, force){
-  if((!force && !isMyTurn()) || !id || id==='SP' || state.gameOver) return; // SP8 can't be shorted
+  if((!force && !isMyTurn()) || !id || id==='SP' || id==='SPX' || state.gameOver) return; // neither index fund can be shorted
   if(state.stocks[id].worthless) return;
   const p = state.players[state.current];
   const qty = Math.min(qtyRequested||0, capRemaining(), capRemainingForStock(id));
@@ -2097,15 +2205,21 @@ function endTurn(){
   persist(); render();
 }
 
-/* S&P 8 pays a 10% dividend on holdings at the end of every round (once
-   every player has taken a turn) — a steady reward for parking cash in the
-   "safe" index instead of chasing individual stocks. */
+/* Both index funds pay a 10% dividend on holdings at the end of every
+   round (once every player has taken a turn) — a steady reward for
+   parking cash in the "safe" indexes instead of chasing individual
+   stocks. Same rate for both — SP8 just moves more dollars per share. */
 function paySP8Dividend(){
   state.players.forEach(pl=>{
     if(pl.spShares>0){
       const pay = Math.round(pl.spShares*spPrice()*0.10);
       pl.cash += pay;
-      logEvent(`${pl.name} collected a $${pay} S&P 8 dividend (10% of holding value).`, true);
+      logEvent(`${pl.name} collected a $${pay} Mini SP8 dividend (10% of holding value).`, true);
+    }
+    if(pl.spxShares>0){
+      const pay = Math.round(pl.spxShares*spxPrice()*0.10);
+      pl.cash += pay;
+      logEvent(`${pl.name} collected a $${pay} SP8 dividend (10% of holding value).`, true);
     }
   });
 }
@@ -2759,13 +2873,13 @@ function renderExpandedChart(history, top, bottom, color, markers, zoneBottomPri
 function renderExpandedChartModal(){
   if(!state.expandedChart) return '';
   const id = state.expandedChart;
-  const isSP = id==='SP';
-  const obj = isSP ? state.sp : state.stocks[id];
-  const color = isSP ? 'var(--sp)' : SECTORS[STOCKS[id].sector].color;
-  const label = isSP ? 'SP8' : `${id} — ${STOCKS[id].name}`;
+  const isIndex = id==='SP' || id==='SPX';
+  const obj = objFor(id);
+  const color = id==='SP' ? 'var(--sp)' : id==='SPX' ? 'var(--spx)' : SECTORS[STOCKS[id].sector].color;
+  const label = id==='SP' ? 'Mini SP8' : id==='SPX' ? 'SP8' : `${id} — ${STOCKS[id].name}`;
   const top = obj.track[obj.track.length-1], bottom = obj.track[0];
   const cur = obj.track[obj.idx];
-  const zone = !isSP ? DIVIDEND_ZONES[id] : null;
+  const zone = !isIndex ? DIVIDEND_ZONES[id] : null;
   const zoneBottomPrice = zone ? obj.track[obj.track.length-zone.dots] : null;
 
   // Legend: only players who've actually got a marker on this chart
@@ -2829,22 +2943,42 @@ function renderBoard(){
   });
   html += `</div>`;
 
-  // SP panel
+  // Index fund panels — Mini SP8 (original) and SP8 (10x price, for when
+  // cash has piled up too high for anything else to meaningfully absorb).
   const sp = state.sp;
   const spSel = state.tradeSelection==='SP';
   html += `<div class="sp-panel ${spSel?'selected':''}" data-trade-id="SP" style="margin-top:12px;">
-    <div class="sector-head"><span class="sector-dot" style="background:var(--sp)"></span>S&amp;P 8 Index</div>
+    <div class="sector-head"><span class="sector-dot" style="background:var(--sp)"></span>Mini SP8 Index</div>
     <div class="stock-row-inner">
       <div class="stock-chart-col" data-chart-id="SP">${renderSparkline(sp.history, sp.track[sp.track.length-1], sp.track[0], 'var(--sp)', sp.tradeMarkers)}</div>
       <div class="stock-main-col">
         <div class="row-top" style="margin-bottom:8px;">
-          <span class="ticker" style="color:var(--sp)">SP8</span>
+          <span class="ticker" style="color:var(--sp)">Mini SP8</span>
           <span class="price-now ${sp.idx!==sp.prevIdx?'flash':''}">$${sp.track[sp.idx]}</span>
           ${priceDeltaBadge(sp.idx, sp.prevIdx)}
-          <span style="margin-left:auto;font-size:11px;color:var(--muted);white-space:nowrap;">Stable index — market-wide events &amp; S&amp;P +1 cards only</span>
+          <span style="margin-left:auto;font-size:11px;color:var(--muted);white-space:nowrap;">Trading it never moves the price — mirrors SP8 exactly, always</span>
           ${spSel?'<span class="tap-hint">Selected</span>':'<span class="tap-hint">Tap to trade</span>'}
         </div>
         ${renderTrack(sp.track, sp.idx, sp.prevIdx, 'var(--sp)')}
+      </div>
+    </div>
+  </div>`;
+
+  const spx = state.spx;
+  const spxSel = state.tradeSelection==='SPX';
+  html += `<div class="sp-panel ${spxSel?'selected':''}" data-trade-id="SPX" style="margin-top:12px;">
+    <div class="sector-head"><span class="sector-dot" style="background:var(--spx)"></span>SP8 Index</div>
+    <div class="stock-row-inner">
+      <div class="stock-chart-col" data-chart-id="SPX">${renderSparkline(spx.history, spx.track[spx.track.length-1], spx.track[0], 'var(--spx)', spx.tradeMarkers)}</div>
+      <div class="stock-main-col">
+        <div class="row-top" style="margin-bottom:8px;">
+          <span class="ticker" style="color:var(--spx)">SP8</span>
+          <span class="price-now ${spx.idx!==spx.prevIdx?'flash':''}">$${spx.track[spx.idx]}</span>
+          ${priceDeltaBadge(spx.idx, spx.prevIdx)}
+          <span style="margin-left:auto;font-size:11px;color:var(--muted);white-space:nowrap;">10x Mini SP8's price — trading THIS one moves both, together</span>
+          ${spxSel?'<span class="tap-hint">Selected</span>':'<span class="tap-hint">Tap to trade</span>'}
+        </div>
+        ${renderTrack(spx.track, spx.idx, spx.prevIdx, 'var(--spx)')}
       </div>
     </div>
   </div>`;
@@ -2901,19 +3035,20 @@ function renderSidebar(){
     } else {
       html += `<div class="choice-error" style="margin-bottom:10px;">${p.name}'s cash is negative ($${p.cash}) after a margin call. Sell or cover holdings until you're back to $0 or more before you can draw a card.</div>`;
       if(!sel){
-        html += `<div class="no-selection">Tap any stock row or the S&amp;P 8 panel on the left to sell or cover it.</div>`;
+        html += `<div class="no-selection">Tap any stock row or either S&amp;P 8 panel on the left to sell or cover it.</div>`;
       } else {
-        const label = sel==='SP' ? 'SP8' : sel;
-        const pr = sel==='SP' ? spPrice() : price(sel);
-        const held = sel==='SP' ? p.spShares : p.shares[sel];
-        const shortHeld = sel==='SP' ? 0 : (p.shorts[sel]||0);
+        const isIndexSel = sel==='SP' || sel==='SPX';
+        const label = tickerLabel(sel);
+        const pr = priceOf(sel);
+        const held = sel==='SP' ? p.spShares : sel==='SPX' ? p.spxShares : p.shares[sel];
+        const shortHeld = isIndexSel ? 0 : (p.shorts[sel]||0);
         html += `<div class="selected-ticker-box">
           <span class="stx">${label}</span>
-          <span class="spx">$${pr} &middot; long ${held}${sel!=='SP'?` &middot; short ${shortHeld}`:''}</span>
+          <span class="spx">$${pr} &middot; long ${held}${!isIndexSel?` &middot; short ${shortHeld}`:''}</span>
         </div>
         <div class="btn-row" style="margin-bottom:12px;">
           <button class="btn sell full" id="sellBtn" ${canSellOne(sel)?'':'disabled'}>Sell</button>
-          ${sel!=='SP'?`<button class="btn cover full" id="coverBtn" ${canCoverOne(sel)?'':'disabled'}>Cover</button>`:''}
+          ${!isIndexSel?`<button class="btn cover full" id="coverBtn" ${canCoverOne(sel)?'':'disabled'}>Cover</button>`:''}
         </div>`;
       }
       html += `<button class="btn full" id="drawBtn" disabled>Draw Card (raise cash to $0+ first)</button>`;
@@ -2935,22 +3070,23 @@ function renderSidebar(){
       <div class="cap-meter">Shares left this turn: <b>${capRemaining()}/${TURN_CAP}</b> &nbsp;(sells &amp; covers are free)</div>
       <button class="btn secondary full" id="buyInsiderBtn" style="margin:8px 0;" ${p.cash>=INSIDER_INFO_PRICE?'':'disabled'} title="Guaranteed real — never one of the fake tips">Buy Insider Info ($${INSIDER_INFO_PRICE.toLocaleString()})</button>`;
     if(!sel){
-      html += `<div class="no-selection">No ticker selected. Tap any stock row or the S&amp;P 8 panel on the left to trade it.</div>`;
+      html += `<div class="no-selection">No ticker selected. Tap any stock row or either S&amp;P 8 panel on the left to trade it.</div>`;
     } else {
-      const label = sel==='SP' ? 'SP8' : sel;
-      const pr = sel==='SP' ? spPrice() : price(sel);
-      const held = sel==='SP' ? p.spShares : p.shares[sel];
-      const shortHeld = sel==='SP' ? 0 : (p.shorts[sel]||0);
+      const isIndexSel = sel==='SP' || sel==='SPX';
+      const label = tickerLabel(sel);
+      const pr = priceOf(sel);
+      const held = sel==='SP' ? p.spShares : sel==='SPX' ? p.spxShares : p.shares[sel];
+      const shortHeld = isIndexSel ? 0 : (p.shorts[sel]||0);
       html += `<div class="selected-ticker-box">
         <span class="stx">${label}</span>
-        <span class="spx">$${pr} &middot; long ${held}${sel!=='SP'?` &middot; short ${shortHeld}`:''}</span>
+        <span class="spx">$${pr} &middot; long ${held}${!isIndexSel?` &middot; short ${shortHeld}`:''}</span>
       </div>
-      ${sel!=='SP'?`<div class="cap-meter">${label} cap this turn: <b>${Math.max(0,capRemainingForStock(sel))}/4</b> (buy + short)</div>`:''}
+      ${!isIndexSel?`<div class="cap-meter">${label} cap this turn: <b>${Math.max(0,capRemainingForStock(sel))}/4</b> (buy + short)</div>`:''}
       <div class="btn-row" style="margin-bottom:8px;">
         <button class="btn buy full" id="buyBtn" ${canBuyOne(sel)?'':'disabled'}>Buy</button>
         <button class="btn sell full" id="sellBtn" ${canSellOne(sel)?'':'disabled'}>Sell</button>
       </div>`;
-      if(sel!=='SP'){
+      if(!isIndexSel){
         html += `<div class="btn-row" style="margin-bottom:12px;">
           <button class="btn short full" id="shortBtn" ${canShortOne(sel)?'':'disabled'}>Short</button>
           <button class="btn cover full" id="coverBtn" ${canCoverOne(sel)?'':'disabled'}>Cover</button>
@@ -2977,13 +3113,18 @@ function renderSidebar(){
         const sectorLabel = SECTORS[STOCKS[id].sector].label || STOCKS[id].sector;
         const value = me.shares[id]*price(id);
         const basis = Math.round(me.costBasis[id]||0);
-        holdingRows.push({ value, html: `<tr><td>${id} (${sectorLabel})</td><td>${me.shares[id]}</td><td>$${basis}</td><td>$${value}</td>${glCell(longGainLoss(me,id,false))}</tr>` });
+        holdingRows.push({ value, html: `<tr><td>${id} (${sectorLabel})</td><td>${me.shares[id]}</td><td>$${basis}</td><td>$${value}</td>${glCell(longGainLoss(me,id))}</tr>` });
       }
     });
     if(me.spShares>0){
       const value = me.spShares*spPrice();
       const basis = Math.round(me.spCostBasis||0);
-      holdingRows.push({ value, html: `<tr><td>SP8</td><td>${me.spShares}</td><td>$${basis}</td><td>$${value}</td>${glCell(longGainLoss(me,'SP',true))}</tr>` });
+      holdingRows.push({ value, html: `<tr><td>Mini SP8</td><td>${me.spShares}</td><td>$${basis}</td><td>$${value}</td>${glCell(longGainLoss(me,'SP'))}</tr>` });
+    }
+    if(me.spxShares>0){
+      const value = me.spxShares*spxPrice();
+      const basis = Math.round(me.spxCostBasis||0);
+      holdingRows.push({ value, html: `<tr><td>SP8</td><td>${me.spxShares}</td><td>$${basis}</td><td>$${value}</td>${glCell(longGainLoss(me,'SPX'))}</tr>` });
     }
     STOCK_IDS.forEach(id=>{
       if((me.shorts[id]||0)>0){
@@ -3315,7 +3456,8 @@ function render(){
             ${isConnected?'Connected':'Reconnecting…'}
           </div>
         </div>
-        <div class="item"><div class="label">S&amp;P 8</div><div class="value mono">$${spPrice()}</div></div>
+        <div class="item"><div class="label">Mini SP8</div><div class="value mono">$${spPrice()}</div></div>
+        <div class="item"><div class="label">SP8</div><div class="value mono">$${spxPrice()}</div></div>
         <div class="item"><div class="label">Turn</div><div class="value" style="color:${p.color};">${p.name}</div></div>
         <div class="item"><div class="label">Time Left</div><div class="value mono" id="turnTimerValue" style="${turnTimerSecondsLeft()<=0?'color:var(--down);':''}">${formatTurnTimer(turnTimerSecondsLeft())}</div></div>
         <div class="item"><div class="label">${state.winCondition && state.winCondition.mode==='timer' ? 'Game Ends In' : 'Goal'}</div><div class="value mono" id="gameLengthValue" style="${gameTimeLeftSecs()<=0 && state.winCondition && state.winCondition.mode==='timer' ? 'color:var(--down);' : ''}">${state.winCondition && state.winCondition.mode==='timer' ? formatGameTimeLeft() : '$'+((state.winCondition&&state.winCondition.target)||500000).toLocaleString()}</div></div>
