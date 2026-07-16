@@ -466,6 +466,22 @@ function extractSynced(s){
 let applyingRemote = false; // guards against re-persisting a change we just received
 let syncFailed = false; // true if a write ultimately failed even after retries — shown as a banner
 
+/* A brief cooldown across Buy/Sell/Short/Cover — belt-and-suspenders
+   alongside the scroll-position fix in render(): if a tap ever does land
+   half a beat off target (a ghost second touch event, a slow re-render),
+   this stops it from firing a second, DIFFERENT trade action immediately
+   after the first one. A deliberate next click is never this fast. */
+let lastTradeClickAt = 0;
+const TRADE_CLICK_COOLDOWN = 220;
+function guardedTradeClick(fn){
+  return (...args)=>{
+    const now = Date.now();
+    if(now - lastTradeClickAt < TRADE_CLICK_COOLDOWN) return;
+    lastTradeClickAt = now;
+    fn(...args);
+  };
+}
+
 /* --- 1 & 2: live connection status + auto-resync the instant we reconnect --- */
 let isConnected = true;
 let everConnected = false;
@@ -1483,7 +1499,7 @@ function tickScheduled(ownerIndex){
    you're paying a real informant, not just hearing a rumor. Same
    randomized roll and same private treatment as a drawn Scheduled Price
    card; the only difference is how it got set up. */
-const INSIDER_INFO_PRICE = 2000;
+const INSIDER_INFO_PRICE = 5000;
 function buyInsiderInfo(force){
   if((!force && !isMyTurn()) || state.gameOver || state.phase!=='trade') return;
   const p = state.players[state.current];
@@ -1785,8 +1801,7 @@ function resolveAuto(card){
       if(!bestStock){
         logEvent(`${p.name} hasn't held any stock long enough yet — Loyalty Bonus has no effect.`);
       } else {
-        const capped = Math.min(bestStreak, 10); // caps at 10 turns' worth so it can't blow up unbounded
-        const pay = Math.round(p.shares[bestStock]*price(bestStock)*0.02*capped);
+        const pay = Math.round(p.shares[bestStock]*price(bestStock)*0.02*bestStreak);
         p.cash += pay;
         logEvent(`${p.name} has held ${bestStock} for ${bestStreak} straight turn${bestStreak===1?'':'s'} — Loyalty Bonus pays $${pay}.`, true);
       }
@@ -2918,7 +2933,7 @@ function renderSidebar(){
       : `Trading phase — tap a ticker on the board, then click Buy, Sell, Short, or Cover. Each click trades 1 share.`;
     html += `<div style="font-size:13px;color:var(--muted);margin-bottom:6px;">${tradeIntro}</div>
       <div class="cap-meter">Shares left this turn: <b>${capRemaining()}/${TURN_CAP}</b> &nbsp;(sells &amp; covers are free)</div>
-      <button class="btn secondary full" id="buyInsiderBtn" style="margin:8px 0;" ${p.cash>=2000?'':'disabled'} title="Guaranteed real — never one of the fake tips">Buy Insider Info ($2,000)</button>`;
+      <button class="btn secondary full" id="buyInsiderBtn" style="margin:8px 0;" ${p.cash>=INSIDER_INFO_PRICE?'':'disabled'} title="Guaranteed real — never one of the fake tips">Buy Insider Info ($${INSIDER_INFO_PRICE.toLocaleString()})</button>`;
     if(!sel){
       html += `<div class="no-selection">No ticker selected. Tap any stock row or the S&amp;P 8 panel on the left to trade it.</div>`;
     } else {
@@ -3262,6 +3277,15 @@ function render(){
   if(!state || state.phase==='lobby' || myPlayerIndex===null){ renderSetup(); return; }
   repairCollections(state); // belt-and-suspenders: guarantee these exist no matter how state got here
   const p = state.players[state.current];
+  // render() fully rebuilds the DOM via innerHTML below — on many mobile
+  // browsers, replacing all that content resets (or otherwise disturbs)
+  // the page's scroll position, which visibly "jumps" the screen right
+  // after a tap. That's dangerous specifically because it happens between
+  // a click landing and the next one — a button that was under your finger
+  // can end up somewhere else entirely (e.g. Buy landing on Short right
+  // after). Capture where we are now so it can be restored exactly,
+  // instead of leaving the jump to chance.
+  const priorScrollX = window.scrollX, priorScrollY = window.scrollY;
   // render() fully rebuilds the DOM via innerHTML below — which would
   // otherwise silently reset an in-progress choice-card selection (a
   // <select> snapping back to its first option) any time something
@@ -3322,11 +3346,11 @@ function render(){
   if(byId('endTurnBtn')) byId('endTurnBtn').onclick = requestEndTurn;
   if(byId('eliminatedContinueBtn')) byId('eliminatedContinueBtn').onclick = ()=>{ if(isMyTurn()) endTurn(); };
   if(byId('newGameBtn')) byId('newGameBtn').onclick = wipeGame;
-  if(byId('buyBtn')) byId('buyBtn').onclick = ()=>buyShares(state.tradeSelection, 1);
+  if(byId('buyBtn')) byId('buyBtn').onclick = guardedTradeClick(()=>buyShares(state.tradeSelection, 1));
   if(byId('buyInsiderBtn')) byId('buyInsiderBtn').onclick = ()=>buyInsiderInfo();
-  if(byId('sellBtn')) byId('sellBtn').onclick = ()=>sellShares(state.tradeSelection, 1);
-  if(byId('shortBtn')) byId('shortBtn').onclick = ()=>openShort(state.tradeSelection, 1);
-  if(byId('coverBtn')) byId('coverBtn').onclick = ()=>coverShort(state.tradeSelection, 1);
+  if(byId('sellBtn')) byId('sellBtn').onclick = guardedTradeClick(()=>sellShares(state.tradeSelection, 1));
+  if(byId('shortBtn')) byId('shortBtn').onclick = guardedTradeClick(()=>openShort(state.tradeSelection, 1));
+  if(byId('coverBtn')) byId('coverBtn').onclick = guardedTradeClick(()=>coverShort(state.tradeSelection, 1));
   if(byId('undoBtn')) byId('undoBtn').onclick = undoLastTrade;
   if(byId('openLogBtn')) byId('openLogBtn').onclick = ()=>{ state.showLog = true; render(); };
   if(byId('openNetWorthBtn')) byId('openNetWorthBtn').onclick = ()=>{ state.showNetWorthGraph = true; render(); };
@@ -3367,6 +3391,11 @@ function render(){
       }
     });
   }
+  // Put the scroll position back exactly where it was — rebuilding the DOM
+  // can otherwise silently reset it, which is what makes the next tap land
+  // on the wrong button right after an action. Done on the next frame so
+  // it applies after the browser's own layout pass, not before it.
+  requestAnimationFrame(()=>{ window.scrollTo(priorScrollX, priorScrollY); });
   maybeStartBotTurn();
 }
 
