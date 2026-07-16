@@ -699,23 +699,58 @@ const STOCK_PRICE_CONFIG = {
   SPRE: { center:800,  top:1450,  bottom:210 },
 };
 
-/* Dividend zones: the top `dots` bubbles of a stock's own track pay a
-   per-turn dividend to whoever holds it while it's up there — a reward for
-   riding a stock all the way to its high end instead of selling early.
-   6 of the 8 stocks have one (NOVA and RXCO don't); smaller zones pay a
-   higher rate, bigger zones pay less, so neither is strictly better.
-   Shorts sitting in a zone pay HALF the zone's rate as a penalty (on top
-   of the flat 1% per-turn short carrying fee every open short pays,
-   regardless of zone) — mirrors Dividend Day's drawer/everyone-else split. */
+/* Dividend zones: the top N bubbles of a stock's own track pay a per-turn
+   dividend to whoever holds it while it's up there. Now covers all 8
+   stocks, wider than the original design, with rates high enough to give a
+   real reason to defend a stock at the top instead of just shorting the
+   inevitable reversion — a long at the top has little upside left but a
+   short has a lot, so the dividend has to outweigh that asymmetry, not
+   just add a small bonus on top of gains already banked getting there.
+   Smaller/tighter zones (harder to reach, easier to fall out of) pay more;
+   wider zones pay less. Shorts caught in a zone pay HALF its rate as a
+   penalty on top of the flat 1% per-turn short carrying fee every open
+   short pays regardless of zone — mirrors Dividend Day's drawer/everyone-
+   else split, and is what actually makes shorting a zone-topped stock
+   costly instead of free money. */
+/* Dividend zones: the top N bubbles of a stock's own track pay a per-turn
+   dividend to whoever holds it while it's up there — now much wider (6-12
+   dots, covering most of the upper half of a stock's range) so cash flows
+   into players' hands earlier and more often, not just at the very peak.
+   Each zone has its own `rates` array, one rate per dot, ordered from the
+   zone's entry dot (index 0, lowest rate) up to the very top dot (last
+   index, highest rate) — the gap between consecutive dots widens the
+   closer you get to the top, the same power-curve shape the price track
+   itself uses, so the very top dot is worth meaningfully defending instead
+   of the whole zone paying a flat amount. The two widest zones (NOVA,
+   SPRE) share the same low rate on their first couple of entry dots before
+   the ramp kicks in. Shorts caught in a zone pay HALF that dot's rate as a
+   penalty on top of the flat 1% per-turn short carrying fee every open
+   short pays regardless of zone — mirrors Dividend Day's drawer/everyone-
+   else split, and is what makes shorting a zone-topped stock costly. */
 const DIVIDEND_ZONES = {
-  QBIT: { dots:2, rate:0.04  },
-  VITA: { dots:2, rate:0.035 },
-  LUXE: { dots:3, rate:0.025 },
-  PWR:  { dots:3, rate:0.03  },
-  OILX: { dots:4, rate:0.02  },
-  SPRE: { dots:4, rate:0.015 },
+  QBIT: { dots:6,  rates:[0.08, 0.095, 0.135, 0.19, 0.265, 0.36] },
+  VITA: { dots:6,  rates:[0.07, 0.085, 0.12, 0.17, 0.24, 0.32] },
+  PWR:  { dots:8,  rates:[0.05, 0.055, 0.07, 0.09, 0.12, 0.155, 0.195, 0.24] },
+  RXCO: { dots:8,  rates:[0.05, 0.055, 0.07, 0.085, 0.11, 0.14, 0.18, 0.22] },
+  LUXE: { dots:10, rates:[0.04, 0.04, 0.05, 0.06, 0.07, 0.09, 0.11, 0.13, 0.15, 0.18] },
+  OILX: { dots:10, rates:[0.035, 0.035, 0.045, 0.05, 0.065, 0.08, 0.095, 0.115, 0.135, 0.16] },
+  NOVA: { dots:12, rates:[0.025, 0.025, 0.03, 0.035, 0.04, 0.05, 0.055, 0.065, 0.08, 0.09, 0.105, 0.12] },
+  SPRE: { dots:12, rates:[0.025, 0.025, 0.03, 0.035, 0.04, 0.05, 0.055, 0.065, 0.08, 0.09, 0.105, 0.12] },
 };
 const SHORT_CARRY_FEE_RATE = 0.01; // 1% of a short's current liability, charged every one of your own turns
+
+/* The dividend rate for a specific dot position on a stock's track — 0 if
+   that dot isn't in the zone at all. Used both for actually paying out and
+   for labeling each dot in the UI. */
+function dividendZoneRateAt(id, idx){
+  const zone = DIVIDEND_ZONES[id];
+  if(!zone) return 0;
+  const track = state.stocks[id].track;
+  const zoneStartIdx = track.length - zone.dots;
+  if(idx < zoneStartIdx) return 0;
+  const pos = Math.min(zone.rates.length-1, idx - zoneStartIdx);
+  return zone.rates[pos];
+}
 
 function freshState(players){
   const stocks = {};
@@ -749,7 +784,7 @@ function freshState(players){
     gameOver: false,
     winner: null,
     tradeSelection: null, // stock id or 'SP'
-    turnUsage: { total: 0, perStock: {} }, // resets each player's turn; buys+shorts only, drives the 10/4 caps
+    turnUsage: { total: 0, perStock: {} }, // resets each player's turn; buys+shorts only, drives the 12/4 caps
     turnFills: { up: {}, down: {} }, // resets each player's turn; tracks cumulative shares walked THIS turn per stock so repeated clicks chain together correctly. up = buys, down = sells+shorts (both push price down)
     turnUndoStack: [], // snapshots taken before each trade this turn, for the Undo Last Trade button
     confirmEndTurn: false,
@@ -924,7 +959,8 @@ function shortGainLoss(p, id){
   return basis - buyBackCost;
 }
 
-function capRemaining(){ return 10 - state.turnUsage.total; }
+const TURN_CAP = 12; // total buy+short shares allowed per turn (across all stocks)
+function capRemaining(){ return TURN_CAP - state.turnUsage.total; }
 function capRemainingForStock(id){ return 4 - (state.turnUsage.perStock[id]||0); }
 
 function canBuyOne(id){
@@ -1315,13 +1351,13 @@ function tickShortFeesAndDividends(ownerIndex){
       if(carry>0){ p.cash -= carry; totalFee += carry; }
     }
     if(inDividendZone(id)){
-      const zone = DIVIDEND_ZONES[id];
+      const rate = dividendZoneRateAt(id, state.stocks[id].idx);
       if(heldLong>0){
-        const pay = Math.round(heldLong*pr*zone.rate);
+        const pay = Math.round(heldLong*pr*rate);
         if(pay>0){ p.cash += pay; totalDiv += pay; }
       }
       if(heldShort>0){
-        const penalty = Math.round(heldShort*pr*zone.rate*0.5);
+        const penalty = Math.round(heldShort*pr*rate*0.5);
         if(penalty>0){ p.cash -= penalty; totalFee += penalty; }
       }
     }
@@ -2100,7 +2136,6 @@ function priceDeltaBadge(cur, prev){
 function renderTrack(track, curIdx, prevIdx, colorVar, id){
   const zone = id ? DIVIDEND_ZONES[id] : null;
   const zoneStartIdx = zone ? track.length - zone.dots : -1;
-  const rateLabel = zone ? `${(zone.rate*100).toFixed(1).replace(/\.0$/,'')}%` : '';
   let html = `<div class="track">`;
   const centerIdx = (track.length-1)/2;
   track.forEach((pr,i)=>{
@@ -2109,8 +2144,9 @@ function renderTrack(track, curIdx, prevIdx, colorVar, id){
     const isCenter = i===centerIdx;
     const inZone = zone && i>=zoneStartIdx;
     const zoneClasses = inZone ? ` div-zone${i===zoneStartIdx?' div-zone-start':''}${i===track.length-1?' div-zone-end':''}` : '';
+    const dotRateLabel = inZone ? `${(zone.rates[i-zoneStartIdx]*100).toFixed(1).replace(/\.0$/,'')}%` : '';
     html += `<div class="dot-wrap ${filled?'active':''} ${edge?'edge':''} ${isCenter?'center':''}${zoneClasses}">
-      ${inZone?`<div class="div-zone-rate">${rateLabel}</div>`:''}
+      ${inZone?`<div class="div-zone-rate">${dotRateLabel}</div>`:''}
       <div class="dot ${filled?'filled':''}" style="${filled?`background:${colorVar};color:${colorVar};`:''}"></div>
       <div class="dot-price">${pr}</div>
     </div>`;
@@ -2259,7 +2295,7 @@ function renderExpandedChartModal(){
         <h2 style="margin:0;color:${color};">${label}</h2>
         <span class="mono" style="font-size:20px;font-weight:600;">$${cur}</span>
       </div>
-      <div class="sub">Full price history${(obj.tradeMarkers||[]).length ? ' — bars from the bottom are buy/cover volume, bars from the top are sell/short volume' : ''}${zone ? ` — shaded band is the ${(zone.rate*100).toFixed(1).replace(/\.0$/,'')}% dividend zone` : ''}</div>
+      <div class="sub">Full price history${(obj.tradeMarkers||[]).length ? ' — bars from the bottom are buy/cover volume, bars from the top are sell/short volume' : ''}${zone ? ` — shaded band is the dividend zone (rate ranges ${(zone.rates[0]*100).toFixed(1).replace(/\.0$/,'')}%–${(zone.rates[zone.rates.length-1]*100).toFixed(1).replace(/\.0$/,'')}%, highest at the very top)` : ''}</div>
       <div style="margin:14px 0;overflow-x:auto;">${renderExpandedChart(obj.history, top, bottom, color, obj.tradeMarkers, zoneBottomPrice)}</div>
       ${legendHtml}
       <button class="btn full" id="closeChartBtn" style="margin-top:16px;">Close</button>
@@ -2290,7 +2326,7 @@ function renderBoard(){
               ${priceDeltaBadge(s.idx, s.prevIdx)}
               ${s.worthless?'<span class="worthless-badge">Worthless</span>':''}
               ${s.frozen?'<span class="frozen-badge">Frozen</span>':''}
-              ${inZoneNow?`<span class="frozen-badge" style="color:var(--up);background:rgba(62,207,142,0.12);">Dividend Zone ${(zone.rate*100).toFixed(1).replace(/\.0$/,'')}%</span>`:''}
+              ${inZoneNow?`<span class="frozen-badge" style="color:var(--up);background:rgba(62,207,142,0.12);">Dividend Zone ${(dividendZoneRateAt(id, s.idx)*100).toFixed(1).replace(/\.0$/,'')}%</span>`:''}
               ${drip?`<span class="frozen-badge" style="color:${drip.dir>0?'var(--up)':'var(--down)'};background:${drip.dir>0?'rgba(62,207,142,0.12)':'rgba(255,92,92,0.12)'};">Earnings ${drip.dir>0?'+':'-'}${drip.bubblesPerTurn}/turn ×${drip.turnsLeft}</span>`:''}
               <span style="margin-left:auto;font-size:11px;color:var(--muted);white-space:nowrap;">${STOCKS[id].name}</span>
               ${isSel?'<span class="tap-hint">Selected</span>':'<span class="tap-hint">Tap to trade</span>'}
@@ -2401,7 +2437,7 @@ function renderSidebar(){
       ? `Closing card resolved — react if you need to, then click End Turn.`
       : `Trading phase — tap a ticker on the board, then click Buy, Sell, Short, or Cover. Each click trades 1 share.`;
     html += `<div style="font-size:13px;color:var(--muted);margin-bottom:6px;">${tradeIntro}</div>
-      <div class="cap-meter">Shares left this turn: <b>${capRemaining()}/10</b> &nbsp;(sells &amp; covers are free)</div>`;
+      <div class="cap-meter">Shares left this turn: <b>${capRemaining()}/${TURN_CAP}</b> &nbsp;(sells &amp; covers are free)</div>`;
     if(!sel){
       html += `<div class="no-selection">No ticker selected. Tap any stock row or the S&amp;P 8 panel on the left to trade it.</div>`;
     } else {
