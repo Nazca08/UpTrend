@@ -354,7 +354,7 @@ function buildDeck(){
   add(3, { type:'whale', text:'Whale Trade: trade a stock at today\u2019s price right now — your trade then pushes the price 2 steps in that direction.' });
 
   // Golden Parachute — 3
-  add(3, { type:'parachute', text:'Golden Parachute: if your net worth is under $3,000, receive a $2,000 bailout.' });
+  add(3, { type:'parachute', text:'Golden Parachute: if your net worth is under $30,000, receive a $20,000 bailout.' });
 
   // Steady Hand — 4
   add(4, { type:'steady', text:'Steady Hand: gain $250 for every distinct stock you currently hold shares in.' });
@@ -370,6 +370,28 @@ function buildDeck(){
 
   // S&P +1 — 9 (new, no negative counterpart)
   add(9, { type:'sp_up', text:'S&P 8 rises 1 step.' });
+
+  // Loyalty Bonus — 3
+  add(3, { type:'loyalty_bonus', text:'Loyalty Bonus: pays out based on how long you\u2019ve continuously held your longest-held stock.' });
+
+  // Short Squeeze — 2
+  add(2, { type:'short_squeeze', text:'Short Squeeze: pick a stock \u2014 it surges hard, and everyone shorting it is forced to cover immediately at the new price.' });
+
+  // Golden Goose — 1 (rare and permanent, so kept scarce)
+  add(1, { type:'golden_goose', text:'Golden Goose: a random stock permanently pays YOU an extra 10% dividend on your holdings, every one of your turns, for the rest of the game.' });
+
+  // Rate Hike / Rate Cut — 2 each
+  add(2, { type:'rate_hike', text:'Rate Hike: every stock\u2019s dividend zone rate is boosted 50% for the next 6 turns.' });
+  add(2, { type:'rate_cut',  text:'Rate Cut: every stock\u2019s dividend zone rate is cut in half for the next 6 turns.' });
+
+  // Public Offering — 2
+  add(2, { type:'public_offering', text:'Public Offering: this turn, buy up to 4 shares each of up to 3 different stocks with no group fee and no price impact (buys only).' });
+
+  // Dividend Leach — 2
+  add(2, { type:'dividend_leach', text:'Dividend Leach: attach to a random opponent \u2014 skim 10% of their dividend earnings for a few of their turns.' });
+
+  // Margin Call Forgiveness — 2
+  add(2, { type:'margin_forgiveness', text:'Margin Call Forgiveness: shields you from your next forced margin-call liquidation.' });
 
   return deck;
 }
@@ -406,6 +428,7 @@ let roomCode = null; // 6-digit code for the room this browser tab is in — nul
 function gamePath(){ return `games/${roomCode}`; }
 function gameRef(){ return ref(db, gamePath()); }
 function lockRef(){ return ref(db, `${gamePath()}/turnTimeoutLock`); }
+function botLockRef(){ return ref(db, `${gamePath()}/botTurnLock`); }
 function genRoomCode(){ return String(Math.floor(100000 + Math.random()*900000)); }
 const ROOM_EXPIRY_MS = 24*60*60*1000; // 24h — cleaned up opportunistically, not on a hard timer
 
@@ -550,6 +573,7 @@ function repairCollections(s){
   if(s.discard===undefined) s.discard = [];
   if(s.scheduled===undefined) s.scheduled = [];
   if(s.recurringEffects===undefined) s.recurringEffects = [];
+  if(s.dividendLeaches===undefined) s.dividendLeaches = [];
   if(s.log===undefined) s.log = [];
   if(s.turnUsage===undefined) s.turnUsage = { total:0, perStock:{} };
   if(s.turnUsage.perStock===undefined) s.turnUsage.perStock = {};
@@ -566,6 +590,14 @@ function repairCollections(s){
     });
   }
   if(s.sp && s.sp.tradeMarkers===undefined) s.sp.tradeMarkers = [];
+  if(s.players){
+    s.players.forEach(pl=>{
+      if(pl.goldenGeese===undefined) pl.goldenGeese = [];
+      if(pl.holdStreak===undefined) pl.holdStreak = Object.fromEntries(STOCK_IDS.map(id=>[id,0]));
+      if(pl.marginShield===undefined) pl.marginShield = false;
+      if(pl.publicOffering && pl.publicOffering.usedStocks===undefined) pl.publicOffering.usedStocks = [];
+    });
+  }
 }
 
 function mergeRemote(remote){
@@ -749,7 +781,9 @@ function dividendZoneRateAt(id, idx){
   const zoneStartIdx = track.length - zone.dots;
   if(idx < zoneStartIdx) return 0;
   const pos = Math.min(zone.rates.length-1, idx - zoneStartIdx);
-  return zone.rates[pos];
+  let rate = zone.rates[pos];
+  if(state.dividendRateModifier) rate *= state.dividendRateModifier.multiplier;
+  return rate;
 }
 
 function freshState(players){
@@ -770,7 +804,11 @@ function freshState(players){
       shorts: Object.fromEntries(STOCK_IDS.map(id=>[id,0])),
       costBasis: Object.fromEntries(STOCK_IDS.map(id=>[id,0])), // $ currently invested in open long positions
       shortBasis: Object.fromEntries(STOCK_IDS.map(id=>[id,0])), // $ received for open short positions
-      spShares:0, spCostBasis:0, eliminated:false
+      spShares:0, spCostBasis:0, eliminated:false,
+      holdStreak: Object.fromEntries(STOCK_IDS.map(id=>[id,0])), // consecutive own-turns held with shares>0, for Loyalty Bonus
+      goldenGeese: [], // stock ids granting a permanent personal +10% dividend (Golden Goose card)
+      marginShield: false, // one-time margin-call forgiveness (Margin Call Forgiveness card)
+      publicOffering: null, // {active, usedStocks} — this-turn-only fee/price-impact waiver on up to 3 stocks
     })),
     current: 0,
     turnStartedAt: Date.now(), // for the 45-second turn timer
@@ -791,6 +829,8 @@ function freshState(players){
     confirmRestart: false,
     expandedChart: null, // stock id or 'SP' currently shown in the big chart modal
     recurringEffects: [], // active Earnings Report drips: {stock, dir, bubblesPerTurn, turnsLeft, ownerIndex}
+    dividendRateModifier: null, // {multiplier, turnsLeft} — Rate Hike/Rate Cut, applies to every stock's dividend zone
+    dividendLeaches: [], // active Dividend Leach cards: {thiefIndex, victimIndex, turnsLeft}
     showLog: false,
     cardMinimized: false,
     choiceError: null,
@@ -1005,7 +1045,7 @@ function canCoverOne(id){
    order. A big enough sell/cover order (uncapped) can cross this boundary
    more than once, walking and getting fee'd once per complete group of 4. */
 function walkOrderDetailed(id, qty, direction, priorFilled){
-  const GROUP = 4, FEE_RATE = 0.80;
+  const GROUP = 4, FEE_RATE = 0.20;
   const obj = id==='SP' ? state.sp : state.stocks[id];
   let idx = obj.idx;
   const chunks = [];
@@ -1034,6 +1074,11 @@ function walkOrderDetailed(id, qty, direction, priorFilled){
 function checkMarginCalls(){
   state.players.forEach(p=>{
     let locked = lockedCash(p);
+    if(locked > p.cash && p.marginShield){
+      p.marginShield = false;
+      logEvent(`${p.name}'s Margin Call Forgiveness absorbed a margin call this turn — no forced liquidation.`, true);
+      return;
+    }
     let guard = 0;
     while(locked > p.cash && guard < STOCK_IDS.length+1){
       guard++;
@@ -1231,7 +1276,9 @@ function drawCard(force){
   if(state.turnStage==='start' && state.cardsDrawnThisTurn===0){
     tickScheduled(state.current);
     tickRecurringEffects(state.current);
+    tickHoldStreaks(state.current);
     tickShortFeesAndDividends(state.current);
+    tickDividendRateModifier();
     checkMarginCalls(); // fees/payouts above can push cash negative — same safety net as any other cash event
     checkGameOver();
     if(state.gameOver){ persist(); render(); return; } // a scheduled prediction landing just ended the game
@@ -1362,8 +1409,58 @@ function tickShortFeesAndDividends(ownerIndex){
       }
     }
   });
-  if(totalDiv>0) logEvent(`${p.name} collected $${totalDiv} in dividend-zone payouts.`, true);
+
+  // Golden Goose: a permanent personal dividend right on a specific stock,
+  // won from a card — pays every turn regardless of zone, exclusively to
+  // whoever drew it, and stacks on top of any normal zone payout above.
+  (p.goldenGeese||[]).forEach(id=>{
+    const heldLong = p.shares[id]||0;
+    if(heldLong>0 && !state.stocks[id].worthless){
+      const pay = Math.round(heldLong*price(id)*0.10);
+      if(pay>0){ p.cash += pay; totalDiv += pay; }
+    }
+  });
+
+  if(totalDiv>0) logEvent(`${p.name} collected $${totalDiv} in dividend payouts.`, true);
   if(totalFee>0) logEvent(`${p.name} paid $${totalFee} in short fees.`, true);
+
+  // Dividend Leach: redirects 10% of whatever THIS player just collected
+  // above to whoever's leaching them — a real skim out of the payout, not
+  // money created from nothing.
+  if(totalDiv>0 && state.dividendLeaches && state.dividendLeaches.length){
+    state.dividendLeaches.forEach(leach=>{
+      if(leach.victimIndex!==ownerIndex) return;
+      const cut = Math.round(totalDiv*0.10);
+      if(cut>0){
+        p.cash -= cut;
+        state.players[leach.thiefIndex].cash += cut;
+        logEvent(`${state.players[leach.thiefIndex].name}'s Dividend Leach skimmed $${cut} from ${p.name}.`, true);
+      }
+    });
+    state.dividendLeaches.forEach(leach=>{ if(leach.victimIndex===ownerIndex) leach.turnsLeft -= 1; });
+    state.dividendLeaches = state.dividendLeaches.filter(l=>l.turnsLeft>0);
+  }
+}
+
+/* Consecutive-own-turns-held counter per stock, for Loyalty Bonus — resets
+   to 0 the moment a stock isn't held (sold down to 0), so it only ever
+   reflects an unbroken streak, not cumulative lifetime ownership. */
+function tickHoldStreaks(ownerIndex){
+  const p = state.players[ownerIndex];
+  STOCK_IDS.forEach(id=>{
+    p.holdStreak[id] = (p.shares[id]||0)>0 ? (p.holdStreak[id]||0)+1 : 0;
+  });
+}
+
+/* Rate Hike/Rate Cut wear off after a fixed number of TOTAL turns (any
+   player's), not per-owner — it's a market-wide event, not a personal one. */
+function tickDividendRateModifier(){
+  if(!state.dividendRateModifier) return;
+  state.dividendRateModifier.turnsLeft -= 1;
+  if(state.dividendRateModifier.turnsLeft<=0){
+    logEvent(`The ${state.dividendRateModifier.multiplier>1?'Rate Hike':'Rate Cut'} on dividend zones has worn off.`, true);
+    state.dividendRateModifier = null;
+  }
 }
 
 function resolveAuto(card){
@@ -1486,13 +1583,65 @@ function resolveAuto(card){
       logEvent(`Dividend Day — ${SECTORS[card.sector].label||card.sector}: ${p.name} collects $100/share, others $50/share.`, true);
       break;
     }
+    case 'loyalty_bonus': {
+      let bestStock = null, bestStreak = 0;
+      STOCK_IDS.forEach(id=>{
+        if((p.shares[id]||0)>0 && (p.holdStreak[id]||0)>bestStreak){ bestStreak = p.holdStreak[id]; bestStock = id; }
+      });
+      if(!bestStock){
+        logEvent(`${p.name} hasn't held any stock long enough yet — Loyalty Bonus has no effect.`);
+      } else {
+        const capped = Math.min(bestStreak, 10); // caps at 10 turns' worth so it can't blow up unbounded
+        const pay = Math.round(p.shares[bestStock]*price(bestStock)*0.02*capped);
+        p.cash += pay;
+        logEvent(`${p.name} has held ${bestStock} for ${bestStreak} straight turn${bestStreak===1?'':'s'} — Loyalty Bonus pays $${pay}.`, true);
+      }
+      break;
+    }
+    case 'golden_goose': {
+      const eligible = STOCK_IDS.filter(id=>!state.stocks[id].worthless);
+      if(eligible.length===0){ logEvent('Golden Goose fizzled — no stocks left to bless.'); break; }
+      const stock = eligible[Math.floor(Math.random()*eligible.length)];
+      if(!p.goldenGeese) p.goldenGeese = [];
+      p.goldenGeese.push(stock);
+      card.text = `Golden Goose: ${stock} now permanently pays YOU an extra 10% dividend on your holdings, every one of your turns, for the rest of the game.`;
+      logEvent(`${p.name} drew a Golden Goose on ${stock} — a permanent personal 10% dividend, for the rest of the game.`, true);
+      break;
+    }
+    case 'rate_hike':
+      state.dividendRateModifier = { multiplier: 1.5, turnsLeft: 6 };
+      logEvent(`Rate Hike! Every stock's dividend zone rate is boosted 50% for the next 6 turns.`, true);
+      break;
+    case 'rate_cut':
+      state.dividendRateModifier = { multiplier: 0.5, turnsLeft: 6 };
+      logEvent(`Rate Cut! Every stock's dividend zone rate is cut in half for the next 6 turns.`, true);
+      break;
+    case 'public_offering':
+      p.publicOffering = { active:true, usedStocks:[] };
+      logEvent(`${p.name} drew a Public Offering — up to 4 shares each on up to 3 different stocks this turn, no group fee, no price impact.`, true);
+      break;
+    case 'dividend_leach': {
+      const others = state.players.map((pl,i)=>i).filter(i=>i!==state.current && !state.players[i].eliminated);
+      if(others.length===0){ logEvent(`${p.name} has no one to leach — Dividend Leach fizzles.`); break; }
+      const victimIndex = others[Math.floor(Math.random()*others.length)];
+      const turns = 2 + Math.floor(Math.random()*4); // 2-5 inclusive
+      if(!state.dividendLeaches) state.dividendLeaches = [];
+      state.dividendLeaches.push({ thiefIndex: state.current, victimIndex, turnsLeft: turns });
+      card.text = `Dividend Leach: you'll skim 10% of ${state.players[victimIndex].name}'s dividend earnings for their next ${turns} turn${turns===1?'':'s'}.`;
+      logEvent(`${p.name} attached a Dividend Leach to ${state.players[victimIndex].name} for ${turns} turn${turns===1?'':'s'}.`, true);
+      break;
+    }
+    case 'margin_forgiveness':
+      p.marginShield = true;
+      logEvent(`${p.name} is now protected from their next margin call.`, true);
+      break;
     default:
       break;
   }
 }
 
 function needsChoice(card){
-  return ['sched_swing','split','choose_stock_move','choose_sector_move','whale','freeze'].includes(card.type);
+  return ['sched_swing','split','choose_stock_move','choose_sector_move','whale','freeze','short_squeeze'].includes(card.type);
 }
 
 /* choice resolvers, called from UI */
@@ -1561,6 +1710,26 @@ function resolveChoice(card, choice){
       logEvent(`${p.name} froze ${stock} against the next dictated move.`);
       break;
     }
+    case 'short_squeeze': {
+      const { stock } = choice;
+      if(state.stocks[stock].worthless){ state.choiceError = `${stock} is worthless — nothing to squeeze.`; return false; }
+      applyDictatedSteps(stock, 1, 7); // forced hard move up — bigger than any normal card
+      let coveredCount = 0;
+      state.players.forEach(pl=>{
+        const qty = pl.shorts[stock]||0;
+        if(qty>0){
+          const cost = qty*price(stock);
+          pl.cash -= cost;
+          reduceShortBasisOnCover(pl, stock, qty);
+          pl.shorts[stock] = 0;
+          coveredCount++;
+          logEvent(`${pl.name}'s ${stock} short was forcibly covered in the squeeze for $${cost}.`, true);
+        }
+      });
+      checkMarginCalls(); checkGameOver();
+      logEvent(`${p.name} triggered a Short Squeeze on ${stock} — it surged to $${price(stock)}${coveredCount>0?`, forcing ${coveredCount} short${coveredCount===1?'':'s'} to cover`:''}.`, true);
+      break;
+    }
   }
   return true;
 }
@@ -1604,8 +1773,12 @@ function buyShares(id, qtyRequested, force){
   const p = state.players[state.current];
   const qty = Math.min(qtyRequested||0, capRemaining(), capRemainingForStock(id));
   if(qty<=0){ logEvent(`No cap left this turn to buy ${tickerLabel(id)}.`); render(); return; }
+  const offer = p.publicOffering;
+  const offerEligible = id!=='SP' && offer && offer.active && (offer.usedStocks.includes(id) || offer.usedStocks.length<3);
   const priorFilled = state.turnFills.up[id]||0;
-  const walk = walkOrderDetailed(id, qty, +1, priorFilled);
+  const walk = offerEligible
+    ? { total: price(id)*qty, fee: 0, finalIdx: state.stocks[id].idx } // Public Offering: flat price, no fee, no walk
+    : walkOrderDetailed(id, qty, +1, priorFilled);
   const totalCost = walk.total + walk.fee;
   if(totalCost > freeCash(p)){ logEvent(`${p.name} doesn't have enough free cash to buy ${qty} ${tickerLabel(id)}.`); render(); return; }
   pushUndoSnapshot();
@@ -1616,8 +1789,12 @@ function buyShares(id, qtyRequested, force){
   obj.prevIdx = obj.idx; obj.idx = walk.finalIdx;
   state.turnUsage.total += qty;
   state.turnUsage.perStock[id] = (state.turnUsage.perStock[id]||0) + qty;
-  state.turnFills.up[id] = priorFilled + qty;
-  const feeNote = walk.fee>0 ? ` (incl. $${walk.fee} fee)` : '';
+  if(offerEligible){
+    if(!offer.usedStocks.includes(id)) offer.usedStocks.push(id);
+  } else {
+    state.turnFills.up[id] = priorFilled + qty;
+  }
+  const feeNote = walk.fee>0 ? ` (incl. $${walk.fee} fee)` : (offerEligible ? ' (Public Offering — no fee, no price impact)' : '');
   logEvent(`${p.name} bought ${qty} ${tickerLabel(id)} for $${totalCost}${feeNote} — now $${obj.track[obj.idx]}.`);
   checkMarginCalls(); checkGameOver(); recordTradeMarker(id, p.color, 'up', qty); schedulePersist(); render();
 }
@@ -1691,6 +1868,7 @@ function coverShort(id, qtyRequested, force){
 }
 
 function endTurn(){
+  state.players[state.current].publicOffering = null; // this-turn-only perk — clear it as the turn ends
   const wasLastPlayer = state.current === state.players.length-1;
   let next = state.current;
   do { next = (next+1)%state.players.length; } while(state.players[next].eliminated && next!==state.current);
@@ -1840,6 +2018,18 @@ function botResolveChoice(){
       choice = { stock: held || STOCK_IDS[0] };
       break;
     }
+    case 'short_squeeze': {
+      let target = null, maxOpponentShorts = 0;
+      STOCK_IDS.forEach(id=>{
+        if(state.stocks[id].worthless) return;
+        let shortTotal = 0;
+        state.players.forEach((pl,i)=>{ if(i!==state.current) shortTotal += (pl.shorts[id]||0); });
+        if(shortTotal>maxOpponentShorts){ maxOpponentShorts = shortTotal; target = id; }
+      });
+      if(!target) target = botLargestHolding(bot) || botCheapestStock() || STOCK_IDS[0];
+      choice = { stock: target };
+      break;
+    }
     default:
       finishCardResolution();
       return;
@@ -1898,14 +2088,38 @@ function botTakeOneTradeAction(){
   return false;
 }
 
+/* Any connected human's browser could be the one to drive a bot's turn —
+   in real multiplayer, several might be open at once. Firebase's
+   transaction API gives the same "only one wins" guarantee we already use
+   for turn-timeout enforcement: everyone who notices it's a bot's turn
+   races to move the lock from the previous turn's timestamp to the
+   current one, but only the first to reach the server actually succeeds. */
+async function claimBotTurnLock(turnStartedAt){
+  if(!roomCode) return false;
+  try{
+    const result = await runTransaction(botLockRef(), (current)=>{
+      if(current === turnStartedAt) return; // already claimed for this turn — abort
+      return turnStartedAt;
+    });
+    return result.committed;
+  }catch(e){
+    console.error('UpTrend: bot turn lock claim failed', e);
+    return false;
+  }
+}
+
 /* Kicks off the bot's turn if it isn't already running. Safe to call from
    render() on every re-render — the running flag makes it a no-op once a
-   chain of steps is already in flight. */
-function maybeStartBotTurn(){
+   chain of steps is already in flight, and the lock claim above makes it
+   safe even when multiple human browsers call this for the same bot turn
+   at roughly the same time. */
+async function maybeStartBotTurn(){
   if(botTurnRunning || !state || state.gameOver || state.phase==='lobby') return;
   const cur = state.players[state.current];
   if(!cur || !cur.bot) return;
-  botTurnRunning = true;
+  botTurnRunning = true; // set immediately so this browser doesn't re-enter while its own claim is in flight
+  const won = await claimBotTurnLock(state.turnStartedAt);
+  if(!won){ botTurnRunning = false; return; } // another connected browser is already handling this bot's turn
   setTimeout(runBotStep, BOT_STEP_DELAY);
 }
 
@@ -2046,7 +2260,7 @@ function createLobby(count){
   // Empty seats use '' (not null!) — Firebase Realtime Database silently
   // strips null entries out of arrays/objects on write, which was quietly
   // collapsing a 2-seat lobby down to 1 the moment it hit the database.
-  state = { phase:'lobby', lobbySeats: Array(count).fill(''), version:0, createdAt: Date.now(), ...localDefaults() };
+  state = { phase:'lobby', lobbySeats: Array(count).fill(''), lobbyBots: Array(count).fill(false), version:0, createdAt: Date.now(), ...localDefaults() };
   lastKnownSnapshot = {}; // this is a whole new structure — nothing to diff against yet
   persistFull(); render();
 }
@@ -2061,12 +2275,33 @@ function claimSeat(idx){
   persist(); render();
 }
 
+/* Fills an open seat with a bot instead of waiting for a human — the seat
+   counts as "claimed" for start-game purposes, but nobody can pick it as
+   their own identity. */
+function fillSeatWithBot(idx){
+  if(!state || state.phase!=='lobby' || state.lobbySeats[idx]) return;
+  const botNum = state.lobbyBots.slice(0,idx).filter(Boolean).length + 1;
+  state.lobbySeats[idx] = `Bot ${botNum}`;
+  state.lobbyBots[idx] = true;
+  persist(); render();
+}
+
+function removeBotFromSeat(idx){
+  if(!state || state.phase!=='lobby' || !state.lobbyBots[idx]) return;
+  state.lobbySeats[idx] = '';
+  state.lobbyBots[idx] = false;
+  persist(); render();
+}
+
 function startGameFromLobby(){
   if(!state || state.phase!=='lobby' || state.lobbySeats.some(s=>!s)) return;
+  if(state.lobbySeats.every((s,i)=>state.lobbyBots[i])) return; // need at least one human seat
   const names = state.lobbySeats.slice();
+  const bots = state.lobbyBots.slice();
   const locals = localDefaults();
   const createdAt = state.createdAt || Date.now();
   state = freshState(names);
+  state.players.forEach((pl,i)=>{ if(bots[i]) pl.bot = true; });
   state.createdAt = createdAt;
   Object.assign(state, locals);
   lastKnownSnapshot = {}; // structure changed completely — full replace, not a diff
@@ -2075,14 +2310,22 @@ function startGameFromLobby(){
 
 function renderLobbyScreen(){
   const seats = state.lobbySeats;
+  const bots = state.lobbyBots || seats.map(()=>false);
   const allFilled = seats.every(s=>!!s) && seats.length>=2;
-  const iHaveASeat = myPlayerIndex!==null && seats[myPlayerIndex];
+  const allBots = seats.every((s,i)=>bots[i]);
+  const iHaveASeat = myPlayerIndex!==null && seats[myPlayerIndex] && !bots[myPlayerIndex];
   app.innerHTML = `
     <div class="overlay">
       <div class="modal">
         <h2><span style="color:#FFFFFF;">Up</span><span style="color:var(--up);">Trend</span> — Lobby</h2>
-        <div class="sub">${seats.filter(s=>s).length}/${seats.length} seats claimed. Everyone needs to claim a seat before the game can start.</div>
+        <div class="sub">${seats.filter(s=>s).length}/${seats.length} seats claimed. Everyone needs to claim a seat (or fill it with a bot) before the game can start.</div>
         ${seats.map((name,i)=>{
+          if(name && bots[i]){
+            return `<div class="selected-ticker-box" style="margin-bottom:8px;">
+              <span class="stx" style="color:${PLAYER_COLORS[i%PLAYER_COLORS.length]};">${name} 🤖</span>
+              <span class="spx">Seat ${i+1} <button class="btn secondary" id="removeBotBtn${i}" style="height:26px;padding:0 10px;margin-left:8px;">Remove</button></span>
+            </div>`;
+          }
           if(name){
             return `<div class="selected-ticker-box" style="margin-bottom:8px;">
               <span class="stx" style="color:${PLAYER_COLORS[i%PLAYER_COLORS.length]};">${name}</span>
@@ -2092,16 +2335,23 @@ function renderLobbyScreen(){
           return `<div class="setup-field" style="display:flex;gap:8px;align-items:flex-end;">
             <div style="flex:1;"><label>Seat ${i+1} — open</label><input type="text" id="claimName${i}" placeholder="Your name" value="Player ${i+1}"></div>
             <button class="btn secondary" id="claimBtn${i}" style="height:38px;">Claim</button>
+            <button class="btn secondary" id="botBtn${i}" style="height:38px;">Add Bot</button>
           </div>`;
         }).join('')}
-        ${iHaveASeat ? `<button class="btn full" id="startLobbyBtn" ${allFilled?'':'disabled'} style="margin-top:8px;">${allFilled?'Start Game':'Waiting for everyone to claim a seat...'}</button>` : `<div class="hint">Claim an open seat above to join.</div>`}
+        ${allBots ? `<div class="hint" style="color:var(--down);">At least one seat needs a human before the game can start.</div>` : ''}
+        ${iHaveASeat ? `<button class="btn full" id="startLobbyBtn" ${allFilled&&!allBots?'':'disabled'} style="margin-top:8px;">${allFilled&&!allBots?'Start Game':'Waiting for every seat to be filled...'}</button>` : `<div class="hint">Claim an open seat above to join.</div>`}
         <button class="btn secondary full" id="resetLobbyBtn" style="margin-top:8px;">Cancel — Reset Lobby</button>
       </div>
     </div>`;
   seats.forEach((name,i)=>{
     if(!name){
-      const btn = document.getElementById('claimBtn'+i);
-      if(btn) btn.onclick = ()=>claimSeat(i);
+      const claimBtn = document.getElementById('claimBtn'+i);
+      if(claimBtn) claimBtn.onclick = ()=>claimSeat(i);
+      const botBtn = document.getElementById('botBtn'+i);
+      if(botBtn) botBtn.onclick = ()=>fillSeatWithBot(i);
+    } else if(bots[i]){
+      const removeBtn = document.getElementById('removeBotBtn'+i);
+      if(removeBtn) removeBtn.onclick = ()=>removeBotFromSeat(i);
     }
   });
   const startBtn = document.getElementById('startLobbyBtn');
@@ -2504,6 +2754,24 @@ function renderSidebar(){
       holdingRows.forEach(r=>{ html += r.html; });
       html += `</table>`;
     }
+    // active card-granted perks — small badges so they're not forgotten about
+    const perkBadges = [];
+    if((me.goldenGeese||[]).length){
+      const counts = {}; me.goldenGeese.forEach(id=>counts[id]=(counts[id]||0)+1);
+      Object.entries(counts).forEach(([id,n])=>perkBadges.push(`🪿 ${id} +${n*10}% forever`));
+    }
+    if(me.marginShield) perkBadges.push(`🛡️ Margin Call Forgiveness ready`);
+    if(me.publicOffering && me.publicOffering.active){
+      const left = 3-me.publicOffering.usedStocks.length;
+      perkBadges.push(`🏷️ Public Offering — ${left} stock${left===1?'':'s'} left this turn`);
+    }
+    (state.dividendLeaches||[]).forEach(leach=>{
+      if(leach.thiefIndex===myPlayerIndex) perkBadges.push(`🩸 Leaching ${state.players[leach.victimIndex].name} (${leach.turnsLeft} left)`);
+      if(leach.victimIndex===myPlayerIndex) perkBadges.push(`🩸 Being leached by ${state.players[leach.thiefIndex].name} (${leach.turnsLeft} left)`);
+    });
+    if(perkBadges.length){
+      html += `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:10px;">${perkBadges.map(b=>`<span class="frozen-badge">${b}</span>`).join('')}</div>`;
+    }
     html += `</div>`;
   }
 
@@ -2645,6 +2913,9 @@ function renderChoiceUI(card){
     case 'freeze':
       return `<div class="trade-row"><select id="c_stock">${STOCK_IDS.map(id=>`<option value="${id}">${id}</option>`).join('')}</select></div>
         <button class="btn full" id="c_freeze">Freeze</button>`;
+    case 'short_squeeze':
+      return `<div class="trade-row"><select id="c_stock">${STOCK_IDS.map(id=>`<option value="${id}">${id} — $${price(id)}</option>`).join('')}</select></div>
+        <button class="btn full" id="c_squeeze">Squeeze</button>`;
     default: return '';
   }
 }
@@ -2681,6 +2952,9 @@ function wireChoiceHandlers(card){
       break;
     case 'freeze':
       if(byId('c_freeze')) byId('c_freeze').onclick = ()=>done({ stock: byId('c_stock').value });
+      break;
+    case 'short_squeeze':
+      if(byId('c_squeeze')) byId('c_squeeze').onclick = ()=>done({ stock: byId('c_stock').value });
       break;
   }
 }
