@@ -66,8 +66,6 @@
   .stock-row:last-child{border-bottom:none;}
   .stock-row:hover{background:rgba(255,255,255,0.02);}
   .stock-row.selected{background:rgba(245,166,35,0.07);box-shadow:inset 3px 0 0 var(--amber);}
-  .sp-panel{cursor:pointer;transition:background .15s;}
-  .sp-panel.selected{box-shadow:inset 3px 0 0 var(--amber),0 0 0 1px var(--amber);}
   .tap-hint{font-size:10px;color:var(--muted);margin-left:auto;text-transform:uppercase;letter-spacing:0.5px;}
   .sparkline{display:block;flex-shrink:0;background:rgba(255,255,255,0.02);border-radius:4px;}
   .stock-row-inner{display:flex;align-items:flex-start;gap:12px;}
@@ -99,12 +97,6 @@
   .dot-wrap.div-zone-start{border-left:1px solid rgba(62,207,142,0.45);border-top-left-radius:6px;border-bottom-left-radius:6px;}
   .dot-wrap.div-zone-end{border-right:1px solid rgba(62,207,142,0.45);border-top-right-radius:6px;border-bottom-right-radius:6px;}
   .div-zone-rate{font-size:8px;font-family:'IBM Plex Mono';color:var(--up);font-weight:700;white-space:nowrap;margin-bottom:2px;}
-
-  .sp-panel{
-    background:linear-gradient(180deg,#1A1508,#12161F);
-    border:1px solid #3A2F12;border-radius:14px;padding:14px 16px;
-  }
-  .sp-panel .sector-head{border-bottom:1px solid #3A2F12;color:var(--sp);padding-left:0;padding-top:0;margin-bottom:10px;}
 
   /* ---------- sidebar ---------- */
   .sidebar{display:flex;flex-direction:column;gap:12px;position:sticky;top:16px;}
@@ -2943,42 +2935,42 @@ function renderBoard(){
   });
   html += `</div>`;
 
-  // Index fund panels — Mini SP8 (original) and SP8 (10x price, for when
-  // cash has piled up too high for anything else to meaningfully absorb).
-  const sp = state.sp;
+  // Index funds — one merged sector panel, same visual treatment as Tech/
+  // Energy/Health/Consumer above, just with the two index funds as its rows
+  // instead of stocks. Each row is still independently selectable.
+  const sp = state.sp, spx = state.spx;
   const spSel = state.tradeSelection==='SP';
-  html += `<div class="sp-panel ${spSel?'selected':''}" data-trade-id="SP" style="margin-top:12px;">
-    <div class="sector-head"><span class="sector-dot" style="background:var(--sp)"></span>Mini SP8 Index</div>
-    <div class="stock-row-inner">
-      <div class="stock-chart-col" data-chart-id="SP">${renderSparkline(sp.history, sp.track[sp.track.length-1], sp.track[0], 'var(--sp)', sp.tradeMarkers)}</div>
-      <div class="stock-main-col">
-        <div class="row-top" style="margin-bottom:8px;">
-          <span class="ticker" style="color:var(--sp)">Mini SP8</span>
-          <span class="price-now ${sp.idx!==sp.prevIdx?'flash':''}">$${sp.track[sp.idx]}</span>
-          ${priceDeltaBadge(sp.idx, sp.prevIdx)}
-          <span style="margin-left:auto;font-size:11px;color:var(--muted);white-space:nowrap;">Trading it never moves the price — mirrors SP8 exactly, always</span>
-          ${spSel?'<span class="tap-hint">Selected</span>':'<span class="tap-hint">Tap to trade</span>'}
+  const spxSel = state.tradeSelection==='SPX';
+  html += `<div class="sector-panel" style="margin-top:12px;">
+    <div class="sector-head"><span class="sector-dot" style="background:var(--sp)"></span>Index Funds</div>
+    <div class="stock-row ${spSel?'selected':''}" data-trade-id="SP">
+      <div class="stock-row-inner">
+        <div class="stock-chart-col" data-chart-id="SP">${renderSparkline(sp.history, sp.track[sp.track.length-1], sp.track[0], 'var(--sp)', sp.tradeMarkers)}</div>
+        <div class="stock-main-col">
+          <div class="row-top">
+            <span class="ticker" style="color:var(--sp)">Mini SP8</span>
+            <span class="price-now ${sp.idx!==sp.prevIdx?'flash':''}">$${sp.track[sp.idx]}</span>
+            ${priceDeltaBadge(sp.idx, sp.prevIdx)}
+            <span style="margin-left:auto;font-size:11px;color:var(--muted);white-space:nowrap;">Trading it never moves the price — mirrors SP8 exactly, always</span>
+            ${spSel?'<span class="tap-hint">Selected</span>':'<span class="tap-hint">Tap to trade</span>'}
+          </div>
+          ${renderTrack(sp.track, sp.idx, sp.prevIdx, 'var(--sp)')}
         </div>
-        ${renderTrack(sp.track, sp.idx, sp.prevIdx, 'var(--sp)')}
       </div>
     </div>
-  </div>`;
-
-  const spx = state.spx;
-  const spxSel = state.tradeSelection==='SPX';
-  html += `<div class="sp-panel ${spxSel?'selected':''}" data-trade-id="SPX" style="margin-top:12px;">
-    <div class="sector-head"><span class="sector-dot" style="background:var(--spx)"></span>SP8 Index</div>
-    <div class="stock-row-inner">
-      <div class="stock-chart-col" data-chart-id="SPX">${renderSparkline(spx.history, spx.track[spx.track.length-1], spx.track[0], 'var(--spx)', spx.tradeMarkers)}</div>
-      <div class="stock-main-col">
-        <div class="row-top" style="margin-bottom:8px;">
-          <span class="ticker" style="color:var(--spx)">SP8</span>
-          <span class="price-now ${spx.idx!==spx.prevIdx?'flash':''}">$${spx.track[spx.idx]}</span>
-          ${priceDeltaBadge(spx.idx, spx.prevIdx)}
-          <span style="margin-left:auto;font-size:11px;color:var(--muted);white-space:nowrap;">10x Mini SP8's price — trading THIS one moves both, together</span>
-          ${spxSel?'<span class="tap-hint">Selected</span>':'<span class="tap-hint">Tap to trade</span>'}
+    <div class="stock-row ${spxSel?'selected':''}" data-trade-id="SPX">
+      <div class="stock-row-inner">
+        <div class="stock-chart-col" data-chart-id="SPX">${renderSparkline(spx.history, spx.track[spx.track.length-1], spx.track[0], 'var(--spx)', spx.tradeMarkers)}</div>
+        <div class="stock-main-col">
+          <div class="row-top">
+            <span class="ticker" style="color:var(--spx)">SP8</span>
+            <span class="price-now ${spx.idx!==spx.prevIdx?'flash':''}">$${spx.track[spx.idx]}</span>
+            ${priceDeltaBadge(spx.idx, spx.prevIdx)}
+            <span style="margin-left:auto;font-size:11px;color:var(--muted);white-space:nowrap;">10x Mini SP8's price — trading THIS one moves both, together</span>
+            ${spxSel?'<span class="tap-hint">Selected</span>':'<span class="tap-hint">Tap to trade</span>'}
+          </div>
+          ${renderTrack(spx.track, spx.idx, spx.prevIdx, 'var(--spx)')}
         </div>
-        ${renderTrack(spx.track, spx.idx, spx.prevIdx, 'var(--spx)')}
       </div>
     </div>
   </div>`;
