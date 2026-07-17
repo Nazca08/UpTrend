@@ -1081,7 +1081,7 @@ function forceAdvanceStalledTurn(){
     if(state.players[stalledIndex].eliminated || state.players[stalledIndex].jailTurnsLeft>0){ endTurn(); break; } // nothing to play — just skip it forward
     const before = JSON.stringify({ phase:state.phase, turnStage:state.turnStage, cardsDrawnThisTurn:state.cardsDrawnThisTurn, pendingCard: state.pendingCard && state.pendingCard._id });
     if(state.awaitingHoldDecision){
-      playCardNowFromDraw(); // AFK on the Play Now/Hold prompt — default to playing it now rather than stalling forever
+      playCardNowFromDraw(true); // AFK on the Play Now/Hold prompt — force past isMyTurn() same as everything else here, since the stalled player is never the browser calling this
     } else if(state.phase==='draw'){
       drawCard(true);
     } else if(state.phase==='resolve'){
@@ -1633,9 +1633,16 @@ function drawCard(force){
 
 /* Confirms playing a freshly-drawn holdable card right now instead of
    holding it — just clears the prompt and lets the normal resolution path
-   (auto-resolve or choice UI) take over exactly as if it weren't holdable. */
-function playCardNowFromDraw(){
-  if(!state.pendingCard || !state.awaitingHoldDecision || !isMyTurn()) return;
+   (auto-resolve or choice UI) take over exactly as if it weren't holdable.
+   `force` bypasses the isMyTurn() check, mirroring drawCard(force) — it's
+   what lets a bot's own step chain (and the AFK/timeout fallback) push
+   this decision through on someone else's behalf. Without it, this always
+   silently no-ops for a bot's turn: myPlayerIndex is whichever human
+   browser is driving the bot, which never equals the bot's own seat, so
+   isMyTurn() can never be true — runBotStep would just call this forever,
+   with no error and no state change, which is a real freeze this fixes. */
+function playCardNowFromDraw(force){
+  if(!state.pendingCard || !state.awaitingHoldDecision || (!force && !isMyTurn())) return;
   state.awaitingHoldDecision = false;
   if(!needsChoice(state.pendingCard)) resolveAuto(state.pendingCard);
   persist(); render();
@@ -3019,7 +3026,7 @@ function runBotStep(){
       setTimeout(runBotStep, BOT_STEP_DELAY);
       return;
     }
-    if(state.awaitingHoldDecision){ playCardNowFromDraw(); setTimeout(runBotStep, BOT_STEP_DELAY); return; }
+    if(state.awaitingHoldDecision){ playCardNowFromDraw(true); setTimeout(runBotStep, BOT_STEP_DELAY); return; }
     if(isTurnProtectedFromTimeout()){ botResolveChoice(); setTimeout(runBotStep, BOT_STEP_DELAY); return; }
     if(state.phase==='draw'){ drawCard(true); setTimeout(runBotStep, BOT_STEP_DELAY); return; }
     if(state.phase==='resolve'){ finishCardResolution(); setTimeout(runBotStep, BOT_STEP_DELAY); return; }
@@ -4190,7 +4197,7 @@ function render(){
   if(byId('cancelRestartBtn')) byId('cancelRestartBtn').onclick = ()=>{ state.confirmRestart=false; render(); };
   if(byId('minimizeCardBtn')) byId('minimizeCardBtn').onclick = ()=>{ state.cardMinimized=true; render(); };
   if(byId('resumeCardBtn')) byId('resumeCardBtn').onclick = ()=>{ state.cardMinimized=false; render(); };
-  if(byId('playCardNowBtn')) byId('playCardNowBtn').onclick = playCardNowFromDraw;
+  if(byId('playCardNowBtn')) byId('playCardNowBtn').onclick = ()=>playCardNowFromDraw(); // no force — a real click already satisfies isMyTurn()
   if(byId('holdCardBtn')) byId('holdCardBtn').onclick = holdCurrentCard;
   document.querySelectorAll('[data-play-hand-idx]').forEach(el=>{
     el.onclick = ()=>{ if(!el.disabled) playCardFromHand(parseInt(el.getAttribute('data-play-hand-idx'))); };
