@@ -210,6 +210,7 @@
 </head>
 <body>
 <div id="app"></div>
+<div id="audioControls" style="position:fixed;bottom:14px;right:14px;z-index:500;display:flex;gap:8px;"></div>
 
 <script type="module">
 /* ============================= CONFIG ============================= */
@@ -446,6 +447,11 @@ function buildDeck(){
   add(2, { type:'dividend_leach', text:'Dividend Leach: attach to a random opponent \u2014 skim 10% of their dividend earnings for a few of their turns.' });
   add(2, { type:'dividend_leach', holdable:true, text:'Dividend Leach: hold this and play it whenever you want \u2014 you choose exactly which opponent to leach.' });
 
+  // Permanent Dividend Leach \u2014 2. Random opponent (no choice, not
+  // holdable), and never expires \u2014 scarce for the same reason Golden
+  // Goose is, and with no card anywhere that removes it.
+  add(2, { type:'perma_leach', text:'Permanent Dividend Leach: attaches to a random opponent for the rest of the game \u2014 skims 10% of their dividend earnings, forever.' });
+
   // Margin Call Forgiveness — 2
   add(4, { type:'margin_forgiveness', text:'Margin Call Forgiveness: shields you from your next forced margin-call liquidation.' });
 
@@ -466,6 +472,10 @@ function buildDeck(){
   // coming true (including your own) for a randomly determined number of rounds. Which stock
   // is protected is never revealed to anyone but the player who played it.
   add(4, { type:'insider_blocker', holdable:true, text:'Insider Info Blocker: hold this and play it before a tip comes due \u2014 pick a stock, and no Insider Info can move its price while this is active. Nobody else will know which stock.' });
+
+  // Espionage \u2014 4, player picks the target (not holdable) \u2014 see
+  // their full holdings for a randomly determined 1-5 of your own turns.
+  add(4, { type:'espionage', text:'Espionage: pick an opponent \u2014 see their full holdings for a randomly determined 1-5 of your own turns.' });
 
   // Career — Promotion (permanent salary raise), Fired (rounds without salary), Overtime (turns at 1.5x salary)
   add(4, { type:'promotion', text:'Promotion: your salary permanently goes up somewhere between $1,000 and $6,000 per turn.' });
@@ -670,6 +680,7 @@ function repairCollections(s){
   if(s.scheduled===undefined) s.scheduled = [];
   if(s.recurringEffects===undefined) s.recurringEffects = [];
   if(s.dividendLeaches===undefined) s.dividendLeaches = [];
+  if(s.espionage===undefined) s.espionage = [];
   if(s.insiderBlockers===undefined) s.insiderBlockers = [];
   if(s.netWorthHistory===undefined) s.netWorthHistory = [{ values: s.players ? s.players.map(p=>netWorth(p)) : [] }];
   if(s.log===undefined) s.log = [];
@@ -682,6 +693,8 @@ function repairCollections(s){
   if(s.pendingChoice===undefined) s.pendingChoice = null;
   if(s.choiceError===undefined) s.choiceError = null;
   if(s.winner===undefined) s.winner = null;
+  if(s.gameOverAt===undefined) s.gameOverAt = null;
+  if(s.gameLengthKey===undefined) s.gameLengthKey = null;
   if(s.stocks){
     Object.keys(s.stocks).forEach(id=>{
       if(s.stocks[id].tradeMarkers===undefined) s.stocks[id].tradeMarkers = [];
@@ -827,6 +840,205 @@ let myPlayerIndex = null; // which seat THIS browser tab is playing — resets o
 /* ============================= STATE ============================= */
 let state = null;
 
+/* ============================= AUDIO =============================
+   Everything here is procedurally generated with the Web Audio API —
+   no external files, since this is a single self-contained HTML page
+   with nowhere to host assets. Two independent toggles (SFX, music),
+   each remembered in localStorage. The AudioContext can't start until
+   a real user gesture happens (browser autoplay policy), so it's
+   created lazily on the first pointerdown/keydown anywhere on the page. */
+let audioCtx = null, masterGain = null, sfxGain = null, musicGain = null;
+let musicTimer = null, musicStepIdx = 0, audioUnlocked = false;
+
+function loadAudioPrefs(){
+  let sfx = true, music = true;
+  try{
+    const s = localStorage.getItem('uptrend_sfxEnabled');
+    const m = localStorage.getItem('uptrend_musicEnabled');
+    if(s !== null) sfx = s === '1';
+    if(m !== null) music = m === '1';
+  }catch(e){ /* localStorage unavailable — default both on */ }
+  return { sfx, music };
+}
+let audioPrefs = loadAudioPrefs();
+
+function saveAudioPrefs(){
+  try{
+    localStorage.setItem('uptrend_sfxEnabled', audioPrefs.sfx ? '1' : '0');
+    localStorage.setItem('uptrend_musicEnabled', audioPrefs.music ? '1' : '0');
+  }catch(e){}
+}
+
+function ensureAudioCtx(){
+  if(audioCtx) return audioCtx;
+  try{
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if(!Ctx) return null;
+    audioCtx = new Ctx();
+    masterGain = audioCtx.createGain(); masterGain.gain.value = 1; masterGain.connect(audioCtx.destination);
+    sfxGain = audioCtx.createGain(); sfxGain.gain.value = 0.35; sfxGain.connect(masterGain);
+    musicGain = audioCtx.createGain(); musicGain.gain.value = 0.14; musicGain.connect(masterGain);
+  }catch(e){ audioCtx = null; }
+  return audioCtx;
+}
+
+function unlockAudio(){
+  if(audioUnlocked) return;
+  const ctx = ensureAudioCtx();
+  if(!ctx) return;
+  audioUnlocked = true;
+  if(ctx.state==='suspended') ctx.resume().catch(()=>{});
+  if(audioPrefs.music) startMusic();
+}
+if(typeof document !== 'undefined'){
+  document.addEventListener('pointerdown', unlockAudio, { once:true, passive:true });
+  document.addEventListener('keydown', unlockAudio, { once:true });
+}
+
+// Short percussive/tonal blip used by every SFX cue below.
+function playTone(freq, opts){
+  opts = opts || {};
+  const { duration=0.15, type='sine', gain=0.5, delay=0, attack=0.005, decayTo=0.0001 } = opts;
+  if(!audioPrefs.sfx) return;
+  const ctx = ensureAudioCtx();
+  if(!ctx || ctx.state==='suspended') return;
+  const t0 = ctx.currentTime + delay;
+  const osc = ctx.createOscillator();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, t0);
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.linearRampToValueAtTime(gain, t0+attack);
+  g.gain.exponentialRampToValueAtTime(decayTo, t0+duration);
+  osc.connect(g); g.connect(sfxGain);
+  osc.start(t0); osc.stop(t0+duration+0.02);
+}
+
+function playSfx(name){
+  if(!audioPrefs.sfx) return;
+  if(!ensureAudioCtx()) return;
+  switch(name){
+    case 'click': playTone(660, {duration:0.06, type:'triangle', gain:0.22}); break;
+    case 'draw':
+      playTone(420, {duration:0.09, type:'triangle', gain:0.28});
+      playTone(560, {duration:0.11, type:'triangle', gain:0.22, delay:0.05});
+      break;
+    case 'buy':
+      playTone(523.25, {duration:0.1, type:'square', gain:0.26});
+      playTone(659.25, {duration:0.14, type:'square', gain:0.22, delay:0.06});
+      break;
+    case 'sell':
+      playTone(659.25, {duration:0.1, type:'square', gain:0.26});
+      playTone(523.25, {duration:0.14, type:'square', gain:0.22, delay:0.06});
+      break;
+    case 'short':
+      playTone(392, {duration:0.12, type:'sawtooth', gain:0.2});
+      playTone(330, {duration:0.16, type:'sawtooth', gain:0.18, delay:0.07});
+      break;
+    case 'cover':
+      playTone(494, {duration:0.1, type:'square', gain:0.22});
+      playTone(392, {duration:0.13, type:'square', gain:0.18, delay:0.05});
+      break;
+    case 'dividend':
+      playTone(784, {duration:0.14, type:'sine', gain:0.26});
+      playTone(988, {duration:0.14, type:'sine', gain:0.22, delay:0.08});
+      playTone(1175, {duration:0.18, type:'sine', gain:0.18, delay:0.16});
+      break;
+    case 'goose':
+      playTone(880, {duration:0.1, type:'sine', gain:0.28});
+      playTone(1109, {duration:0.1, type:'sine', gain:0.24, delay:0.07});
+      playTone(1319, {duration:0.16, type:'sine', gain:0.2, delay:0.14});
+      break;
+    case 'hunter':
+      playTone(220, {duration:0.16, type:'sawtooth', gain:0.28});
+      playTone(160, {duration:0.22, type:'sawtooth', gain:0.24, delay:0.1});
+      break;
+    case 'jail':
+      playTone(200, {duration:0.2, type:'square', gain:0.22});
+      playTone(150, {duration:0.28, type:'square', gain:0.2, delay:0.12});
+      break;
+    case 'turn': playTone(587.33, {duration:0.09, type:'sine', gain:0.2}); break;
+    case 'error': playTone(180, {duration:0.18, type:'sawtooth', gain:0.22}); break;
+    case 'win':
+      [523.25,659.25,784,1046.5].forEach((f,i)=>playTone(f,{duration:0.22,type:'triangle',gain:0.3,delay:i*0.12}));
+      break;
+    case 'lose':
+      [392,349.23,293.66,220].forEach((f,i)=>playTone(f,{duration:0.28,type:'sawtooth',gain:0.2,delay:i*0.14}));
+      break;
+  }
+}
+
+// Simple generative background music: a slow pentatonic-ish arpeggio with
+// an occasional soft bass note, advancing one step at a time on a timer.
+// Deliberately understated — this is a stock-trading board game, not a
+// rhythm game, so the goal is ambience, not a hook.
+const MUSIC_SCALE = [261.63,293.66,329.63,392.00,440.00,523.25,587.33,659.25];
+const MUSIC_PATTERN = [0,2,4,2,0,3,5,3,0,2,4,7,4,2,0,null,1,3,5,3,1,4,6,4];
+function scheduleMusicStep(){
+  if(!audioPrefs.music){ musicTimer = null; return; }
+  const ctx = ensureAudioCtx();
+  if(!ctx || ctx.state==='suspended'){ musicTimer = setTimeout(scheduleMusicStep, 1500); return; }
+  const t = ctx.currentTime;
+  const degree = MUSIC_PATTERN[musicStepIdx % MUSIC_PATTERN.length];
+  musicStepIdx++;
+  if(degree !== null){
+    const freq = MUSIC_SCALE[degree];
+    const osc = ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(freq, t);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(0.5, t+0.03);
+    g.gain.exponentialRampToValueAtTime(0.0001, t+0.9);
+    osc.connect(g); g.connect(musicGain);
+    osc.start(t); osc.stop(t+0.95);
+    if(musicStepIdx % 4 === 0){
+      const bosc = ctx.createOscillator();
+      bosc.type = 'triangle';
+      bosc.frequency.setValueAtTime(freq/2, t);
+      const bg = ctx.createGain();
+      bg.gain.setValueAtTime(0.0001, t);
+      bg.gain.linearRampToValueAtTime(0.3, t+0.05);
+      bg.gain.exponentialRampToValueAtTime(0.0001, t+1.6);
+      bosc.connect(bg); bg.connect(musicGain);
+      bosc.start(t); bosc.stop(t+1.7);
+    }
+  }
+  musicTimer = setTimeout(scheduleMusicStep, 550);
+}
+function startMusic(){
+  if(musicTimer || !audioPrefs.music) return;
+  if(!ensureAudioCtx()) return;
+  scheduleMusicStep();
+}
+function stopMusic(){
+  if(musicTimer){ clearTimeout(musicTimer); musicTimer = null; }
+}
+
+function toggleSfx(){
+  audioPrefs.sfx = !audioPrefs.sfx;
+  saveAudioPrefs();
+  renderAudioControls();
+  if(audioPrefs.sfx){ unlockAudio(); playSfx('click'); }
+}
+function toggleMusic(){
+  audioPrefs.music = !audioPrefs.music;
+  saveAudioPrefs();
+  if(audioPrefs.music){ unlockAudio(); startMusic(); } else { stopMusic(); }
+  renderAudioControls();
+}
+function renderAudioControls(){
+  const el = document.getElementById('audioControls');
+  if(!el) return;
+  el.innerHTML = `
+    <button class="btn secondary" id="sfxToggleBtn" title="${audioPrefs.sfx?'Mute sound effects':'Unmute sound effects'}" style="padding:8px 10px;font-size:14px;">${audioPrefs.sfx?'🔊':'🔇'}</button>
+    <button class="btn secondary" id="musicToggleBtn" title="${audioPrefs.music?'Mute music':'Unmute music'}" style="padding:8px 10px;font-size:14px;">${audioPrefs.music?'🎵':'🎵🚫'}</button>
+  `;
+  byIdSafe('sfxToggleBtn').onclick = toggleSfx;
+  byIdSafe('musicToggleBtn').onclick = toggleMusic;
+}
+function byIdSafe(id){ return document.getElementById(id) || { set onclick(v){} }; }
+
 // Individual starting prices per the agreed price ladder (each stock opens
 // at its own `center`; `top`/`bottom` preserve the same volatility ratio
 // each stock's sector had before this ladder — e.g. Health stocks always
@@ -967,7 +1179,8 @@ function freshState(players, gameLength){
     expandedChart: null, // stock id or 'SP' currently shown in the big chart modal
     recurringEffects: [], // active Earnings Report drips: {stock, dir, bubblesPerTurn, turnsLeft, ownerIndex}
     dividendRateModifier: null, // {multiplier, turnsLeft} — Rate Hike/Rate Cut, applies to every stock's dividend zone
-    dividendLeaches: [], // active Dividend Leach cards: {thiefIndex, victimIndex, turnsLeft}
+    dividendLeaches: [], // active Dividend Leach cards: {thiefIndex, victimIndex, turnsLeft, permanent}
+    espionage: [], // active Espionage cards: {spyIndex, targetIndex, turnsLeft} — ticks down on the spy's own turns
     netWorthHistory: [{ values: players.map(()=>START_CASH) }], // one point per turn taken, all players together — for the Net Worth Graph
     awaitingHoldDecision: false, // a holdable card was just drawn — waiting on Play Now vs Hold, before it's touched at all
     resolvingFromHand: false, // currently resolving a card that came from hand, not a fresh draw — changes what happens when it finishes
@@ -1020,6 +1233,8 @@ setInterval(()=>{
       gEl.style.color = gSecs<=0 ? 'var(--down)' : (gSecs<=60 ? 'var(--amber)' : '');
     }
   }
+  const srEl = document.getElementById('speedrunValue');
+  if(srEl && isSoloVsBots()) srEl.textContent = formatElapsed(speedrunElapsedMs());
 }, 1000);
 
 /* ============================= TURN TIMEOUT ENFORCEMENT ============================= */
@@ -1211,6 +1426,48 @@ function shortGainLoss(p, id){
   const buyBackCost = held * price(id);
   const basis = p.shortBasis[id]||0;
   return basis - buyBackCost;
+}
+
+/* Shared holdings-table builder — used both for "Your Holdings" and for
+   rendering whatever an Espionage target's holdings look like. Returns
+   {value, html} rows sorted richest-first, exactly like the original
+   inline version this replaced. */
+function buildHoldingRows(pl){
+  const glCell = (gl)=> `<td style="color:${gl>=0?'var(--up)':'var(--down)'};">${gl>=0?'+':'-'}$${Math.abs(Math.round(gl))}</td>`;
+  const rows = [];
+  STOCK_IDS.forEach(id=>{
+    if(pl.shares[id]>0){
+      const sectorLabel = SECTORS[STOCKS[id].sector].label || STOCKS[id].sector;
+      const value = pl.shares[id]*price(id);
+      const basis = Math.round((pl.costBasis[id]||0) / pl.shares[id]);
+      rows.push({ value, html: `<tr><td>${id} (${sectorLabel})</td><td>${pl.shares[id]}</td><td>$${basis}</td><td>$${value}</td>${glCell(longGainLoss(pl,id))}</tr>` });
+    }
+  });
+  if(pl.spShares>0){
+    const value = pl.spShares*spPrice();
+    const basis = Math.round((pl.spCostBasis||0) / pl.spShares);
+    rows.push({ value, html: `<tr><td>Mini SP8</td><td>${pl.spShares}</td><td>$${basis}</td><td>$${value}</td>${glCell(longGainLoss(pl,'SP'))}</tr>` });
+  }
+  if(pl.spxShares>0){
+    const value = pl.spxShares*spxPrice();
+    const basis = Math.round((pl.spxCostBasis||0) / pl.spxShares);
+    rows.push({ value, html: `<tr><td>SP8</td><td>${pl.spxShares}</td><td>$${basis}</td><td>$${value}</td>${glCell(longGainLoss(pl,'SPX'))}</tr>` });
+  }
+  STOCK_IDS.forEach(id=>{
+    if((pl.shorts[id]||0)>0){
+      const sectorLabel = SECTORS[STOCKS[id].sector].label || STOCKS[id].sector;
+      const value = -(pl.shorts[id]*price(id));
+      const basis = Math.round((pl.shortBasis[id]||0) / pl.shorts[id]);
+      rows.push({ value, html: `<tr><td>${id} (${sectorLabel}, short)</td><td>${pl.shorts[id]}</td><td>$${basis}</td><td style="color:var(--down);">-$${Math.abs(value)}</td>${glCell(shortGainLoss(pl,id))}</tr>` });
+    }
+  });
+  rows.sort((a,b)=>b.value-a.value);
+  return rows;
+}
+function renderHoldingsTableHtml(pl){
+  const rows = buildHoldingRows(pl);
+  if(rows.length===0) return `<div class="hint" style="margin:0;">No open positions.</div>`;
+  return `<table class="holdings-table"><tr><th>Ticker</th><th>Shares</th><th>Avg Cost</th><th>Value</th><th>Gain/Loss</th></tr>${rows.map(r=>r.html).join('')}</table>`;
 }
 
 const TURN_CAP = 12; // total buy+short shares allowed per turn (across all stocks)
@@ -1450,6 +1707,19 @@ function checkWorthless(){
   });
 }
 
+/* Single choke point for ending the game — sets gameOver/winner together
+   with a gameOverAt timestamp every single time, no matter which of the
+   several win conditions below triggered it. The timestamp is what makes
+   the speedrun-vs-bots stopwatch (see isSoloVsBots() etc.) possible: without
+   one shared place to stamp it, some win paths would end up without a
+   reliable "when did this actually end" moment. */
+function markGameOver(winner){
+  state.gameOver = true;
+  state.winner = winner;
+  state.gameOverAt = Date.now();
+  if(myPlayerIndex!==null && typeof winner==='number') playSfx(winner===myPlayerIndex ? 'win' : 'lose');
+}
+
 /* A player whose net worth is negative can never dig out — even selling
    every last share can't bring their cash back to $0, since shorts/fees
    already account for that in netWorth. Rather than soft-locking their
@@ -1464,8 +1734,8 @@ function checkEliminations(){
   });
   const active = state.players.filter(p=>!p.eliminated);
   if(state.players.length>1 && active.length<=1 && !state.gameOver){
-    state.gameOver = true;
-    state.winner = active[0] || state.players.reduce((best,p)=> (!best||netWorth(p)>netWorth(best))?p:best, null);
+    const winner = active[0] || state.players.reduce((best,p)=> (!best||netWorth(p)>netWorth(best))?p:best, null);
+    markGameOver(winner);
     logEvent(active.length===1 ? `${active[0].name} is the last player standing — wins!` : 'All players were eliminated — game over.', true);
   }
 }
@@ -1513,10 +1783,9 @@ function checkGameOver(){
 
   // 1. SP8 reaches the far right bubble (its ceiling)
   if(state.sp.idx === state.sp.track.length-1){
-    state.gameOver = true;
     let best=null;
     state.players.forEach(p=>{ if(!best || netWorth(p)>netWorth(best)) best=p; });
-    state.winner = best;
+    markGameOver(best);
     logEvent(`Mini SP8 hit its ceiling — game over!`, true);
     return;
   }
@@ -1524,10 +1793,9 @@ function checkGameOver(){
   // 2. Every Tech and Energy stock has gone worthless
   const techEnergyIds = [...SECTORS.Tech.stocks, ...SECTORS.Energy.stocks];
   if(techEnergyIds.every(id=>state.stocks[id].worthless)){
-    state.gameOver = true;
     let best=null;
     state.players.forEach(p=>{ if(!best || netWorth(p)>netWorth(best)) best=p; });
-    state.winner = best;
+    markGameOver(best);
     logEvent(`Every Tech and Energy stock is worthless — game over!`, true);
     return;
   }
@@ -1537,8 +1805,7 @@ function checkGameOver(){
   if(wc.mode==='networth'){
     const bigWinner = state.players.find(p=>!p.eliminated && netWorth(p)>=wc.target);
     if(bigWinner){
-      state.gameOver = true;
-      state.winner = bigWinner;
+      markGameOver(bigWinner);
       logEvent(`${bigWinner.name} reached $${wc.target.toLocaleString()} net worth — game over!`, true);
       return;
     }
@@ -1559,8 +1826,7 @@ function finalizeTimerGameOver(){
     const nw = netWorth(p);
     if(nw>bestNW){ bestNW = nw; best = p; }
   });
-  state.gameOver = true;
-  state.winner = best;
+  markGameOver(best);
   logEvent(`Time's up! ${best.name} wins with $${Math.round(bestNW).toLocaleString()} net worth.`, true);
 }
 
@@ -1599,12 +1865,14 @@ function drawCard(force){
     tickShortFeesAndDividends(state.current);
     tickPortfolioManagers(state.current);
     tickDividendRateModifier();
+    tickEspionage(state.current);
     checkMarginCalls(); // fees/payouts above can push cash negative — same safety net as any other cash event
     checkGameOver();
     if(state.gameOver){ persist(); render(); return; } // a scheduled prediction landing just ended the game
   }
   if(state.deck.length===0){ state.deck = shuffle(state.discard); state.discard=[]; }
   const card = state.deck.shift();
+  if(state.current===myPlayerIndex) playSfx('draw');
   state.pendingCard = card;
   state.phase = 'resolve';
   state.choiceError = null;
@@ -1652,8 +1920,8 @@ function playCardNowFromDraw(force){
    moves on as if this draw slot had been used normally — same phase
    transition as finishCardResolution, just without ever applying the
    card's effect or sending it to the discard pile. */
-function holdCurrentCard(){
-  if(!state.pendingCard || !state.awaitingHoldDecision || !isMyTurn()) return;
+function holdCurrentCard(force){
+  if(!state.pendingCard || !state.awaitingHoldDecision || (!force && !isMyTurn())) return;
   const p = state.players[state.current];
   if(p.hand.length >= HAND_LIMIT) return; // shouldn't be reachable (button hidden), but don't trust the DOM
   p.hand.push(state.pendingCard);
@@ -1680,8 +1948,8 @@ function holdCurrentCard(){
    the exact same resolution pipeline a fresh draw would use (auto-resolve
    or the choice UI), just flagged so finishing it returns to trade phase
    instead of trying to advance the turn the way a real draw would. */
-function playCardFromHand(handIdx){
-  if(!isMyTurn() || state.phase!=='trade' || state.gameOver) return;
+function playCardFromHand(handIdx, force){
+  if((!force && !isMyTurn()) || state.phase!=='trade' || state.gameOver) return;
   const p = state.players[state.current];
   if(handIdx<0 || handIdx>=p.hand.length) return;
   const card = p.hand.splice(handIdx,1)[0];
@@ -1734,6 +2002,15 @@ function tickScheduled(ownerIndex){
     else remaining.push(item);
   });
   state.scheduled = remaining;
+}
+
+/* Espionage counts down on the SPY's own turns (not the target's) — "see
+   their holdings for your next N turns" — same convention as Scheduled
+   Swing's "in N turns" ticking on the owner, not the affected stock. */
+function tickEspionage(spyIndex){
+  if(!state.espionage || !state.espionage.length) return;
+  state.espionage.forEach(e=>{ if(e.spyIndex===spyIndex) e.turnsLeft -= 1; });
+  state.espionage = state.espionage.filter(e=>e.turnsLeft>0);
 }
 
 /* Scheduled items store plain data (never functions — Firebase can't sync
@@ -1912,8 +2189,8 @@ function tickShortFeesAndDividends(ownerIndex){
         logEvent(`${state.players[leach.thiefIndex].name}'s Dividend Leach skimmed $${cut} from ${p.name}.`, true);
       }
     });
-    state.dividendLeaches.forEach(leach=>{ if(leach.victimIndex===ownerIndex) leach.turnsLeft -= 1; });
-    state.dividendLeaches = state.dividendLeaches.filter(l=>l.turnsLeft>0);
+    state.dividendLeaches.forEach(leach=>{ if(leach.victimIndex===ownerIndex && !leach.permanent) leach.turnsLeft -= 1; });
+    state.dividendLeaches = state.dividendLeaches.filter(l=>l.permanent || l.turnsLeft>0);
   }
 }
 
@@ -2177,6 +2454,24 @@ function resolveAuto(card){
       logEvent(`${p.name} attached a Dividend Leach to ${state.players[victimIndex].name} for ${turns} turn${turns===1?'':'s'}.`, true);
       break;
     }
+    case 'perma_leach': {
+      // Random opponent, no choice involved (unlike the holdable regular
+      // Dividend Leach), and — unlike the timed version — this one is
+      // marked `permanent:true` so tickShortFeesAndDividends below never
+      // decrements or expires it. There's no card anywhere that removes it.
+      const others = state.players.map((pl,i)=>i).filter(i=>i!==state.current && !state.players[i].eliminated);
+      if(others.length===0){ logEvent(`${p.name} has no one to leach — Permanent Dividend Leach fizzles.`); break; }
+      const victimIndex = others[Math.floor(Math.random()*others.length)];
+      if(!state.dividendLeaches) state.dividendLeaches = [];
+      // turnsLeft is never read for a permanent leach (every place that
+      // touches it checks the `permanent` flag first) — using `null` here
+      // rather than Infinity because Firebase/JSON can't represent Infinity
+      // and would silently mangle it on the next sync round-trip.
+      state.dividendLeaches.push({ thiefIndex: state.current, victimIndex, turnsLeft: null, permanent: true });
+      card.text = `Permanent Dividend Leach: you'll skim 10% of ${state.players[victimIndex].name}'s dividend earnings for the rest of the game.`;
+      logEvent(`${p.name} attached a Permanent Dividend Leach to ${state.players[victimIndex].name} — for the rest of the game.`, true);
+      break;
+    }
     case 'margin_forgiveness':
       p.marginShield = true;
       logEvent(`${p.name} is now protected from their next margin call.`, true);
@@ -2338,7 +2633,7 @@ function resolveAuto(card){
 
 function needsChoice(card){
   if(card.type==='dividend_leach' && card.holdable) return true; // the holdable variant lets you pick your target instead of it being random
-  return ['sched_swing','split','choose_stock_move','choose_sector_move','whale','insider_blocker','hunter'].includes(card.type);
+  return ['sched_swing','split','choose_stock_move','choose_sector_move','whale','insider_blocker','hunter','espionage'].includes(card.type);
 }
 
 /* All (playerIndex, stock) pairs across every opponent's currently active
@@ -2450,6 +2745,17 @@ function resolveChoice(card, choice){
       if(idx===-1){ state.choiceError = `${target.name} doesn't have a Golden Goose on ${stock} anymore.`; return false; }
       target.goldenGeese.splice(idx, 1); // kills exactly one — if they stacked more than one on the same stock, the rest survive
       logEvent(`${p.name} hunted down ${target.name}'s Golden Goose on ${stock} — that dividend is gone for good.`, true);
+      if(state.current===myPlayerIndex || targetIndex===myPlayerIndex) playSfx('hunter');
+      break;
+    }
+    case 'espionage': {
+      const targetIndex = choice.targetIndex;
+      const valid = state.players.some((pl,i)=> i===targetIndex && i!==state.current && !pl.eliminated);
+      if(!valid){ state.choiceError = 'Pick a valid opponent to spy on.'; return false; }
+      const turns = 1 + Math.floor(Math.random()*5); // 1-5 inclusive
+      if(!state.espionage) state.espionage = [];
+      state.espionage.push({ spyIndex: state.current, targetIndex, turnsLeft: turns });
+      logEvent(`${p.name} planted a spy on ${state.players[targetIndex].name}'s holdings — visible for ${p.name}'s next ${turns} turn${turns===1?'':'s'}.`, true);
       break;
     }
   }
@@ -2530,6 +2836,7 @@ function checkInsiderTradingRisk(ownerIndex){
     if(!p.bannedStocks.includes(item.stock)) p.bannedStocks.push(item.stock);
     p.jailTurnsLeft = item.jailTurns;
     logEvent(`${p.name} was caught insider trading — fined $${fine.toLocaleString()}, had the position seized, and is now permanently barred from trading that stock. Serving ${item.jailTurns} turn${item.jailTurns===1?'':'s'} in jail.`, true);
+    if(ownerIndex===myPlayerIndex) playSfx('jail');
     return true;
   }
   return false;
@@ -2601,6 +2908,7 @@ function buyShares(id, qtyRequested, force){
   if(id!=='SP' && id!=='SPX') trackPortfolioManagerOpen(p, id, 'long', qty, totalCost/qty);
   const feeNote = walk.fee>0 ? ` (incl. $${walk.fee} fee)` : (id==='SP' ? ' (no price impact)' : offerEligible ? ' (Public Offering — no fee, no price impact)' : '');
   logEvent(`${p.name} bought ${qty} ${tickerLabel(id)} for $${totalCost}${feeNote} — now $${obj.track[obj.idx]}.`);
+  if(state.current===myPlayerIndex) playSfx('buy');
   checkMarginCalls(); checkGameOver(); recordTradeMarker(id, p.color, 'up', qty); schedulePersist(); render();
 }
 
@@ -2628,6 +2936,7 @@ function sellShares(id, qtyRequested, force){
   if(id!=='SP' && id!=='SPX') trackPortfolioManagerClose(p, id, 'long', qty, proceeds/qty);
   const feeNote = walk.fee>0 ? ` (after $${walk.fee} fee)` : (id==='SP' ? ' (no price impact)' : '');
   logEvent(`${p.name} sold ${qty} ${tickerLabel(id)} for $${proceeds}${feeNote} — now $${obj.track[obj.idx]}.`);
+  if(state.current===myPlayerIndex) playSfx('sell');
   checkMarginCalls(); checkGameOver(); recordTradeMarker(id, p.color, 'down', qty); schedulePersist(); render();
 }
 
@@ -2656,6 +2965,7 @@ function openShort(id, qtyRequested, force){
   trackPortfolioManagerOpen(p, id, 'short', qty, proceeds/qty);
   const feeNote = walk.fee>0 ? ` (after $${walk.fee} fee)` : '';
   logEvent(`${p.name} opened a short on ${qty} ${id} for $${proceeds}${feeNote} — collateral locked, now $${obj.track[obj.idx]}.`, true);
+  if(state.current===myPlayerIndex) playSfx('short');
   checkMarginCalls(); checkGameOver(); recordTradeMarker(id, p.color, 'down', qty); schedulePersist(); render();
 }
 
@@ -2680,6 +2990,7 @@ function coverShort(id, qtyRequested, force){
   trackPortfolioManagerClose(p, id, 'short', qty, totalCost/qty);
   const feeNote = walk.fee>0 ? ` (incl. $${walk.fee} fee)` : '';
   logEvent(`${p.name} covered ${qty} ${id} for $${totalCost}${feeNote} — now $${obj.track[obj.idx]}.`);
+  if(state.current===myPlayerIndex) playSfx('cover');
   checkMarginCalls(); checkGameOver(); recordTradeMarker(id, p.color, 'up', qty); schedulePersist(); render();
 }
 
@@ -2695,6 +3006,7 @@ function endTurn(){
   let next = state.current;
   do { next = (next+1)%state.players.length; } while(state.players[next].eliminated && next!==state.current);
   state.current = next;
+  if(next===myPlayerIndex) playSfx('turn');
   state.turnStartedAt = Date.now();
   state.phase = 'draw';
   state.turnStage = 'start';
@@ -2707,21 +3019,23 @@ function endTurn(){
   persist(); render();
 }
 
-/* Both index funds pay a 7% dividend on holdings at the end of every
+/* Both index funds pay a 4% dividend on holdings at the end of every
    round (once every player has taken a turn) — a steady reward for
    parking cash in the "safe" indexes instead of chasing individual
    stocks. Same rate for both — SP8 just moves more dollars per share. */
 function paySP8Dividend(){
   state.players.forEach(pl=>{
     if(pl.spShares>0){
-      const pay = Math.round(pl.spShares*spPrice()*0.07);
+      const pay = Math.round(pl.spShares*spPrice()*0.04);
       pl.cash += pay;
-      logEvent(`${pl.name} collected a $${pay} Mini SP8 dividend (7% of holding value).`, true);
+      logEvent(`${pl.name} collected a $${pay} Mini SP8 dividend (4% of holding value).`, true);
+      if(state.players.indexOf(pl)===myPlayerIndex) playSfx('dividend');
     }
     if(pl.spxShares>0){
-      const pay = Math.round(pl.spxShares*spxPrice()*0.07);
+      const pay = Math.round(pl.spxShares*spxPrice()*0.04);
       pl.cash += pay;
-      logEvent(`${pl.name} collected a $${pay} SP8 dividend (7% of holding value).`, true);
+      logEvent(`${pl.name} collected a $${pay} SP8 dividend (4% of holding value).`, true);
+      if(state.players.indexOf(pl)===myPlayerIndex) playSfx('dividend');
     }
   });
 }
@@ -2797,6 +3111,93 @@ function botLargestHolding(bot){
   });
   return best;
 }
+/* Mirrors botLargestHolding but for open shorts — used so choice cards like
+   "Move Any Stock" can push a shorted stock DOWN instead of only ever
+   thinking in terms of long positions. */
+function botLargestShortHolding(bot){
+  let best=null, bestQty=0;
+  STOCK_IDS.forEach(id=>{
+    if((bot.shorts[id]||0)>bestQty){ bestQty=bot.shorts[id]; best=id; }
+  });
+  return best;
+}
+/* Fraction of the bot's own net worth currently tied up in one stock's long
+   position — the diversification guard rail below refuses to pile on more
+   of a stock past this, forcing the bot to spread risk across several
+   positions instead of dumping everything into whatever looks cheapest. */
+function botPositionWeight(bot, id){
+  const nw = netWorth(bot);
+  if(!nw || nw<=0) return 0;
+  return ((bot.shares[id]||0)*price(id)) / nw;
+}
+const BOT_MAX_POSITION_WEIGHT = 0.35; // don't let one stock exceed ~35% of net worth via fresh buys
+/* Same idea as botCheapestStock but skips anything the bot is already
+   overweight in (or already shorting — betting both ways on the same stock
+   at once just cancels itself out while still paying fees on both legs),
+   so a smarter bot actually diversifies instead of dumping its whole stack
+   into a single cheap stock turn after turn. Falls back to the plain
+   cheapest stock if literally everything is disqualified — still needs to
+   do SOMETHING rather than freeze up. */
+function botCheapestStockDiversified(bot){
+  let best=null, bestScore=Infinity;
+  STOCK_IDS.forEach(id=>{
+    if(state.stocks[id].worthless) return;
+    if((bot.shorts[id]||0)>0) return; // already shorting it — don't also go long
+    if(botPositionWeight(bot,id) > BOT_MAX_POSITION_WEIGHT) return;
+    const score = botRelativeIdx(id);
+    if(score<bestScore){ bestScore=score; best=id; }
+  });
+  return best || botCheapestStock();
+}
+/* How much a smart bot should trust an Insider Info tip it drew itself,
+   based on the tier it came from — roughly tracking each tier's real/fake
+   ratio in INSIDER_TIERS (C-Suite is always real, Napkin is mostly made
+   up). A bot can't see whether ITS OWN tip is the fake one any more than a
+   human can — same hidden information, just a learned prior on the source. */
+function botTierActionChance(tier){
+  switch(tier){
+    case 'csuite': return 1.0;
+    case 'expert': return 0.85;
+    case 'friend': return 0.65;
+    case 'napkin': return 0.35;
+    default: return 0.6;
+  }
+}
+/* Checks the bot's own active Insider Info predictions and, if confident
+   enough in the source, trades toward the predicted price right now —
+   buying if it's predicted to rise, shorting if it's predicted to fall.
+   This is exactly the "insider trading" a human player can do with their
+   own tips, including the same real risk of getting caught later via
+   checkInsiderTradingRisk/checkInsiderActedOn — a bot that acts on a tip
+   is just as exposed as a human would be. */
+function botActOnOwnTips(bot){
+  const tips = (state.scheduled||[]).filter(item=>
+    item.ownerIndex===state.current && item.kind==='sched_price' &&
+    item.stock && !state.stocks[item.stock].worthless
+  );
+  for(const tip of tips){
+    if(Math.random() > botTierActionChance(tip.tier)) continue; // not confident enough in this source to act
+    const cur = price(tip.stock);
+    if(tip.snappedPrice > cur*1.05 && (bot.shorts[tip.stock]||0)<=0 && capRemaining()>0 && capRemainingForStock(tip.stock)>0){
+      const qty = Math.min(2, capRemaining(), capRemainingForStock(tip.stock));
+      const buffer = freeCash(bot)*0.2;
+      const priorFilled = state.turnFills.up[tip.stock]||0;
+      const walk = walkOrderDetailed(tip.stock, qty, +1, priorFilled);
+      if(qty>0 && (walk.total+walk.fee) <= (freeCash(bot)-buffer)){
+        buyShares(tip.stock, qty, true);
+        return true;
+      }
+    } else if(tip.snappedPrice < cur*0.95 && bot.shares[tip.stock]<=0 && capRemaining()>0 && capRemainingForStock(tip.stock)>0){
+      const qty = Math.min(2, capRemaining(), capRemainingForStock(tip.stock));
+      const buffer = freeCash(bot)*0.25;
+      if(qty>0 && price(tip.stock)*qty <= (freeCash(bot)-buffer)){
+        openShort(tip.stock, qty, true);
+        return true;
+      }
+    }
+  }
+  return false;
+}
 
 /* Sells down the bot's biggest long holding, repeatedly, until its cash is
    back to $0+ — the same forced-liquidation a human faces after a margin
@@ -2830,8 +3231,18 @@ function botResolveChoice(){
       break;
     }
     case 'choose_stock_move': {
-      const held = botLargestHolding(bot);
-      choice = { stock: held || botCheapestStock() || STOCK_IDS[0], dir: 1 };
+      // Push whichever position is bigger in dollar terms — a long stock UP,
+      // or a shorted stock DOWN — instead of only ever thinking in terms of
+      // longs and blindly moving things up.
+      const longHeld = botLargestHolding(bot);
+      const shortHeld = botLargestShortHolding(bot);
+      const longVal = longHeld ? bot.shares[longHeld]*price(longHeld) : 0;
+      const shortVal = shortHeld ? (bot.shorts[shortHeld]||0)*price(shortHeld) : 0;
+      let stock, dir;
+      if(shortHeld && shortVal>longVal){ stock = shortHeld; dir = -1; }
+      else if(longHeld){ stock = longHeld; dir = 1; }
+      else { stock = botCheapestStock() || STOCK_IDS[0]; dir = 1; }
+      choice = { stock, dir };
       break;
     }
     case 'choose_sector_move': {
@@ -2877,6 +3288,19 @@ function botResolveChoice(){
       choice = best;
       break;
     }
+    case 'espionage': {
+      // Scout whoever's currently ahead — that's the intel actually worth
+      // having when deciding how aggressively to play the rest of the game.
+      let target = null, bestNW = -Infinity;
+      state.players.forEach((pl,i)=>{
+        if(i===state.current || pl.eliminated) return;
+        const nw = netWorth(pl);
+        if(nw>bestNW){ bestNW = nw; target = i; }
+      });
+      if(target===null){ finishCardResolution(); return; }
+      choice = { targetIndex: target };
+      break;
+    }
     default:
       finishCardResolution();
       return;
@@ -2886,23 +3310,86 @@ function botResolveChoice(){
   void ok;
 }
 
-/* One trading decision per call, checked in priority order: cover a short
-   that's paid off, sell a long holding that's gotten rich, open a new short
-   on something overextended, or buy into something that looks cheap —
-   keeping a cash buffer in reserve throughout. Returns false once nothing
-   more looks worth doing, which is the bot's signal to end its turn. */
+/* Decides whether a freshly-drawn holdable card is worth sitting on for a
+   better moment rather than resolving it immediately — the same judgment
+   call a sharp human makes at the Play Now/Hold prompt. Only the choice
+   cards with a clear timing angle are ever worth holding; the plain
+   dictated movement cards (Move a Stock/Sector, Revert) have no real
+   "better later" — they do the same thing whenever played — so those
+   always just get played immediately, same as before. */
+function botShouldHoldCard(bot, card){
+  if(card.type==='hunter') return huntableGeese().length===0; // nothing to kill yet — worth waiting for a target
+  if(card.type==='dividend_leach' && card.holdable){
+    let leaderNW = -Infinity;
+    state.players.forEach(pl=>{ if(!pl.eliminated){ const nw=netWorth(pl); if(nw>leaderNW) leaderNW=nw; } });
+    return !(leaderNW > netWorth(bot)*1.15); // no clear leader worth leaching yet
+  }
+  if(card.type==='choose_stock_move' || card.type==='choose_sector_move'){
+    // Worth holding onto if the bot doesn't yet have a position sizable
+    // enough to actually benefit from nudging a price right now.
+    return !botLargestHolding(bot) && !botLargestShortHolding(bot);
+  }
+  return false; // insider_blocker etc. — no clear timing edge, just play it
+}
+
+/* Looks for a good moment to play whatever the bot is currently holding —
+   called once per trade-phase step, before the normal buy/sell decisions,
+   since playing a held card doesn't cost a buy/short action. Mirrors
+   exactly the conditions botShouldHoldCard waited for. */
+function botTryPlayHeldCard(){
+  const bot = state.players[state.current];
+  if(!bot.hand || !bot.hand.length) return false;
+  for(let i=0;i<bot.hand.length;i++){
+    const card = bot.hand[i];
+    if(card.type==='hunter' && huntableGeese().length>0){ playCardFromHand(i, true); return true; }
+    if(card.type==='dividend_leach' && card.holdable){
+      let leaderNW = -Infinity;
+      state.players.forEach(pl=>{ if(!pl.eliminated){ const nw=netWorth(pl); if(nw>leaderNW) leaderNW=nw; } });
+      if(leaderNW > netWorth(bot)*1.15){ playCardFromHand(i, true); return true; }
+    }
+    if((card.type==='choose_stock_move' || card.type==='choose_sector_move') && (botLargestHolding(bot) || botLargestShortHolding(bot))){
+      playCardFromHand(i, true); return true;
+    }
+  }
+  return false;
+}
+
+/* One trading decision per call, checked in priority order: act on the
+   bot's own Insider Info if it's confident enough in the source, shore up
+   margin safety before it becomes an actual margin call, cover a short
+   that's paid off, sell a long holding that's gotten rich, open a new
+   short on something overextended, or buy into something that looks cheap
+   and isn't already overweight in the portfolio — keeping a cash buffer in
+   reserve throughout. Returns false once nothing more looks worth doing,
+   which is the bot's signal to end its turn. */
 function botTakeOneTradeAction(){
   const bot = state.players[state.current];
 
-  // 1. Cover a short that's swung back down — lock in the profit.
+  // 1. Trade on the bot's own Insider Info while it's still live — the
+  // single highest-conviction move available when it applies.
+  if(botActOnOwnTips(bot)) return true;
+
+  // 2. Proactive margin safety: if free cash has gotten dangerously thin
+  // relative to net worth, cover the worst short now rather than waiting
+  // for an actual forced margin call next turn.
+  if(netWorth(bot)>0 && freeCash(bot) < netWorth(bot)*0.08){
+    let worst=null, worstLiab=-1;
+    STOCK_IDS.forEach(id=>{
+      const liab = (bot.shorts[id]||0)*price(id);
+      if(liab>worstLiab){ worstLiab=liab; worst=id; }
+    });
+    if(worst && bot.shorts[worst]>0){ coverShort(worst, Math.min(2, bot.shorts[worst]), true); return true; }
+  }
+
+  // 3. Cover a short that's swung back down — lock in the profit.
   const coverable = STOCK_IDS.find(id=> (bot.shorts[id]||0)>0 && botRelativeIdx(id) < -0.3 );
   if(coverable){ coverShort(coverable, Math.min(2, bot.shorts[coverable]), true); return true; }
 
-  // 2. Sell a long holding that's gotten rich.
+  // 4. Sell a long holding that's gotten rich.
   const richHeld = STOCK_IDS.find(id=> bot.shares[id]>0 && botRelativeIdx(id) > 0.5 );
   if(richHeld){ sellShares(richHeld, Math.min(2, bot.shares[richHeld]), true); return true; }
 
-  // 3. Open a short on something clearly overextended, as long as it isn't
+  // 5. Open a short on something clearly overextended, as long as it isn't
   // also a stock the bot is long in (no point betting both ways at once).
   if(capRemaining()>0){
     const rich = STOCK_IDS.find(id=> !state.stocks[id].worthless && bot.shares[id]<=0 && botRelativeIdx(id) > 0.6 );
@@ -2916,9 +3403,11 @@ function botTakeOneTradeAction(){
     }
   }
 
-  // 4. Buy a stock that looks cheap.
+  // 6. Buy a stock that looks cheap and isn't already overweight in the
+  // portfolio — the diversification guard rail is what actually makes this
+  // "smarter" instead of just dumping every dollar into one ticker.
   if(capRemaining()>0){
-    const cheap = botCheapestStock();
+    const cheap = botCheapestStockDiversified(bot);
     if(cheap && capRemainingForStock(cheap)>0 && botRelativeIdx(cheap) < 0.15){
       const buffer = freeCash(bot)*0.25; // keep ~25% of free cash in reserve
       const qty = Math.min(2, capRemaining(), capRemainingForStock(cheap));
@@ -3026,11 +3515,23 @@ function runBotStep(){
       setTimeout(runBotStep, BOT_STEP_DELAY);
       return;
     }
-    if(state.awaitingHoldDecision){ playCardNowFromDraw(true); setTimeout(runBotStep, BOT_STEP_DELAY); return; }
+    if(state.awaitingHoldDecision){
+      // Smarter than always playing immediately: sometimes the right move
+      // is to sit on a card until it's actually useful (see
+      // botShouldHoldCard) — exactly the judgment call a sharp human makes
+      // at this same prompt.
+      if(state.pendingCard.holdable && cur.hand.length<HAND_LIMIT && botShouldHoldCard(cur, state.pendingCard)){
+        holdCurrentCard(true);
+      } else {
+        playCardNowFromDraw(true);
+      }
+      setTimeout(runBotStep, BOT_STEP_DELAY); return;
+    }
     if(isTurnProtectedFromTimeout()){ botResolveChoice(); setTimeout(runBotStep, BOT_STEP_DELAY); return; }
     if(state.phase==='draw'){ drawCard(true); setTimeout(runBotStep, BOT_STEP_DELAY); return; }
     if(state.phase==='resolve'){ finishCardResolution(); setTimeout(runBotStep, BOT_STEP_DELAY); return; }
     if(state.phase==='trade'){
+      if(botTryPlayHeldCard()){ setTimeout(runBotStep, 300); return; }
       if(botTakeOneTradeAction()){ setTimeout(runBotStep, 300); return; }
       proceedPastTrade();
       setTimeout(runBotStep, BOT_STEP_DELAY);
@@ -3083,21 +3584,80 @@ document.addEventListener('visibilitychange', ()=>{
 /* Sets up a fresh 1-player-vs-bot game directly, skipping the lobby
    entirely (there's nothing to wait on — only one human seat exists). */
 const GAME_LENGTH_OPTIONS = {
-  net250:  { mode:'networth', target:250000,  label:'$250,000' },
-  net500:  { mode:'networth', target:500000,  label:'$500,000' },
-  net1m:   { mode:'networth', target:1000000, label:'$1,000,000' },
+  net250:  { mode:'networth', target:250000,     label:'$250,000' },
+  net500:  { mode:'networth', target:500000,     label:'$500,000' },
+  net1m:   { mode:'networth', target:1000000,    label:'$1,000,000' },
+  net10m:  { mode:'networth', target:10000000,   label:'$10,000,000' },
+  net100m: { mode:'networth', target:100000000,  label:'$100,000,000' },
   timer30: { mode:'timer', minutes:30, label:'30 Min Timer' },
 };
 
+/* ============================= SPEEDRUN (SOLO VS BOTS) ============================= */
+/* Any game with exactly one non-bot player is treated as a speedrun — the
+   whole point of playing a lobby of bots solo is racing the clock against
+   your own past times, so the stopwatch and best-time tracking apply
+   automatically rather than needing a separate mode toggle. */
+function isSoloVsBots(){
+  return !!(state && state.players && state.players.length>1 && state.players.filter(p=>!p.bot).length===1);
+}
+function speedrunElapsedMs(){
+  if(!state || !state.createdAt) return 0;
+  const end = (state.gameOver && state.gameOverAt) ? state.gameOverAt : Date.now();
+  return Math.max(0, end - state.createdAt);
+}
+function formatElapsed(ms){
+  const totalSec = Math.floor(ms/1000);
+  const h = Math.floor(totalSec/3600), m = Math.floor((totalSec%3600)/60), s = totalSec%60;
+  const mm = h>0 ? String(m).padStart(2,'0') : String(m);
+  const ss = String(s).padStart(2,'0');
+  return h>0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+/* Best times are purely local (localStorage, not synced) — they're a
+   personal record for THIS browser, keyed by game length + bot count so a
+   $500k/2-bot time never gets compared against a $10M/3-bot time. */
+function speedrunLocalKey(){
+  const glKey = state.gameLengthKey || (state.winCondition && state.winCondition.mode==='timer' ? 'timer' : 'custom');
+  const botCount = state.players.filter(p=>p.bot).length;
+  return `uptrend_besttime_${glKey}_${botCount}bots`;
+}
+function loadBestSpeedrunTime(){
+  try{ const raw = localStorage.getItem(speedrunLocalKey()); return raw ? parseInt(raw,10) : null; }catch(e){ return null; }
+}
+function saveBestSpeedrunTimeIfBetter(ms){
+  try{
+    const prev = loadBestSpeedrunTime();
+    if(prev===null || ms<prev){ localStorage.setItem(speedrunLocalKey(), String(ms)); return true; }
+    return false;
+  }catch(e){ return false; }
+}
+let lastSpeedrunRecordedAt = null; // state.gameOverAt of the last game-over event we already recorded a time for
+let speedrunWasNewBest = false;
+function maybeRecordSpeedrunResult(){
+  if(!state || !state.gameOver || !state.gameOverAt || !isSoloVsBots()) return;
+  if(lastSpeedrunRecordedAt === state.gameOverAt) return; // already handled this exact game-over
+  lastSpeedrunRecordedAt = state.gameOverAt;
+  speedrunWasNewBest = saveBestSpeedrunTimeIfBetter(state.gameOverAt - state.createdAt);
+}
+
+/* Sets up a fresh vs-bots game directly, skipping the lobby entirely (only
+   one human seat exists, so there's nothing to wait on). Supports 1-3 bots
+   — PLAYER_COLORS has exactly 4 entries, so 1 human + up to 3 bots is the
+   natural cap without running out of distinct player colors. */
 function startBotGame(){
   const glKey = window._setupGameLength || 'net500';
   const gameLength = GAME_LENGTH_OPTIONS[glKey] || GAME_LENGTH_OPTIONS.net500;
-  state = freshState(['You', 'Bot'], gameLength);
-  state.players[1].bot = true;
+  const botCount = Math.max(1, Math.min(3, window._setupBotCount || 1));
+  const names = ['You'];
+  for(let i=1;i<=botCount;i++) names.push(botCount===1 ? 'Bot' : `Bot ${i}`);
+  state = freshState(names, gameLength);
+  for(let i=1;i<=botCount;i++) state.players[i].bot = true;
   state.createdAt = Date.now();
+  state.gameLengthKey = glKey;
   myPlayerIndex = 0;
   saveLocalRoom(roomCode, 0, 'You');
   lastKnownSnapshot = {};
+  lastSpeedrunRecordedAt = null;
+  speedrunWasNewBest = false;
   persistFull(); render();
 }
 
@@ -3189,7 +3749,10 @@ function renderCreateGameScreen(){
         </div>
         <button class="btn full" id="createBtn">Create Game</button>
         <div class="hint">No game is running yet in this room. Pick a player count and create one — everyone else who opens this room will be able to join and claim a seat.</div>
-        <button class="btn secondary full" id="vsBotBtn" style="margin-top:10px;">Play vs Bot (1 Player)</button>
+        <div class="setup-field" style="margin-top:14px;"><label>— or play solo against bots (speedrun the clock) —</label>
+          <div class="player-count-row" id="botCountRow"></div>
+        </div>
+        <button class="btn secondary full" id="vsBotBtn">${vsBotButtonLabel()}</button>
         <button class="btn secondary full" id="changeRoomBtn" style="margin-top:8px;">Use a Different Room</button>
       </div>
     </div>`;
@@ -3211,9 +3774,23 @@ function renderCreateGameScreen(){
     d.onclick = ()=>{ window._setupGameLength = key; renderCreateGameScreen(); };
     lengthRow.appendChild(d);
   });
+  let botCount = window._setupBotCount || 1;
+  const botCountRow = document.getElementById('botCountRow');
+  [1,2,3].forEach(n=>{
+    const d = document.createElement('div');
+    d.className = 'count-opt'+(n===botCount?' selected':'');
+    d.textContent = `${n} bot${n===1?'':'s'}`;
+    d.onclick = ()=>{ window._setupBotCount = n; renderCreateGameScreen(); };
+    botCountRow.appendChild(d);
+  });
   document.getElementById('createBtn').onclick = ()=>{ createLobby(count); };
   document.getElementById('vsBotBtn').onclick = startBotGame;
   document.getElementById('changeRoomBtn').onclick = leaveRoom;
+}
+
+function vsBotButtonLabel(){
+  const n = window._setupBotCount || 1;
+  return `Play Solo vs ${n} Bot${n===1?'':'s'} — Speedrun the Clock`;
 }
 
 function createLobby(count){
@@ -3667,8 +4244,14 @@ function renderSidebar(){
   if(!state.gameOver && !isMyTurn()){
     html += `<div style="font-size:14px;color:var(--muted);">Waiting for <b style="color:${p.color};">${p.name}</b> to play${myPlayerIndex===-1?' (you\'re spectating)':''}...</div>`;
   } else if(state.gameOver){
-    html += `<div style="font-size:14px;">Game over — <b style="color:${state.winner.color};">${state.winner.name}</b> wins with $${netWorth(state.winner)} net worth!</div>
-      <button class="btn full" style="margin-top:10px;" id="newGameBtn">New Game</button>`;
+    maybeRecordSpeedrunResult();
+    html += `<div style="font-size:14px;">Game over — <b style="color:${state.winner.color};">${state.winner.name}</b> wins with $${netWorth(state.winner)} net worth!</div>`;
+    if(isSoloVsBots() && state.gameOverAt){
+      const elapsed = state.gameOverAt - state.createdAt;
+      const best = loadBestSpeedrunTime();
+      html += `<div class="hint" style="margin-top:8px;">${speedrunWasNewBest ? '🏆 New best time!' : 'Your time:'} <b style="color:var(--text);">${formatElapsed(elapsed)}</b>${(best && !speedrunWasNewBest) ? ` — Best: ${formatElapsed(best)}` : ''}</div>`;
+    }
+    html += `<button class="btn full" style="margin-top:10px;" id="newGameBtn">New Game</button>`;
   } else if(p.eliminated){
     html += `<div class="choice-error" style="margin-bottom:10px;">${p.name} is eliminated — net worth went negative with no way to recover. Their turns are skipped from here on.</div>
       <button class="btn full" id="eliminatedContinueBtn">Continue</button>`;
@@ -3755,43 +4338,23 @@ function renderSidebar(){
   if(!me){
     html += `<div class="panel"><h3>Your Holdings</h3><div class="hint" style="margin:0;">You're spectating — no holdings of your own to show.</div></div>`;
   } else {
-    const glCell = (gl)=> `<td style="color:${gl>=0?'var(--up)':'var(--down)'};">${gl>=0?'+':'-'}$${Math.abs(Math.round(gl))}</td>`;
-    const holdingRows = [];
-    STOCK_IDS.forEach(id=>{
-      if(me.shares[id]>0){
-        const sectorLabel = SECTORS[STOCKS[id].sector].label || STOCKS[id].sector;
-        const value = me.shares[id]*price(id);
-        const basis = Math.round((me.costBasis[id]||0) / me.shares[id]);
-        holdingRows.push({ value, html: `<tr><td>${id} (${sectorLabel})</td><td>${me.shares[id]}</td><td>$${basis}</td><td>$${value}</td>${glCell(longGainLoss(me,id))}</tr>` });
-      }
-    });
-    if(me.spShares>0){
-      const value = me.spShares*spPrice();
-      const basis = Math.round((me.spCostBasis||0) / me.spShares);
-      holdingRows.push({ value, html: `<tr><td>Mini SP8</td><td>${me.spShares}</td><td>$${basis}</td><td>$${value}</td>${glCell(longGainLoss(me,'SP'))}</tr>` });
-    }
-    if(me.spxShares>0){
-      const value = me.spxShares*spxPrice();
-      const basis = Math.round((me.spxCostBasis||0) / me.spxShares);
-      holdingRows.push({ value, html: `<tr><td>SP8</td><td>${me.spxShares}</td><td>$${basis}</td><td>$${value}</td>${glCell(longGainLoss(me,'SPX'))}</tr>` });
-    }
-    STOCK_IDS.forEach(id=>{
-      if((me.shorts[id]||0)>0){
-        const sectorLabel = SECTORS[STOCKS[id].sector].label || STOCKS[id].sector;
-        const value = -(me.shorts[id]*price(id));
-        const basis = Math.round((me.shortBasis[id]||0) / me.shorts[id]); // average proceeds received per share, when the short was opened
-        holdingRows.push({ value, html: `<tr><td>${id} (${sectorLabel}, short)</td><td>${me.shorts[id]}</td><td>$${basis}</td><td style="color:var(--down);">-$${Math.abs(value)}</td>${glCell(shortGainLoss(me,id))}</tr>` });
-      }
-    });
-    holdingRows.sort((a,b)=>b.value-a.value);
-
     html += `<div class="panel"><h3 style="color:${me.color};">Your Holdings</h3>`;
-    if(holdingRows.length===0){
-      html += `<div class="hint" style="margin:0;">No open positions yet.</div>`;
-    } else {
-      html += `<table class="holdings-table"><tr><th>Ticker</th><th>Shares</th><th>Avg Cost</th><th>Value</th><th>Gain/Loss</th></tr>`;
-      holdingRows.forEach(r=>{ html += r.html; });
-      html += `</table>`;
+    html += renderHoldingsTableHtml(me);
+    // Espionage — any opponents you've currently got a spy on, shown as
+    // collapsible dropdowns right under your own holdings so the intel is
+    // easy to find without crowding out your own numbers.
+    const mySpies = (state.espionage||[]).filter(e=>e.spyIndex===myPlayerIndex);
+    if(mySpies.length){
+      html += `<div style="margin-top:12px;">`;
+      mySpies.forEach(e=>{
+        const target = state.players[e.targetIndex];
+        if(!target) return;
+        html += `<details style="margin-bottom:8px;">
+          <summary style="cursor:pointer;font-size:12.5px;color:${target.color};font-weight:600;">🕵️ ${target.name}'s Holdings — ${e.turnsLeft} turn${e.turnsLeft===1?'':'s'} left</summary>
+          <div style="margin-top:8px;">${renderHoldingsTableHtml(target)}</div>
+        </details>`;
+      });
+      html += `</div>`;
     }
     // active card-granted perks — small badges so they're not forgotten about
     const perkBadges = [];
@@ -3805,8 +4368,9 @@ function renderSidebar(){
       perkBadges.push(`🏷️ Public Offering — ${left} stock${left===1?'':'s'} left this turn`);
     }
     (state.dividendLeaches||[]).forEach(leach=>{
-      if(leach.thiefIndex===myPlayerIndex) perkBadges.push(`🩸 Leaching ${state.players[leach.victimIndex].name} (${leach.turnsLeft} left)`);
-      if(leach.victimIndex===myPlayerIndex) perkBadges.push(`🩸 Being leached by ${state.players[leach.thiefIndex].name} (${leach.turnsLeft} left)`);
+      const dur = leach.permanent ? 'permanent' : `${leach.turnsLeft} left`;
+      if(leach.thiefIndex===myPlayerIndex) perkBadges.push(`🩸 Leaching ${state.players[leach.victimIndex].name} (${dur})`);
+      if(leach.victimIndex===myPlayerIndex) perkBadges.push(`🩸 Being leached by ${state.players[leach.thiefIndex].name} (${dur})`);
     });
     if((me.bannedStocks||[]).length) perkBadges.push(`🚫 Barred from trading: ${me.bannedStocks.join(', ')}`);
     if(me.firedRoundsLeft>0) perkBadges.push(`💼 Fired — no salary for ${me.firedRoundsLeft} more round${me.firedRoundsLeft===1?'':'s'}`);
@@ -4053,6 +4617,9 @@ function renderChoiceUI(card){
       return `<div class="trade-row"><select id="c_target">${targets.map(t=>`<option value="${t.targetIndex}:${t.stock}">${state.players[t.targetIndex].name} — ${t.stock}</option>`).join('')}</select></div>
         <button class="btn full" id="c_hunt">Kill This Golden Goose</button>`;
     }
+    case 'espionage':
+      return `<div class="trade-row"><select id="c_spy_target">${state.players.map((pl,i)=> (i!==state.current && !pl.eliminated) ? `<option value="${i}">${pl.name}</option>` : '').join('')}</select></div>
+        <button class="btn full" id="c_spy">Plant Spy</button>`;
     default: return '';
   }
 }
@@ -4099,6 +4666,9 @@ function wireChoiceHandlers(card){
         const [targetIndex, stock] = byId('c_target').value.split(':');
         done({ targetIndex: parseInt(targetIndex), stock });
       };
+      break;
+    case 'espionage':
+      if(byId('c_spy')) byId('c_spy').onclick = ()=>done({ targetIndex: parseInt(byId('c_spy_target').value) });
       break;
   }
 }
@@ -4150,6 +4720,7 @@ function render(){
         <div class="item"><div class="label">Turn</div><div class="value" style="color:${p.color};">${p.name}</div></div>
         <div class="item"><div class="label">Time Left</div><div class="value mono" id="turnTimerValue" style="${turnTimerSecondsLeft()<=0?'color:var(--down);':''}">${formatTurnTimer(turnTimerSecondsLeft())}</div></div>
         <div class="item"><div class="label">${state.winCondition && state.winCondition.mode==='timer' ? 'Game Ends In' : 'Goal'}</div><div class="value mono" id="gameLengthValue" style="${gameTimeLeftSecs()<=0 && state.winCondition && state.winCondition.mode==='timer' ? 'color:var(--down);' : ''}">${state.winCondition && state.winCondition.mode==='timer' ? formatGameTimeLeft() : '$'+((state.winCondition&&state.winCondition.target)||500000).toLocaleString()}</div></div>
+        ${isSoloVsBots() ? `<div class="item" title="Speedrun clock — racing your own best time"><div class="label">⏱ Time</div><div class="value mono" id="speedrunValue">${formatElapsed(speedrunElapsedMs())}</div></div>` : ''}
         <div class="item"><div class="label">Deck</div><div class="value mono">${state.deck.length} left</div></div>
         <button class="btn secondary" id="syncNowBtn" style="padding:8px 12px;font-size:12px;">Sync Now</button>
         <button class="btn secondary" id="restartBtn" style="padding:8px 12px;font-size:12px;">Restart</button>
@@ -4198,7 +4769,7 @@ function render(){
   if(byId('minimizeCardBtn')) byId('minimizeCardBtn').onclick = ()=>{ state.cardMinimized=true; render(); };
   if(byId('resumeCardBtn')) byId('resumeCardBtn').onclick = ()=>{ state.cardMinimized=false; render(); };
   if(byId('playCardNowBtn')) byId('playCardNowBtn').onclick = ()=>playCardNowFromDraw(); // no force — a real click already satisfies isMyTurn()
-  if(byId('holdCardBtn')) byId('holdCardBtn').onclick = holdCurrentCard;
+  if(byId('holdCardBtn')) byId('holdCardBtn').onclick = ()=>holdCurrentCard(); // no force — same reasoning
   document.querySelectorAll('[data-play-hand-idx]').forEach(el=>{
     el.onclick = ()=>{ if(!el.disabled) playCardFromHand(parseInt(el.getAttribute('data-play-hand-idx'))); };
   });
@@ -4240,6 +4811,7 @@ function render(){
    locally; otherwise fall back to the last room this browser was in;
    otherwise show the plain Create/Join landing screen. */
 (function boot(){
+  renderAudioControls();
   const params = new URLSearchParams(window.location.search);
   const urlRoom = (params.get('room')||'').replace(/\D/g,'');
   if(urlRoom.length===6){ subscribeToRoom(urlRoom); return; }
