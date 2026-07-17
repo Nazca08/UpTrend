@@ -261,63 +261,103 @@ function generateTrack(top, bottom, center, dotsPerSide){
   return [...left, center, ...right];
 }
 
+/* Insider Info now comes in 4 tiers instead of one flat pool — better
+   sources carry real legal risk, worse sources are cheap gossip that's
+   more likely to be made up and never has any risk attached. `riskRate` is
+   the per-turn chance of getting caught WHILE actively acting on that
+   specific tip (see checkInsiderTradingRisk); `jailTurns` and `fineRate`
+   (of net worth, at the instant of the catch) apply if it hits. */
+const INSIDER_TIERS = {
+  csuite: { label:'C-Suite',         count:7, fakeCount:0, riskRate:0.02,  jailTurns:2, fineRate:0.10 },
+  expert: { label:'Industry Expert', count:7, fakeCount:1, riskRate:0.01,  jailTurns:2, fineRate:0.08 },
+  friend: { label:'Friend',          count:7, fakeCount:2, riskRate:0.005, jailTurns:1, fineRate:0.05 },
+  napkin: { label:'Napkin',          count:7, fakeCount:3, riskRate:0,     jailTurns:0, fineRate:0    },
+};
+
 /* ============================= DECK ============================= */
 function buildDeck(){
   const deck = [];
   let uid = 0;
   const add = (n, obj) => { for(let i=0;i<n;i++) deck.push({ ...obj, _id: uid++ }); };
+  // Splits a group of `n` identical cards into holdable/non-holdable using a
+  // shared running carry, so a fraction like 25% lands on the EXACT total
+  // across a whole group of add() calls (e.g. every stock/direction/step
+  // combo for Move a Stock) instead of rounding independently per call and
+  // drifting off target. `carry` is a {value} object shared across every
+  // call that belongs to the same group.
+  const addHoldableSplit = (carry, n, obj, fraction) => {
+    carry.value += n * fraction;
+    const hc = Math.floor(carry.value + 1e-9);
+    carry.value -= hc;
+    if(hc>0) add(hc, { ...obj, holdable:true });
+    if(n-hc>0) add(n-hc, { ...obj, holdable:false });
+  };
 
   // Stock Movement (dictated) — 6 per stock (3 up / 3 down) = 48
+  // 25% of the whole Move a Stock group (112 cards) is holdable — the exact
+  // move is still randomly baked into the card at deck-build time, holding
+  // it just lets the player choose WHEN to spring it.
+  const stockMoveHoldCarry = { value:0 };
   STOCK_IDS.forEach(id=>{
-    add(3, { type:'stock_move', stock:id, dir:1,  text:`${id} moves UP 1 step.` });
-    add(3, { type:'stock_move', stock:id, dir:-1, text:`${id} moves DOWN 1 step.` });
+    addHoldableSplit(stockMoveHoldCarry, 3, { type:'stock_move', stock:id, dir:1,  text:`${id} moves UP 1 step.` }, 0.25);
+    addHoldableSplit(stockMoveHoldCarry, 3, { type:'stock_move', stock:id, dir:-1, text:`${id} moves DOWN 1 step.` }, 0.25);
+    addHoldableSplit(stockMoveHoldCarry, 2, { type:'stock_move', stock:id, dir:1,  steps:2, text:`${id} moves UP 2 steps.` }, 0.25);
+    addHoldableSplit(stockMoveHoldCarry, 2, { type:'stock_move', stock:id, dir:-1, steps:2, text:`${id} moves DOWN 2 steps.` }, 0.25);
   });
 
   // Big Stock Movement (dictated) — 4 per stock: 3-up, 3-down, 4-up, 4-down = 32
   STOCK_IDS.forEach(id=>{
-    add(1, { type:'stock_move', stock:id, dir:1,  steps:3, text:`${id} moves UP 3 steps.` });
-    add(1, { type:'stock_move', stock:id, dir:-1, steps:3, text:`${id} moves DOWN 3 steps.` });
-    add(1, { type:'stock_move', stock:id, dir:1,  steps:4, text:`${id} moves UP 4 steps.` });
-    add(1, { type:'stock_move', stock:id, dir:-1, steps:4, text:`${id} moves DOWN 4 steps.` });
+    addHoldableSplit(stockMoveHoldCarry, 1, { type:'stock_move', stock:id, dir:1,  steps:3, text:`${id} moves UP 3 steps.` }, 0.25);
+    addHoldableSplit(stockMoveHoldCarry, 1, { type:'stock_move', stock:id, dir:-1, steps:3, text:`${id} moves DOWN 3 steps.` }, 0.25);
+    addHoldableSplit(stockMoveHoldCarry, 1, { type:'stock_move', stock:id, dir:1,  steps:4, text:`${id} moves UP 4 steps.` }, 0.25);
+    addHoldableSplit(stockMoveHoldCarry, 1, { type:'stock_move', stock:id, dir:-1, steps:4, text:`${id} moves DOWN 4 steps.` }, 0.25);
   });
 
   // Sector Movement (dictated) — 6 per sector (3 up / 3 down) = 24
+  // 25% of the whole Move a Sector group (56 cards) is holdable, same idea.
+  const sectorMoveHoldCarry = { value:0 };
   Object.keys(SECTORS).forEach(sec=>{
     const label = SECTORS[sec].label || sec;
-    add(3, { type:'sector_move', sector:sec, dir:1,  text:`${label} sector moves UP 1 step.` });
-    add(3, { type:'sector_move', sector:sec, dir:-1, text:`${label} sector moves DOWN 1 step.` });
+    addHoldableSplit(sectorMoveHoldCarry, 3, { type:'sector_move', sector:sec, dir:1,  text:`${label} sector moves UP 1 step.` }, 0.25);
+    addHoldableSplit(sectorMoveHoldCarry, 3, { type:'sector_move', sector:sec, dir:-1, text:`${label} sector moves DOWN 1 step.` }, 0.25);
+    addHoldableSplit(sectorMoveHoldCarry, 2, { type:'sector_move', sector:sec, dir:1,  steps:2, text:`${label} sector moves UP 2 steps.` }, 0.25);
+    addHoldableSplit(sectorMoveHoldCarry, 2, { type:'sector_move', sector:sec, dir:-1, steps:2, text:`${label} sector moves DOWN 2 steps.` }, 0.25);
   });
 
   // Big Sector Movement (dictated) — 4 per sector: 3-up, 3-down, 4-up, 4-down = 16
   Object.keys(SECTORS).forEach(sec=>{
     const label = SECTORS[sec].label || sec;
-    add(1, { type:'sector_move', sector:sec, dir:1,  steps:3, text:`${label} sector moves UP 3 steps.` });
-    add(1, { type:'sector_move', sector:sec, dir:-1, steps:3, text:`${label} sector moves DOWN 3 steps.` });
-    add(1, { type:'sector_move', sector:sec, dir:1,  steps:4, text:`${label} sector moves UP 4 steps.` });
-    add(1, { type:'sector_move', sector:sec, dir:-1, steps:4, text:`${label} sector moves DOWN 4 steps.` });
+    addHoldableSplit(sectorMoveHoldCarry, 1, { type:'sector_move', sector:sec, dir:1,  steps:3, text:`${label} sector moves UP 3 steps.` }, 0.25);
+    addHoldableSplit(sectorMoveHoldCarry, 1, { type:'sector_move', sector:sec, dir:-1, steps:3, text:`${label} sector moves DOWN 3 steps.` }, 0.25);
+    addHoldableSplit(sectorMoveHoldCarry, 1, { type:'sector_move', sector:sec, dir:1,  steps:4, text:`${label} sector moves UP 4 steps.` }, 0.25);
+    addHoldableSplit(sectorMoveHoldCarry, 1, { type:'sector_move', sector:sec, dir:-1, steps:4, text:`${label} sector moves DOWN 4 steps.` }, 0.25);
   });
 
   // Reversion — overextended stocks/sectors pull back toward their center price = 24
+  // 25% of Stock Revert (16) and Sector Revert (8) are each holdable too.
+  const stockRevertHoldCarry = { value:0 };
   STOCK_IDS.forEach(id=>{
-    add(1, { type:'stock_revert', stock:id, amount:1, text:`${id} reverts 1 step toward the middle.` });
-    add(1, { type:'stock_revert', stock:id, amount:2, text:`${id} reverts 2 steps toward the middle.` });
+    addHoldableSplit(stockRevertHoldCarry, 1, { type:'stock_revert', stock:id, amount:1, text:`${id} reverts 1 step toward the middle.` }, 0.25);
+    addHoldableSplit(stockRevertHoldCarry, 1, { type:'stock_revert', stock:id, amount:2, text:`${id} reverts 2 steps toward the middle.` }, 0.25);
   });
+  const sectorRevertHoldCarry = { value:0 };
   Object.keys(SECTORS).forEach(sec=>{
     const label = SECTORS[sec].label || sec;
-    add(1, { type:'sector_revert', sector:sec, amount:1, text:`${label} sector reverts 1 step toward the middle.` });
-    add(1, { type:'sector_revert', sector:sec, amount:2, text:`${label} sector reverts 2 steps toward the middle.` });
+    addHoldableSplit(sectorRevertHoldCarry, 1, { type:'sector_revert', sector:sec, amount:1, text:`${label} sector reverts 1 step toward the middle.` }, 0.25);
+    addHoldableSplit(sectorRevertHoldCarry, 1, { type:'sector_revert', sector:sec, amount:2, text:`${label} sector reverts 2 steps toward the middle.` }, 0.25);
   });
 
   // Insider Info
   add(3, { type:'peek', text:'Insider Info — Market Peek: reveal the next 3 cards in the deck.' });
   add(2, { type:'sched_swing', text:'Insider Info — Scheduled Swing: pick a stock. In 2 turns it swings 2 steps in a direction you choose now.' });
-  // Price Target — fully randomized: a random stock, a random price on its own row, in a random 1-12 turns.
-  // Everything is rolled at draw time, not fixed here — see resolveAuto's 'sched_price' case.
-  add(32, { type:'sched_price', text:'Insider Info: a random stock will hit a random price within 12 turns — no matter what happens in between.' });
-  // Fake tips — worded and revealed exactly like a real Scheduled Price
-  // card, completely indistinguishable at draw time. You genuinely can't
-  // tell a lie from the truth until it either lands or quietly doesn't.
-  add(6, { type:'sched_price_fake', text:'Insider Info: a random stock will hit a random price within 12 turns — no matter what happens in between.' });
+  // Price Target tips — fully randomized: a random stock, a random price on its own row, in a random
+  // 1-12 turns. Everything is rolled at draw time, not fixed here — see resolveAuto's 'insider_tip' case.
+  // Split across 4 tiers (7 cards each, 28 total) — see INSIDER_TIERS above for what each tier risks.
+  Object.entries(INSIDER_TIERS).forEach(([tierKey, cfg])=>{
+    const realCount = cfg.count - cfg.fakeCount;
+    if(realCount>0) add(realCount, { type:'insider_tip', tier:tierKey, fake:false, text:'Insider Info: a random stock will hit a random price within 12 turns — no matter what happens in between.' });
+    if(cfg.fakeCount>0) add(cfg.fakeCount, { type:'insider_tip', tier:tierKey, fake:true, text:'Insider Info: a random stock will hit a random price within 12 turns — no matter what happens in between.' });
+  });
   // Earnings Report — fully randomized and public (not hidden like Insider Info): a random stock
   // beats or misses, then drifts 1-4 bubbles per turn for 1-12 of the drawer's own turns
   // (capped so bubbles-per-turn × turns never exceeds 24). See resolveAuto's 'earnings_report' case.
@@ -326,7 +366,9 @@ function buildDeck(){
   // Market-wide events
   add(1, { type:'covid', text:'COVID-19: markets crash. All 8 stocks and both S&P 8 indexes drop 6 steps.' });
   add(1, { type:'recession', text:'Recession: all 8 stocks and both S&P 8 indexes drop 3 steps.' });
+  add(1, { type:'recession2', text:'Recession: all 8 stocks and both S&P 8 indexes drop 2 steps.' });
   add(4, { type:'bull', text:'Bull Market: all 8 stocks and both S&P 8 indexes rise 1 step.' });
+  add(1, { type:'bull2', text:'Bull Market: all 8 stocks and both S&P 8 indexes rise 2 steps.' });
 
   // Cash Bonus — 6
   add(3, { type:'cash', amount:5000,  text:'Cash Bonus: +$5,000.' });
@@ -341,14 +383,21 @@ function buildDeck(){
   // Stock Split — 2
   add(2, { type:'split', text:'Stock Split: pick a stock you own — your shares in it double.' });
 
-  // Move Any Stock ±1 (player choice) — 6
-  add(6, { type:'choose_stock_move', text:'Move Any Stock: pick any stock and a direction — it moves 1 step.' });
+  // Move Any Stock ±1 (player choice) — 6, half holdable — held copies let you
+  // pick the stock/direction whenever you actually play them, not at draw time
+  {
+    const carry = { value:0 };
+    addHoldableSplit(carry, 6, { type:'choose_stock_move', text:'Move Any Stock: pick any stock and a direction — it moves 1 step.' }, 0.5);
+  }
 
-  // Move Any Sector ±1 (player choice) — 4
-  add(4, { type:'choose_sector_move', text:'Move Any Sector: pick any sector and a direction — both its stocks move 1 step.' });
+  // Move Any Sector ±1 (player choice) — 4, half holdable
+  {
+    const carry = { value:0 };
+    addHoldableSplit(carry, 4, { type:'choose_sector_move', text:'Move Any Sector: pick any sector and a direction — both its stocks move 1 step.' }, 0.5);
+  }
 
   // Whale Trade — 3
-  add(3, { type:'whale', text:'Whale Trade: trade a stock at today\u2019s price right now — your trade then pushes the price 2 steps in that direction.' });
+  add(4, { type:'whale', text:'Whale Trade: trade a stock at today\u2019s price right now — your trade then pushes the price 2 steps in that direction.' });
 
   // Golden Parachute — 3
   add(3, { type:'parachute', text:'Golden Parachute: if your net worth is under $30,000, receive a $20,000 bailout.' });
@@ -363,7 +412,7 @@ function buildDeck(){
   });
 
   // Freeze — 3
-  add(3, { type:'freeze', text:'Freeze: pick a stock — it ignores the next dictated movement card that targets it.' });
+  add(4, { type:'freeze', text:'Freeze: a random stock ignores the next dictated movement card that targets it.' });
 
   // S&P +1 — 9 (new, no negative counterpart)
   add(9, { type:'sp_up', text:'Both S&P 8 indexes rise 1 step.' });
@@ -377,8 +426,8 @@ function buildDeck(){
   // Short Squeeze — 2
   add(2, { type:'short_squeeze', text:'Short Squeeze: a random stock surges hard, and everyone shorting it is forced to cover immediately at the new price.' });
 
-  // Golden Goose — 1 (rare and permanent, so kept scarce)
-  add(1, { type:'golden_goose', text:'Golden Goose: a random stock permanently pays YOU an extra 10% dividend on your holdings, every one of your turns, for the rest of the game.' });
+  // Golden Goose — 4 (permanent effect, so still relatively scarce)
+  add(4, { type:'golden_goose', text:'Golden Goose: a random stock permanently pays YOU an extra 10% dividend on your holdings, every one of your turns, for the rest of the game.' });
 
   // Rate Hike / Rate Cut — 2 each
   add(2, { type:'rate_hike', text:'Rate Hike: every stock\u2019s dividend zone rate is boosted 50% for the next 6 turns.' });
@@ -389,12 +438,33 @@ function buildDeck(){
 
   // Dividend Leach — 2
   add(2, { type:'dividend_leach', text:'Dividend Leach: attach to a random opponent \u2014 skim 10% of their dividend earnings for a few of their turns.' });
+  add(2, { type:'dividend_leach', holdable:true, text:'Dividend Leach: hold this and play it whenever you want \u2014 you choose exactly which opponent to leach.' });
 
   // Margin Call Forgiveness — 2
-  add(2, { type:'margin_forgiveness', text:'Margin Call Forgiveness: shields you from your next forced margin-call liquidation.' });
+  add(4, { type:'margin_forgiveness', text:'Margin Call Forgiveness: shields you from your next forced margin-call liquidation.' });
 
   // Buyout — 4
   add(4, { type:'buyout', text:'Buyout: a random stock has been bought out at a random price — every long position and short position in it is instantly settled at that price, then the stock reopens and trades normally.' });
+
+  // Divorce — 4
+  add(4, { type:'divorce', text:'Divorce: your net worth is cut in half — cash and every holding you have gets erased by 50%.' });
+
+  // Portfolio Manager — 2
+  add(2, { type:'portfolio_manager', text:'Portfolio Manager: for a randomly determined number of your turns, everything you buy or short gets a 20% boost on any gain, paid out in cash when the window closes.' });
+
+  // Inheritance — 2nd Life (last place only) — 2, and for everybody — 2
+  add(2, { type:'inheritance_last', text:'Inheritance \u2014 2nd Life: if you\u2019re in last place by net worth, a distant relative left you somewhere between $0 and $250,000.' });
+  add(2, { type:'inheritance_all', text:'Inheritance: everyone gets a surprise windfall between $0 and $100,000, rolled separately for each player.' });
+
+  // Insider Info Blocker — 4, holdable, protects a stock you choose from any Insider Info tip
+  // coming true (including your own) for a randomly determined number of rounds. Which stock
+  // is protected is never revealed to anyone but the player who played it.
+  add(4, { type:'insider_blocker', holdable:true, text:'Insider Info Blocker: hold this and play it before a tip comes due \u2014 pick a stock, and no Insider Info can move its price while this is active. Nobody else will know which stock.' });
+
+  // Career — Promotion (permanent salary raise), Fired (rounds without salary), Overtime (turns at 1.5x salary)
+  add(4, { type:'promotion', text:'Promotion: your salary permanently goes up somewhere between $1,000 and $6,000 per turn.' });
+  add(4, { type:'fired', text:'Fired: no salary for a randomly determined number of rounds.' });
+  add(4, { type:'overtime', text:'Overtime: earn 1.5x salary for a randomly determined number of turns.' });
 
   return deck;
 }
@@ -594,6 +664,7 @@ function repairCollections(s){
   if(s.scheduled===undefined) s.scheduled = [];
   if(s.recurringEffects===undefined) s.recurringEffects = [];
   if(s.dividendLeaches===undefined) s.dividendLeaches = [];
+  if(s.insiderBlockers===undefined) s.insiderBlockers = [];
   if(s.netWorthHistory===undefined) s.netWorthHistory = [{ values: s.players ? s.players.map(p=>netWorth(p)) : [] }];
   if(s.log===undefined) s.log = [];
   if(s.turnUsage===undefined) s.turnUsage = { total:0, perStock:{} };
@@ -618,6 +689,13 @@ function repairCollections(s){
       if(pl.holdStreak===undefined) pl.holdStreak = Object.fromEntries(STOCK_IDS.map(id=>[id,0]));
       if(pl.marginShield===undefined) pl.marginShield = false;
       if(pl.publicOffering && pl.publicOffering.usedStocks===undefined) pl.publicOffering.usedStocks = [];
+      if(pl.jailTurnsLeft===undefined) pl.jailTurnsLeft = 0;
+      if(pl.bannedStocks===undefined) pl.bannedStocks = [];
+      if(pl.hand===undefined) pl.hand = [];
+      if(pl.baseSalary===undefined) pl.baseSalary = SALARY_PER_TURN;
+      if(pl.firedRoundsLeft===undefined) pl.firedRoundsLeft = 0;
+      if(pl.overtimeTurnsLeft===undefined) pl.overtimeTurnsLeft = 0;
+      if(pl.portfolioManagers===undefined) pl.portfolioManagers = [];
     });
   }
 }
@@ -793,14 +871,14 @@ const STOCK_PRICE_CONFIG = {
    short pays regardless of zone — mirrors Dividend Day's drawer/everyone-
    else split, and is what makes shorting a zone-topped stock costly. */
 const DIVIDEND_ZONES = {
-  QBIT: { dots:6,  rates:[0.08, 0.095, 0.135, 0.19, 0.265, 0.36] },
-  VITA: { dots:6,  rates:[0.07, 0.085, 0.12, 0.17, 0.24, 0.32] },
-  PWR:  { dots:8,  rates:[0.05, 0.055, 0.07, 0.09, 0.12, 0.155, 0.195, 0.24] },
-  RXCO: { dots:8,  rates:[0.05, 0.055, 0.07, 0.085, 0.11, 0.14, 0.18, 0.22] },
-  LUXE: { dots:10, rates:[0.04, 0.04, 0.05, 0.06, 0.07, 0.09, 0.11, 0.13, 0.15, 0.18] },
-  OILX: { dots:10, rates:[0.035, 0.035, 0.045, 0.05, 0.065, 0.08, 0.095, 0.115, 0.135, 0.16] },
-  NOVA: { dots:12, rates:[0.025, 0.025, 0.03, 0.035, 0.04, 0.05, 0.055, 0.065, 0.08, 0.09, 0.105, 0.12] },
-  SPRE: { dots:12, rates:[0.025, 0.025, 0.03, 0.035, 0.04, 0.05, 0.055, 0.065, 0.08, 0.09, 0.105, 0.12] },
+  QBIT: { dots:9,  rates:[0.08, 0.087, 0.103, 0.128, 0.16, 0.2, 0.247, 0.3, 0.36] },
+  VITA: { dots:9,  rates:[0.07, 0.076, 0.091, 0.113, 0.142, 0.177, 0.219, 0.267, 0.32] },
+  PWR:  { dots:11, rates:[0.05, 0.053, 0.06, 0.072, 0.087, 0.105, 0.126, 0.15, 0.177, 0.207, 0.24] },
+  RXCO: { dots:11, rates:[0.05, 0.053, 0.059, 0.069, 0.083, 0.099, 0.118, 0.139, 0.164, 0.191, 0.22] },
+  LUXE: { dots:13, rates:[0.04, 0.042, 0.046, 0.052, 0.059, 0.069, 0.08, 0.093, 0.107, 0.123, 0.141, 0.16, 0.18] },
+  OILX: { dots:13, rates:[0.035, 0.036, 0.04, 0.045, 0.052, 0.061, 0.071, 0.082, 0.095, 0.109, 0.125, 0.142, 0.16] },
+  NOVA: { dots:14, rates:[0.025, 0.026, 0.028, 0.032, 0.036, 0.042, 0.049, 0.056, 0.065, 0.074, 0.084, 0.095, 0.107, 0.12] },
+  SPRE: { dots:14, rates:[0.025, 0.026, 0.028, 0.032, 0.036, 0.042, 0.049, 0.056, 0.065, 0.074, 0.084, 0.095, 0.107, 0.12] },
 };
 const SHORT_CARRY_FEE_RATE = 0.01; // 1% of a short's current liability, charged every one of your own turns
 
@@ -854,6 +932,13 @@ function freshState(players, gameLength){
       goldenGeese: [], // stock ids granting a permanent personal +10% dividend (Golden Goose card)
       marginShield: false, // one-time margin-call forgiveness (Margin Call Forgiveness card)
       publicOffering: null, // {active, usedStocks} — this-turn-only fee/price-impact waiver on up to 3 stocks
+      jailTurnsLeft: 0, // caught insider trading — this many of the player's own turns are fully skipped
+      bannedStocks: [], // stock ids this player can never buy or short again, after being caught trading on a tip in them
+      hand: [], // held cards — drawn but not yet resolved, playable at any point during this player's own trade phase
+      baseSalary: SALARY_PER_TURN, // permanently raised by Promotion cards
+      firedRoundsLeft: 0, // salary is $0 while this is >0 (Fired card) — overrides overtime
+      overtimeTurnsLeft: 0, // salary is 1.5x baseSalary while this is >0, unless fired (Overtime card)
+      portfolioManagers: [], // active Portfolio Manager windows: {turnsLeft, lots:[{stock,side,qty,costPerShare}], accumulatedBoost}
     })),
     current: 0,
     turnStartedAt: Date.now(), // for the 45-second turn timer
@@ -878,6 +963,9 @@ function freshState(players, gameLength){
     dividendRateModifier: null, // {multiplier, turnsLeft} — Rate Hike/Rate Cut, applies to every stock's dividend zone
     dividendLeaches: [], // active Dividend Leach cards: {thiefIndex, victimIndex, turnsLeft}
     netWorthHistory: [{ values: players.map(()=>START_CASH) }], // one point per turn taken, all players together — for the Net Worth Graph
+    awaitingHoldDecision: false, // a holdable card was just drawn — waiting on Play Now vs Hold, before it's touched at all
+    resolvingFromHand: false, // currently resolving a card that came from hand, not a fresh draw — changes what happens when it finishes
+    insiderBlockers: [], // active Insider Info Blocker protections: {ownerIndex, stock, roundsLeft} — private, never shown to anyone but the owner
     showLog: false,
     cardMinimized: false,
     choiceError: null,
@@ -971,8 +1059,11 @@ function forceAdvanceStalledTurn(){
   while(steps < 12 && state.current===stalledIndex && !state.gameOver){
     steps++;
     if(isTurnProtectedFromTimeout()) break; // a real choice is pending — back off
+    if(state.players[stalledIndex].eliminated || state.players[stalledIndex].jailTurnsLeft>0){ endTurn(); break; } // nothing to play — just skip it forward
     const before = JSON.stringify({ phase:state.phase, turnStage:state.turnStage, cardsDrawnThisTurn:state.cardsDrawnThisTurn, pendingCard: state.pendingCard && state.pendingCard._id });
-    if(state.phase==='draw'){
+    if(state.awaitingHoldDecision){
+      playCardNowFromDraw(); // AFK on the Play Now/Hold prompt — default to playing it now rather than stalling forever
+    } else if(state.phase==='draw'){
       drawCard(true);
     } else if(state.phase==='resolve'){
       finishCardResolution(); // only reached when the pending card doesn't need a choice
@@ -1110,8 +1201,9 @@ function capRemainingForStock(id){ return 4 - (state.turnUsage.perStock[id]||0);
 function canBuyOne(id){
   if(!id || state.gameOver) return false;
   if(id!=='SP' && id!=='SPX' && state.stocks[id].worthless) return false;
-  if(capRemaining()<=0 || capRemainingForStock(id)<=0) return false;
   const p = state.players[state.current];
+  if((p.bannedStocks||[]).includes(id)) return false;
+  if(capRemaining()<=0 || capRemainingForStock(id)<=0) return false;
   if(id==='SP') return priceOf(id) <= freeCash(p); // flat price, no walk, no fee
   const priorFilled = state.turnFills.up[id]||0;
   const walk = walkOrderDetailed(id, 1, +1, priorFilled);
@@ -1126,8 +1218,9 @@ function canSellOne(id){
 function canShortOne(id){
   if(!id || id==='SP' || id==='SPX' || state.gameOver) return false;
   if(state.stocks[id].worthless) return false;
-  if(capRemaining()<=0 || capRemainingForStock(id)<=0) return false;
   const p = state.players[state.current];
+  if((p.bannedStocks||[]).includes(id)) return false;
+  if(capRemaining()<=0 || capRemainingForStock(id)<=0) return false;
   return price(id) <= freeCash(p);
 }
 function canCoverOne(id){
@@ -1177,6 +1270,7 @@ function walkOrderDetailed(id, qty, direction, priorFilled){
 }
 
 const BANKRUPTCY_RESET_CASH = 20000;
+const HAND_LIMIT = 3; // max cards a player can hold at once — a freshly-drawn holdable card can't be held past this, only played now
 
 /* True if a player's cash is negative AND selling every long position they
    own — everything, all at once — still wouldn't be enough to bring it
@@ -1463,6 +1557,7 @@ function drawCard(force){
   if(!force && !isMyTurn()) return;
   const p = state.players[state.current];
   if(p.eliminated) return;
+  if(p.jailTurnsLeft>0) return; // serving time — see the jail Action panel/Continue button instead
   if(p.cash<0) return; // must raise cash back to $0+ first — see the forced-liquidation Action panel
   // Tick this player's own Insider Info countdowns BEFORE drawing — so "1 turn"
   // means "the next time it's my turn," not "immediately," and a card drawn
@@ -1470,10 +1565,20 @@ function drawCard(force){
   // only happens once per whole turn (the very first draw), not once per
   // individual card — starting AND ending draws together are one turn.
   if(state.turnStage==='start' && state.cardsDrawnThisTurn===0){
-    tickScheduled(state.current);
+    tickScheduled(state.current); // countdowns always tick, even for a tip that's about to get someone caught
+    if(checkInsiderTradingRisk(state.current)){
+      // Caught red-handed right as their turn was about to start — this
+      // turn is forfeited entirely (counts as the first of their jailed
+      // turns; see endTurn's own decrement for the rest).
+      checkMarginCalls(); checkGameOver();
+      if(!state.gameOver) endTurn();
+      persist(); render();
+      return;
+    }
     tickRecurringEffects(state.current);
     tickHoldStreaks(state.current);
     tickShortFeesAndDividends(state.current);
+    tickPortfolioManagers(state.current);
     tickDividendRateModifier();
     checkMarginCalls(); // fees/payouts above can push cash negative — same safety net as any other cash event
     checkGameOver();
@@ -1485,6 +1590,17 @@ function drawCard(force){
   state.phase = 'resolve';
   state.choiceError = null;
   state.cardsDrawnThisTurn += 1;
+  // Holdable cards get a Play Now / Hold prompt BEFORE anything resolves —
+  // this has to happen before the auto-resolve below, not after, since an
+  // instant card's effect otherwise already happens the moment it's drawn.
+  if(card.holdable && p.hand.length < HAND_LIMIT){
+    state.awaitingHoldDecision = true;
+    persist(); render();
+    return;
+  }
+  if(card.holdable && p.hand.length >= HAND_LIMIT){
+    logEvent(`${p.name}'s hand is already full (${HAND_LIMIT}/${HAND_LIMIT}) — this card resolves immediately instead.`);
+  }
   // Auto-resolving cards (anything that doesn't need a player choice) apply
   // their effect right here, exactly once. The modal that follows is purely
   // a display of what already happened — it must NEVER re-trigger the
@@ -1496,6 +1612,62 @@ function drawCard(force){
   persist(); render();
 }
 
+/* Confirms playing a freshly-drawn holdable card right now instead of
+   holding it — just clears the prompt and lets the normal resolution path
+   (auto-resolve or choice UI) take over exactly as if it weren't holdable. */
+function playCardNowFromDraw(){
+  if(!state.pendingCard || !state.awaitingHoldDecision || !isMyTurn()) return;
+  state.awaitingHoldDecision = false;
+  if(!needsChoice(state.pendingCard)) resolveAuto(state.pendingCard);
+  persist(); render();
+}
+
+/* Stashes the freshly-drawn card into hand, completely unresolved, and
+   moves on as if this draw slot had been used normally — same phase
+   transition as finishCardResolution, just without ever applying the
+   card's effect or sending it to the discard pile. */
+function holdCurrentCard(){
+  if(!state.pendingCard || !state.awaitingHoldDecision || !isMyTurn()) return;
+  const p = state.players[state.current];
+  if(p.hand.length >= HAND_LIMIT) return; // shouldn't be reachable (button hidden), but don't trust the DOM
+  p.hand.push(state.pendingCard);
+  logEvent(`${p.name} drew a card and chose to hold it for later.`);
+  state.pendingCard = null;
+  state.pendingChoice = null;
+  state.cardMinimized = false;
+  state.choiceError = null;
+  state.awaitingHoldDecision = false;
+  checkMarginCalls();
+  checkGameOver();
+  if(state.gameOver){ state.phase = 'trade'; persist(); render(); return; }
+  if(state.cardsDrawnThisTurn < drawsNeededThisStage()){
+    state.phase = 'draw';
+  } else if(state.turnStage==='start'){
+    state.phase = 'trade';
+  } else {
+    endTurn();
+  }
+  persist(); render();
+}
+
+/* Plays a card straight out of hand, during the trade phase — re-enters
+   the exact same resolution pipeline a fresh draw would use (auto-resolve
+   or the choice UI), just flagged so finishing it returns to trade phase
+   instead of trying to advance the turn the way a real draw would. */
+function playCardFromHand(handIdx){
+  if(!isMyTurn() || state.phase!=='trade' || state.gameOver) return;
+  const p = state.players[state.current];
+  if(handIdx<0 || handIdx>=p.hand.length) return;
+  const card = p.hand.splice(handIdx,1)[0];
+  state.pendingCard = card;
+  state.phase = 'resolve';
+  state.awaitingHoldDecision = false;
+  state.resolvingFromHand = true;
+  state.choiceError = null;
+  if(!needsChoice(card)) resolveAuto(card);
+  persist(); render();
+}
+
 function finishCardResolution(){
   state.discard.push(state.pendingCard);
   state.pendingCard = null;
@@ -1504,6 +1676,14 @@ function finishCardResolution(){
   state.choiceError = null;
   checkMarginCalls();
   checkGameOver();
+  if(state.resolvingFromHand){
+    // A card played from hand never advances the turn or counts as a draw —
+    // it's a bonus action taken during the trade phase, so just go back to it.
+    state.resolvingFromHand = false;
+    state.phase = 'trade';
+    persist(); render();
+    return;
+  }
   if(state.gameOver){ state.phase = 'trade'; persist(); render(); return; }
   if(state.cardsDrawnThisTurn < drawsNeededThisStage()){
     state.phase = 'draw'; // more draws needed for this stage (not currently used, but kept for flexibility)
@@ -1535,9 +1715,12 @@ function tickScheduled(ownerIndex){
 /* Lets a player pay cash for a tip instead of hoping to draw one — always
    genuine (never one of the fake tips a card draw might hand you), since
    you're paying a real informant, not just hearing a rumor. Same
-   randomized roll and same private treatment as a drawn Scheduled Price
-   card; the only difference is how it got set up. */
-const INSIDER_INFO_PRICE = 5000;
+   randomized roll and same private treatment as a drawn tip; the only
+   difference is how it got set up. Counts as C-Suite-grade for the fine if
+   caught, but carries an even higher risk of getting caught in the first
+   place — direct access like this doesn't stay quiet as easily. */
+const INSIDER_INFO_PRICE = 10000;
+const BOUGHT_INSIDER_RISK_RATE = 0.04;
 function buyInsiderInfo(force){
   if((!force && !isMyTurn()) || state.gameOver || state.phase!=='trade') return;
   const p = state.players[state.current];
@@ -1550,15 +1733,28 @@ function buyInsiderInfo(force){
   const targetIdx = Math.floor(Math.random()*track.length);
   const snappedPrice = track[targetIdx];
   const turns = 1 + Math.floor(Math.random()*12);
-  state.scheduled.push({ turnsLeft: turns, ownerIndex: state.current, kind:'sched_price', stock, targetIdx, snappedPrice, description: `${stock} will hit $${snappedPrice}` });
-  logEvent(`${p.name} paid $${INSIDER_INFO_PRICE} for Insider Info — details stay hidden until it plays out.`, true);
+  const csuite = INSIDER_TIERS.csuite;
+  state.scheduled.push({
+    turnsLeft: turns, ownerIndex: state.current, kind:'sched_price', stock, targetIdx, snappedPrice,
+    fake:false, description: `${stock} will hit $${snappedPrice}`,
+    tier:'bought', riskRate: BOUGHT_INSIDER_RISK_RATE, jailTurns: csuite.jailTurns, fineRate: csuite.fineRate,
+    baselineLong: p.shares[stock]||0, baselineShort: p.shorts[stock]||0, actedOn:false,
+  });
+  logEvent(`${p.name} paid $${INSIDER_INFO_PRICE.toLocaleString()} for Insider Info — details stay hidden until it plays out.`, true);
   schedulePersist(); render();
+}
+
+function isStockInsiderBlocked(stockId){
+  return !!(state.insiderBlockers && state.insiderBlockers.some(b=>b.stock===stockId && b.roundsLeft>0));
 }
 
 function resolveScheduledItem(item){
   if(item.kind==='sched_price'){
     if(state.stocks[item.stock].worthless){ logEvent(`${item.stock} went worthless before its price target could land.`, true); return; }
-    if(item.fake){
+    if(item.fake || isStockInsiderBlocked(item.stock)){
+      // A blocked tip fizzles with the EXACT same message a naturally-fake
+      // one would — from the outside there's no way to tell an Insider
+      // Info Blocker was ever involved, which is the whole point.
       logEvent(`Insider Info turned out to be false — ${item.stock} never hit $${item.snappedPrice} as "predicted."`, true);
       return;
     }
@@ -1566,6 +1762,10 @@ function resolveScheduledItem(item){
     state.stocks[item.stock].idx = item.targetIdx;
     logEvent(`Insider Info came true: ${item.stock} hit $${item.snappedPrice} as predicted.`, true);
   } else if(item.kind==='sched_swing'){
+    if(isStockInsiderBlocked(item.stock)){
+      logEvent(`Scheduled Swing fizzled — the move never materialized.`, true);
+      return;
+    }
     const dir = item.dir;
     moveStock(item.stock, dir*2>0?1:-1, false); moveStock(item.stock, dir*2>0?1:-1, false);
     logEvent(`Scheduled Swing triggered: ${item.stock} moved 2 steps ${dir>0?'up':'down'}.`, true);
@@ -1602,16 +1802,35 @@ function inDividendZone(id){
   return s.idx >= s.track.length - zone.dots;
 }
 
-/* Runs once at the start of each player's own turn: every open short pays
-   a flat 1% carrying fee on its current liability, and any stock currently
-   sitting in its dividend zone pays longs the zone's full rate — while
-   shorts in that same zone pay an extra HALF the zone's rate on top of
-   their normal carrying fee, since being short into a company that's
-   paying out is a real cost, just half of what a long holder actually
-   earns. */
+/* Runs once at the start of each player's own turn: pays a flat salary,
+   every open short pays a flat 1% carrying fee on its current liability,
+   and any stock currently sitting in its dividend zone pays longs the
+   zone's full rate — while shorts in that same zone pay an extra 33% of
+   the zone's rate on top of their normal carrying fee, since being short
+   into a company that's paying out is a real cost, just less than what a
+   long holder actually earns. */
+const SALARY_PER_TURN = 4000;
 function tickShortFeesAndDividends(ownerIndex){
   const p = state.players[ownerIndex];
   let totalFee = 0, totalDiv = 0;
+
+  // Salary — a flat, unconditional payment straight from the bank, every
+  // one of your own turns, regardless of holdings or performance. Fired
+  // overrides everything else (no pay, no overtime, even if both are
+  // somehow active at once); otherwise Overtime pays 1.5x whatever your
+  // current base salary is (raised permanently by Promotion cards).
+  if(p.firedRoundsLeft>0){
+    logEvent(`${p.name} is out of work this turn — no salary.`);
+  } else {
+    const salary = p.overtimeTurnsLeft>0 ? Math.round(p.baseSalary*1.5) : p.baseSalary;
+    p.cash += salary;
+    logEvent(`${p.name} collected their $${salary.toLocaleString()} salary${p.overtimeTurnsLeft>0?' (overtime)':''}.`);
+    if(p.overtimeTurnsLeft>0){
+      p.overtimeTurnsLeft -= 1;
+      if(p.overtimeTurnsLeft===0) logEvent(`${p.name}'s overtime period has ended.`);
+    }
+  }
+
   // These are the only cash deductions in the whole game that happen
   // automatically, with no affordability check (every trade already checks
   // freeCash/cash before allowing itself). Clamping each one to the cash
@@ -1634,7 +1853,7 @@ function tickShortFeesAndDividends(ownerIndex){
         if(pay>0){ p.cash += pay; totalDiv += pay; }
       }
       if(heldShort>0){
-        const penalty = takeClamped(Math.round(heldShort*pr*rate*0.5));
+        const penalty = takeClamped(Math.round(heldShort*pr*rate*0.33));
         if(penalty>0){ p.cash -= penalty; totalFee += penalty; }
       }
     }
@@ -1693,6 +1912,53 @@ function tickDividendRateModifier(){
   }
 }
 
+/* Counts down each of this player's own active Portfolio Manager windows.
+   When one expires, whatever's still sitting in its lots (never sold/
+   covered) gets boosted at CURRENT prices — unrealized gains only, same
+   rule as realized ones: losses are never boosted, only real gains — then
+   the whole accumulated boost (realized-along-the-way + this final
+   unrealized piece) is paid out as one lump sum. */
+function tickPortfolioManagers(ownerIndex){
+  const p = state.players[ownerIndex];
+  if(!p.portfolioManagers || p.portfolioManagers.length===0) return;
+  const remaining = [];
+  p.portfolioManagers.forEach(pm=>{
+    pm.turnsLeft -= 1;
+    if(pm.turnsLeft>0){ remaining.push(pm); return; }
+    let finalBoost = pm.accumulatedBoost||0;
+    (pm.lots||[]).forEach(lot=>{
+      if(state.stocks[lot.stock].worthless) return; // nothing left to value
+      const curPrice = price(lot.stock);
+      const gain = lot.side==='long' ? (curPrice-lot.costPerShare)*lot.qty : (lot.costPerShare-curPrice)*lot.qty;
+      if(gain>0) finalBoost += gain*0.20;
+    });
+    const payout = Math.round(finalBoost);
+    if(payout>0){
+      p.cash += payout;
+      logEvent(`${p.name}'s Portfolio Manager expired — $${payout} in boosted gains paid out.`, true);
+    } else {
+      logEvent(`${p.name}'s Portfolio Manager expired with no gains to boost.`);
+    }
+  });
+  p.portfolioManagers = remaining;
+}
+
+/* Round-boundary effects — ticked once per full round (every player has
+   taken a turn), alongside the S&P 8 dividend. Fired counts down in
+   rounds, not turns, and Insider Info Blockers expire the same way. */
+function tickRoundBoundaryEffects(){
+  state.players.forEach(p=>{
+    if(p.firedRoundsLeft>0){
+      p.firedRoundsLeft -= 1;
+      if(p.firedRoundsLeft===0) logEvent(`${p.name} is back on payroll.`, true);
+    }
+  });
+  if(state.insiderBlockers && state.insiderBlockers.length){
+    state.insiderBlockers.forEach(b=>{ b.roundsLeft -= 1; });
+    state.insiderBlockers = state.insiderBlockers.filter(b=>b.roundsLeft>0);
+  }
+}
+
 function resolveAuto(card){
   const p = state.players[state.current];
   switch(card.type){
@@ -1715,7 +1981,11 @@ function resolveAuto(card){
       revertSector(card.sector, card.amount);
       logEvent(`${SECTORS[card.sector].label||card.sector} sector reverted toward the middle.`, true);
       break;
-    case 'sched_price': {
+    case 'insider_tip': {
+      // Same roll, same private modal, same "X will hit $Y in Z turns"
+      // phrasing regardless of tier or whether it's fake — indistinguishable
+      // at draw time. The tier's risk/jail/fine numbers and the fake flag
+      // ride along on the scheduled item itself, invisible until it matters.
       const eligible = STOCK_IDS.filter(sid=>!state.stocks[sid].worthless);
       if(eligible.length===0){ logEvent('Insider Info fizzled — no stocks left to predict.'); break; }
       const stock = eligible[Math.floor(Math.random()*eligible.length)];
@@ -1723,29 +1993,14 @@ function resolveAuto(card){
       const targetIdx = Math.floor(Math.random()*track.length); // anywhere on the row, ends included
       const snappedPrice = track[targetIdx];
       const turns = 1 + Math.floor(Math.random()*12); // 1-12 inclusive
-      // Rewrite the card's own text with what actually got rolled, so the
-      // modal (seen only in this private moment) shows the real prediction
-      // instead of the generic "a random stock..." placeholder.
+      const tierCfg = INSIDER_TIERS[card.tier];
       card.text = `Insider Info: ${stock} will be $${snappedPrice} in ${turns} turn${turns===1?'':'s'} — no matter what happens in between.`;
-      state.scheduled.push({ turnsLeft: turns, ownerIndex: state.current, kind:'sched_price', stock, targetIdx, snappedPrice, description: `${stock} will hit $${snappedPrice}` });
-      logEvent(`Insider Info was set up by ${p.name} — details stay hidden until it plays out.`);
-      break;
-    }
-    case 'sched_price_fake': {
-      // A bad tip, worded identically to a real one — same roll, same
-      // private modal, same "X will hit $Y in Z turns" phrasing. The only
-      // difference lives in `fake:true` on the scheduled item itself, which
-      // never surfaces anywhere the drawer (or anyone else) can see it
-      // until the countdown actually runs out.
-      const eligible = STOCK_IDS.filter(sid=>!state.stocks[sid].worthless);
-      if(eligible.length===0){ logEvent('Insider Info fizzled — no stocks left to predict.'); break; }
-      const stock = eligible[Math.floor(Math.random()*eligible.length)];
-      const track = state.stocks[stock].track;
-      const targetIdx = Math.floor(Math.random()*track.length);
-      const snappedPrice = track[targetIdx];
-      const turns = 1 + Math.floor(Math.random()*12);
-      card.text = `Insider Info: ${stock} will be $${snappedPrice} in ${turns} turn${turns===1?'':'s'} — no matter what happens in between.`;
-      state.scheduled.push({ turnsLeft: turns, ownerIndex: state.current, kind:'sched_price', stock, targetIdx, snappedPrice, fake:true, description: `${stock} will hit $${snappedPrice}` });
+      state.scheduled.push({
+        turnsLeft: turns, ownerIndex: state.current, kind:'sched_price', stock, targetIdx, snappedPrice,
+        fake: !!card.fake, description: `${stock} will hit $${snappedPrice}`,
+        tier: card.tier, riskRate: tierCfg.riskRate, jailTurns: tierCfg.jailTurns, fineRate: tierCfg.fineRate,
+        baselineLong: p.shares[stock]||0, baselineShort: p.shorts[stock]||0, actedOn:false,
+      });
       logEvent(`Insider Info was set up by ${p.name} — details stay hidden until it plays out.`);
       break;
     }
@@ -1787,10 +2042,20 @@ function resolveAuto(card){
       moveSP(-3);
       logEvent('Recession: all stocks and both S&P 8 indexes dipped.', true);
       break;
+    case 'recession2':
+      STOCK_IDS.forEach(id=>moveStock(id,-2,false));
+      moveSP(-2);
+      logEvent('Recession: all stocks and both S&P 8 indexes dipped 2 steps.', true);
+      break;
     case 'bull':
       STOCK_IDS.forEach(id=>moveStock(id,1,false));
       moveSP(1);
       logEvent('Bull Market: all stocks and both S&P 8 indexes climbed.', true);
+      break;
+    case 'bull2':
+      STOCK_IDS.forEach(id=>moveStock(id,2,false));
+      moveSP(2);
+      logEvent('Bull Market: all stocks and both S&P 8 indexes climbed 2 steps.', true);
       break;
     case 'sp_up':
       moveSP(1);
@@ -1890,6 +2155,15 @@ function resolveAuto(card){
       p.marginShield = true;
       logEvent(`${p.name} is now protected from their next margin call.`, true);
       break;
+    case 'freeze': {
+      const eligible = STOCK_IDS.filter(id=>!state.stocks[id].worthless && !state.stocks[id].frozen);
+      if(eligible.length===0){ logEvent('Freeze fizzled — nothing left to freeze.'); break; }
+      const stock = eligible[Math.floor(Math.random()*eligible.length)];
+      state.stocks[stock].frozen = true;
+      card.text = `Freeze: ${stock} now ignores the next dictated movement card that targets it.`;
+      logEvent(`${p.name} drew Freeze — ${stock} is frozen against the next dictated move.`);
+      break;
+    }
     case 'buyout': {
       const eligible = STOCK_IDS.filter(id=>!state.stocks[id].worthless);
       if(eligible.length===0){ logEvent('Buyout fizzled — no stocks left to acquire.'); break; }
@@ -1938,6 +2212,77 @@ function resolveAuto(card){
       logEvent(`Buyout! ${stock} was acquired at $${buyoutPrice}/share${isPremium?' (premium)':' (lowball)'} — every position in it was closed out.`, true);
       break;
     }
+    case 'divorce': {
+      p.cash = Math.floor(p.cash/2);
+      STOCK_IDS.forEach(id=>{
+        if(p.shares[id]>0){
+          const nq = Math.floor(p.shares[id]/2);
+          p.costBasis[id] = (p.costBasis[id]||0) * (p.shares[id]>0 ? nq/p.shares[id] : 0);
+          p.shares[id] = nq;
+        }
+        if((p.shorts[id]||0)>0){
+          const nq = Math.floor(p.shorts[id]/2);
+          p.shortBasis[id] = (p.shortBasis[id]||0) * (p.shorts[id]>0 ? nq/p.shorts[id] : 0);
+          p.shorts[id] = nq;
+        }
+      });
+      if(p.spShares>0){ const nq=Math.floor(p.spShares/2); p.spCostBasis=(p.spCostBasis||0)*(nq/p.spShares); p.spShares=nq; }
+      if(p.spxShares>0){ const nq=Math.floor(p.spxShares/2); p.spxCostBasis=(p.spxCostBasis||0)*(nq/p.spxShares); p.spxShares=nq; }
+      logEvent(`${p.name} went through a Divorce — cash and every holding got cut in half.`, true);
+      break;
+    }
+    case 'portfolio_manager': {
+      const turns = 3 + Math.floor(Math.random()*6); // 3-8 turns
+      p.portfolioManagers.push({ turnsLeft: turns, lots: [], accumulatedBoost: 0 });
+      card.text = `Portfolio Manager: for your next ${turns} turns, everything you buy or short gets a 20% boost on any gain, paid out in cash when the window closes.`;
+      logEvent(`${p.name} hired a Portfolio Manager for ${turns} turns.`, true);
+      break;
+    }
+    case 'inheritance_last': {
+      const active = state.players.filter(pl=>!pl.eliminated);
+      const minNW = Math.min(...active.map(pl=>netWorth(pl)));
+      if(netWorth(p) > minNW){
+        logEvent(`${p.name} drew Inheritance — 2nd Life, but isn't in last place. No payout.`);
+      } else {
+        const amount = Math.round(Math.random()*250000/1000)*1000;
+        p.cash += amount;
+        card.text = `Inheritance — 2nd Life: you're in last place, so a distant relative left you $${amount.toLocaleString()}.`;
+        logEvent(`${p.name} was in last place and inherited $${amount.toLocaleString()}.`, true);
+      }
+      break;
+    }
+    case 'inheritance_all': {
+      const amounts = [];
+      state.players.forEach(pl=>{
+        const amount = Math.round(Math.random()*100000/1000)*1000;
+        pl.cash += amount;
+        amounts.push(`${pl.name} $${amount.toLocaleString()}`);
+      });
+      card.text = `Inheritance: everyone gets a surprise windfall — ${amounts.join(', ')}.`;
+      logEvent(`Inheritance for everyone: ${amounts.join(', ')}.`, true);
+      break;
+    }
+    case 'promotion': {
+      const raise = Math.round((1000 + Math.random()*5000)/100)*100; // $1,000-$6,000, nearest $100
+      p.baseSalary += raise;
+      card.text = `Promotion! Your salary permanently goes up $${raise.toLocaleString()}/turn.`;
+      logEvent(`${p.name} got a Promotion — salary up $${raise.toLocaleString()}/turn for good, now $${p.baseSalary.toLocaleString()}/turn.`, true);
+      break;
+    }
+    case 'fired': {
+      const rounds = 1 + Math.floor(Math.random()*50); // 1-50 rounds
+      p.firedRoundsLeft = rounds;
+      card.text = `Fired! No salary for the next ${rounds} round${rounds===1?'':'s'}.`;
+      logEvent(`${p.name} was fired — no salary for ${rounds} round${rounds===1?'':'s'}.`, true);
+      break;
+    }
+    case 'overtime': {
+      const turns = 3 + Math.floor(Math.random()*8); // 3-10 turns
+      p.overtimeTurnsLeft = turns;
+      card.text = `Overtime! You'll earn 1.5x salary for your next ${turns} turns.`;
+      logEvent(`${p.name} is working Overtime — 1.5x salary for ${turns} turns.`, true);
+      break;
+    }
     case 'short_squeeze': {
       const eligible = STOCK_IDS.filter(id=>!state.stocks[id].worthless);
       if(eligible.length===0){ logEvent('Short Squeeze fizzled — no stocks left to squeeze.'); break; }
@@ -1966,7 +2311,8 @@ function resolveAuto(card){
 }
 
 function needsChoice(card){
-  return ['sched_swing','split','choose_stock_move','choose_sector_move','whale','freeze'].includes(card.type);
+  if(card.type==='dividend_leach' && card.holdable) return true; // the holdable variant lets you pick your target instead of it being random
+  return ['sched_swing','split','choose_stock_move','choose_sector_move','whale','insider_blocker'].includes(card.type);
 }
 
 /* choice resolvers, called from UI */
@@ -2029,10 +2375,24 @@ function resolveChoice(card, choice){
       }
       break;
     }
-    case 'freeze': {
+    case 'dividend_leach': {
+      const victimIndex = choice.victimIndex;
+      const valid = state.players.some((pl,i)=> i===victimIndex && i!==state.current && !pl.eliminated);
+      if(!valid){ state.choiceError = 'Pick a valid opponent to leach.'; return false; }
+      const turns = 2 + Math.floor(Math.random()*4); // 2-5 inclusive — duration still random, only the target is chosen
+      if(!state.dividendLeaches) state.dividendLeaches = [];
+      state.dividendLeaches.push({ thiefIndex: state.current, victimIndex, turnsLeft: turns });
+      logEvent(`${p.name} attached a Dividend Leach to ${state.players[victimIndex].name} for ${turns} turn${turns===1?'':'s'}.`, true);
+      break;
+    }
+    case 'insider_blocker': {
       const { stock } = choice;
-      state.stocks[stock].frozen = true;
-      logEvent(`${p.name} froze ${stock} against the next dictated move.`);
+      if(!STOCK_IDS.includes(stock)){ state.choiceError = 'Pick a valid stock to protect.'; return false; }
+      const rounds = 1 + Math.floor(Math.random()*6); // 1-6 rounds
+      if(!state.insiderBlockers) state.insiderBlockers = [];
+      state.insiderBlockers.push({ ownerIndex: state.current, stock, roundsLeft: rounds });
+      // Which stock is protected is never revealed — not even in the log.
+      logEvent(`${p.name} played an Insider Info Blocker.`, true);
       break;
     }
   }
@@ -2072,10 +2432,89 @@ function recordTradeMarker(id, color, side, qty){
   if(obj.tradeMarkers.length > MAX_TRADE_MARKERS) obj.tradeMarkers = obj.tradeMarkers.slice(-MAX_TRADE_MARKERS);
 }
 
+/* Fires after every buy/sell/short/cover — if the trading player has an
+   active tip on THIS specific stock that they haven't already crossed the
+   line on, checks whether this trade just crossed it: buying or shorting
+   MORE than they held when they got the tip, or selling/covering away MORE
+   THAN HALF of what they held at that time. Holding steady, or trimming up
+   to half, stays safe. Once crossed, `actedOn` stays true for the rest of
+   that tip's life — it doesn't un-cross by trading back the other way. */
+function checkInsiderActedOn(playerIndex, stockId){
+  const p = state.players[playerIndex];
+  state.scheduled.forEach(item=>{
+    if(item.ownerIndex!==playerIndex || item.stock!==stockId || !item.riskRate || item.actedOn) return;
+    const curLong = p.shares[stockId]||0;
+    const curShort = p.shorts[stockId]||0;
+    const crossedLong = curLong > item.baselineLong || curLong < item.baselineLong*0.5;
+    const crossedShort = curShort > item.baselineShort || curShort < item.baselineShort*0.5;
+    if(crossedLong || crossedShort) item.actedOn = true;
+  });
+}
+
+/* Rolls the dice, once per active acted-on tip this player is holding, at
+   the start of their own turn — stacking risk if they've got more than one
+   live at once. The first one that hits stops the check right there (only
+   one violation processed per turn). Returns true if they got caught, so
+   drawCard can forfeit the rest of this turn. Fine is calculated on net
+   worth BEFORE anything is seized, per spec — seizing first would make the
+   fine smaller than it should be. Which stock it was stays out of the
+   public log; the player themselves obviously still sees it, since it's
+   their own portfolio the seizure just hit. */
+function checkInsiderTradingRisk(ownerIndex){
+  const p = state.players[ownerIndex];
+  const activeTips = state.scheduled.filter(item=>item.ownerIndex===ownerIndex && item.riskRate>0 && item.actedOn);
+  for(const item of activeTips){
+    if(Math.random() >= item.riskRate) continue;
+    const fine = Math.round(netWorth(p) * item.fineRate);
+    p.cash -= fine;
+    p.shares[item.stock] = 0; p.costBasis[item.stock] = 0; p.holdStreak[item.stock] = 0;
+    p.shorts[item.stock] = 0; p.shortBasis[item.stock] = 0;
+    if(!p.bannedStocks) p.bannedStocks = [];
+    if(!p.bannedStocks.includes(item.stock)) p.bannedStocks.push(item.stock);
+    p.jailTurnsLeft = item.jailTurns;
+    logEvent(`${p.name} was caught insider trading — fined $${fine.toLocaleString()}, had the position seized, and is now permanently barred from trading that stock. Serving ${item.jailTurns} turn${item.jailTurns===1?'':'s'} in jail.`, true);
+    return true;
+  }
+  return false;
+}
+
+/* Portfolio Manager tracking — each active window on a player keeps its own
+   independent list of "lots" (stock+side+qty+price) for anything bought or
+   shorted while it was active. Opening a position adds a lot to EVERY
+   currently-active window (so overlapping windows can independently boost
+   the same trade). Closing a position walks each window's own lot list
+   LIFO (most-recently-opened first) and banks 20% of any REALIZED gain
+   right then — losses are never boosted, only real gains. Whatever's left
+   in a window's lots when it expires gets boosted at current prices
+   (unrealized) and paid out as a lump sum — see tickPortfolioManagers. */
+function trackPortfolioManagerOpen(p, id, side, qty, pricePerShare){
+  if(!p.portfolioManagers || p.portfolioManagers.length===0) return;
+  p.portfolioManagers.forEach(pm=>{
+    pm.lots.push({ stock:id, side, qty, costPerShare: pricePerShare });
+  });
+}
+function trackPortfolioManagerClose(p, id, side, qty, closePricePerShare){
+  if(!p.portfolioManagers || p.portfolioManagers.length===0) return;
+  p.portfolioManagers.forEach(pm=>{
+    let remaining = qty;
+    for(let i=pm.lots.length-1; i>=0 && remaining>0; i--){
+      const lot = pm.lots[i];
+      if(lot.stock!==id || lot.side!==side) continue;
+      const consume = Math.min(lot.qty, remaining);
+      const gain = side==='long' ? (closePricePerShare-lot.costPerShare)*consume : (lot.costPerShare-closePricePerShare)*consume;
+      if(gain>0) pm.accumulatedBoost = (pm.accumulatedBoost||0) + gain*0.20;
+      lot.qty -= consume;
+      remaining -= consume;
+      if(lot.qty<=0) pm.lots.splice(i,1);
+    }
+  });
+}
+
 function buyShares(id, qtyRequested, force){
   if((!force && !isMyTurn()) || !id || state.gameOver) return;
   if(id!=='SP' && id!=='SPX' && state.stocks[id].worthless) return;
   const p = state.players[state.current];
+  if((p.bannedStocks||[]).includes(id)){ logEvent(`${p.name} is permanently barred from trading ${id} after being caught insider trading.`); render(); return; }
   const qty = Math.min(qtyRequested||0, capRemaining(), capRemainingForStock(id));
   if(qty<=0){ logEvent(`No cap left this turn to buy ${tickerLabel(id)}.`); render(); return; }
   const offer = p.publicOffering;
@@ -2101,6 +2540,8 @@ function buyShares(id, qtyRequested, force){
   } else if(id!=='SP') {
     state.turnFills.up[id] = priorFilled + qty;
   }
+  checkInsiderActedOn(state.current, id);
+  if(id!=='SP' && id!=='SPX') trackPortfolioManagerOpen(p, id, 'long', qty, totalCost/qty);
   const feeNote = walk.fee>0 ? ` (incl. $${walk.fee} fee)` : (id==='SP' ? ' (no price impact)' : offerEligible ? ' (Public Offering — no fee, no price impact)' : '');
   logEvent(`${p.name} bought ${qty} ${tickerLabel(id)} for $${totalCost}${feeNote} — now $${obj.track[obj.idx]}.`);
   checkMarginCalls(); checkGameOver(); recordTradeMarker(id, p.color, 'up', qty); schedulePersist(); render();
@@ -2126,6 +2567,8 @@ function sellShares(id, qtyRequested, force){
   obj.prevIdx = obj.idx; obj.idx = walk.finalIdx;
   if(id==='SPX') mirrorOntoMiniSP8(walk.finalIdx - priorIdx); // SP8 and Mini SP8 always move together
   if(id!=='SP') state.turnFills.down[id] = priorFilled + qty;
+  checkInsiderActedOn(state.current, id);
+  if(id!=='SP' && id!=='SPX') trackPortfolioManagerClose(p, id, 'long', qty, proceeds/qty);
   const feeNote = walk.fee>0 ? ` (after $${walk.fee} fee)` : (id==='SP' ? ' (no price impact)' : '');
   logEvent(`${p.name} sold ${qty} ${tickerLabel(id)} for $${proceeds}${feeNote} — now $${obj.track[obj.idx]}.`);
   checkMarginCalls(); checkGameOver(); recordTradeMarker(id, p.color, 'down', qty); schedulePersist(); render();
@@ -2135,6 +2578,7 @@ function openShort(id, qtyRequested, force){
   if((!force && !isMyTurn()) || !id || id==='SP' || id==='SPX' || state.gameOver) return; // neither index fund can be shorted
   if(state.stocks[id].worthless) return;
   const p = state.players[state.current];
+  if((p.bannedStocks||[]).includes(id)){ logEvent(`${p.name} is permanently barred from trading ${id} after being caught insider trading.`); render(); return; }
   const qty = Math.min(qtyRequested||0, capRemaining(), capRemainingForStock(id));
   if(qty<=0){ logEvent(`No cap left this turn to short ${id}.`); render(); return; }
   const requiredMargin = qty*price(id);
@@ -2151,6 +2595,8 @@ function openShort(id, qtyRequested, force){
   state.turnUsage.total += qty;
   state.turnUsage.perStock[id] = (state.turnUsage.perStock[id]||0) + qty;
   state.turnFills.down[id] = priorFilled + qty;
+  checkInsiderActedOn(state.current, id);
+  trackPortfolioManagerOpen(p, id, 'short', qty, proceeds/qty);
   const feeNote = walk.fee>0 ? ` (after $${walk.fee} fee)` : '';
   logEvent(`${p.name} opened a short on ${qty} ${id} for $${proceeds}${feeNote} — collateral locked, now $${obj.track[obj.idx]}.`, true);
   checkMarginCalls(); checkGameOver(); recordTradeMarker(id, p.color, 'down', qty); schedulePersist(); render();
@@ -2173,13 +2619,20 @@ function coverShort(id, qtyRequested, force){
   const obj = state.stocks[id];
   obj.prevIdx = obj.idx; obj.idx = walk.finalIdx;
   state.turnFills.up[id] = priorFilled + qty;
+  checkInsiderActedOn(state.current, id);
+  trackPortfolioManagerClose(p, id, 'short', qty, totalCost/qty);
   const feeNote = walk.fee>0 ? ` (incl. $${walk.fee} fee)` : '';
   logEvent(`${p.name} covered ${qty} ${id} for $${totalCost}${feeNote} — now $${obj.track[obj.idx]}.`);
   checkMarginCalls(); checkGameOver(); recordTradeMarker(id, p.color, 'up', qty); schedulePersist(); render();
 }
 
 function endTurn(){
-  state.players[state.current].publicOffering = null; // this-turn-only perk — clear it as the turn ends
+  const leaving = state.players[state.current];
+  if(leaving.jailTurnsLeft > 0){
+    leaving.jailTurnsLeft -= 1;
+    if(leaving.jailTurnsLeft===0) logEvent(`${leaving.name} is released from jail.`, true);
+  }
+  leaving.publicOffering = null; // this-turn-only perk — clear it as the turn ends
   recordNetWorthHistory();
   const wasLastPlayer = state.current === state.players.length-1;
   let next = state.current;
@@ -2193,25 +2646,25 @@ function endTurn(){
   state.turnFills = { up: {}, down: {} };
   state.turnUndoStack = [];
   state.cardsDrawnThisTurn = 0;
-  if(wasLastPlayer) paySP8Dividend();
+  if(wasLastPlayer){ paySP8Dividend(); tickRoundBoundaryEffects(); }
   persist(); render();
 }
 
-/* Both index funds pay a 10% dividend on holdings at the end of every
+/* Both index funds pay a 7% dividend on holdings at the end of every
    round (once every player has taken a turn) — a steady reward for
    parking cash in the "safe" indexes instead of chasing individual
    stocks. Same rate for both — SP8 just moves more dollars per share. */
 function paySP8Dividend(){
   state.players.forEach(pl=>{
     if(pl.spShares>0){
-      const pay = Math.round(pl.spShares*spPrice()*0.10);
+      const pay = Math.round(pl.spShares*spPrice()*0.07);
       pl.cash += pay;
-      logEvent(`${pl.name} collected a $${pay} Mini SP8 dividend (10% of holding value).`, true);
+      logEvent(`${pl.name} collected a $${pay} Mini SP8 dividend (7% of holding value).`, true);
     }
     if(pl.spxShares>0){
-      const pay = Math.round(pl.spxShares*spxPrice()*0.10);
+      const pay = Math.round(pl.spxShares*spxPrice()*0.07);
       pl.cash += pay;
-      logEvent(`${pl.name} collected a $${pay} SP8 dividend (10% of holding value).`, true);
+      logEvent(`${pl.name} collected a $${pay} SP8 dividend (7% of holding value).`, true);
     }
   });
 }
@@ -2332,9 +2785,20 @@ function botResolveChoice(){
       else { choice = { side:'hold' }; }
       break;
     }
-    case 'freeze': {
+    case 'dividend_leach': {
+      let target = null, bestNW = -Infinity;
+      state.players.forEach((pl,i)=>{
+        if(i===state.current || pl.eliminated) return;
+        const nw = netWorth(pl);
+        if(nw>bestNW){ bestNW = nw; target = i; }
+      });
+      if(target===null){ finishCardResolution(); return; }
+      choice = { victimIndex: target };
+      break;
+    }
+    case 'insider_blocker': {
       const held = botLargestHolding(bot);
-      choice = { stock: held || STOCK_IDS[0] };
+      choice = { stock: held || botCheapestStock() || STOCK_IDS[0] };
       break;
     }
     default:
@@ -2435,6 +2899,7 @@ function runBotStep(){
   const cur = state.players[state.current];
   if(!cur || !cur.bot){ botTurnRunning = false; return; } // turn already moved on to a human
   if(cur.eliminated){ endTurn(); botTurnRunning = false; return; }
+  if(cur.jailTurnsLeft>0){ endTurn(); botTurnRunning = false; return; }
   if(cur.cash<0){
     const fixed = botFixNegativeCash();
     if(!fixed){
@@ -2450,6 +2915,7 @@ function runBotStep(){
     setTimeout(runBotStep, BOT_STEP_DELAY);
     return;
   }
+  if(state.awaitingHoldDecision){ playCardNowFromDraw(); setTimeout(runBotStep, BOT_STEP_DELAY); return; }
   if(isTurnProtectedFromTimeout()){ botResolveChoice(); setTimeout(runBotStep, BOT_STEP_DELAY); return; }
   if(state.phase==='draw'){ drawCard(true); setTimeout(runBotStep, BOT_STEP_DELAY); return; }
   if(state.phase==='resolve'){ finishCardResolution(); setTimeout(runBotStep, BOT_STEP_DELAY); return; }
@@ -2465,6 +2931,7 @@ function runBotStep(){
 /* Sets up a fresh 1-player-vs-bot game directly, skipping the lobby
    entirely (there's nothing to wait on — only one human seat exists). */
 const GAME_LENGTH_OPTIONS = {
+  net250:  { mode:'networth', target:250000,  label:'$250,000' },
   net500:  { mode:'networth', target:500000,  label:'$500,000' },
   net1m:   { mode:'networth', target:1000000, label:'$1,000,000' },
   timer30: { mode:'timer', minutes:30, label:'30 Min Timer' },
@@ -3000,11 +3467,46 @@ function renderSidebar(){
   if(myInsider.length){
     html += `<div class="panel"><h3 style="color:${me.color};">${me.name}'s Insider Info</h3>`;
     myInsider.forEach(item=>{
+      const tierCfg = item.tier ? (item.tier==='bought' ? { label:'Bought' } : INSIDER_TIERS[item.tier]) : null;
+      const riskLine = (item.riskRate>0 && item.actedOn)
+        ? `<div style="color:var(--down);font-size:11px;margin-top:2px;">⚠️ Acting on this — ${(item.riskRate*100).toFixed(1).replace(/\.0$/,'')}% chance of getting caught, each of your turns</div>`
+        : (item.riskRate>0 ? `<div style="color:var(--muted);font-size:11px;margin-top:2px;">No risk yet — you haven't acted on this stock beyond what you already held</div>` : '');
       html += `<div class="log-entry event" style="margin-bottom:6px;">
-        <div>${item.description||'A prediction is pending'}</div>
+        <div>${item.description||'A prediction is pending'}${tierCfg?` <span style="color:var(--muted);font-size:11px;">(${tierCfg.label})</span>`:''}</div>
         <div style="color:var(--muted);font-size:11px;margin-top:2px;">${item.turnsLeft} of your turn${item.turnsLeft===1?'':'s'} left</div>
+        ${riskLine}
       </div>`;
     });
+    html += `</div>`;
+  }
+
+  // your own active Insider Info Blockers — private to you, same reasoning
+  const myBlockers = me ? (state.insiderBlockers||[]).filter(b=>b.ownerIndex===myPlayerIndex) : [];
+  if(myBlockers.length){
+    html += `<div class="panel"><h3 style="color:${me.color};">${me.name}'s Insider Blockers</h3>`;
+    myBlockers.forEach(b=>{
+      html += `<div class="log-entry event" style="margin-bottom:6px;">
+        <div>🛡️ ${b.stock} is protected from Insider Info</div>
+        <div style="color:var(--muted);font-size:11px;margin-top:2px;">${b.roundsLeft} round${b.roundsLeft===1?'':'s'} left</div>
+      </div>`;
+    });
+    html += `</div>`;
+  }
+
+  // your held cards — private, playable only during your own trade phase.
+  // Only shown when you're actually holding something, same pattern as the
+  // Insider Info panel above.
+  if(me && me.hand && me.hand.length){
+    const canPlay = isMyTurn() && state.phase==='trade' && !state.gameOver;
+    html += `<div class="panel"><h3 style="color:${me.color};">Your Hand (${me.hand.length}/${HAND_LIMIT})</h3>`;
+    me.hand.forEach((card,idx)=>{
+      html += `<div class="log-entry" style="margin-bottom:6px;">
+        <div>${card.text}</div>
+        <button class="btn secondary full" style="margin-top:6px;" data-play-hand-idx="${idx}" ${canPlay?'':'disabled'}>Play</button>
+      </div>`;
+    });
+    if(!isMyTurn()) html += `<div class="hint" style="margin:6px 0 0 0;">You can only play a held card on your own turn.</div>`;
+    else if(state.phase!=='trade') html += `<div class="hint" style="margin:6px 0 0 0;">Wait until your trade phase to play a held card.</div>`;
     html += `</div>`;
   }
 
@@ -3018,6 +3520,9 @@ function renderSidebar(){
   } else if(p.eliminated){
     html += `<div class="choice-error" style="margin-bottom:10px;">${p.name} is eliminated — net worth went negative with no way to recover. Their turns are skipped from here on.</div>
       <button class="btn full" id="eliminatedContinueBtn">Continue</button>`;
+  } else if(p.jailTurnsLeft>0){
+    html += `<div class="choice-error" style="margin-bottom:10px;">${p.name} is serving jail time for insider trading — no cards, no dividends, no salary this turn. ${p.jailTurnsLeft} turn${p.jailTurnsLeft===1?'':'s'} left.</div>
+      <button class="btn full" id="jailContinueBtn">Continue</button>`;
   } else if(state.phase==='draw' && p.cash<0){
     const sel = state.tradeSelection;
     if(isBankrupt(p)){
@@ -3104,25 +3609,25 @@ function renderSidebar(){
       if(me.shares[id]>0){
         const sectorLabel = SECTORS[STOCKS[id].sector].label || STOCKS[id].sector;
         const value = me.shares[id]*price(id);
-        const basis = Math.round(me.costBasis[id]||0);
+        const basis = Math.round((me.costBasis[id]||0) / me.shares[id]);
         holdingRows.push({ value, html: `<tr><td>${id} (${sectorLabel})</td><td>${me.shares[id]}</td><td>$${basis}</td><td>$${value}</td>${glCell(longGainLoss(me,id))}</tr>` });
       }
     });
     if(me.spShares>0){
       const value = me.spShares*spPrice();
-      const basis = Math.round(me.spCostBasis||0);
+      const basis = Math.round((me.spCostBasis||0) / me.spShares);
       holdingRows.push({ value, html: `<tr><td>Mini SP8</td><td>${me.spShares}</td><td>$${basis}</td><td>$${value}</td>${glCell(longGainLoss(me,'SP'))}</tr>` });
     }
     if(me.spxShares>0){
       const value = me.spxShares*spxPrice();
-      const basis = Math.round(me.spxCostBasis||0);
+      const basis = Math.round((me.spxCostBasis||0) / me.spxShares);
       holdingRows.push({ value, html: `<tr><td>SP8</td><td>${me.spxShares}</td><td>$${basis}</td><td>$${value}</td>${glCell(longGainLoss(me,'SPX'))}</tr>` });
     }
     STOCK_IDS.forEach(id=>{
       if((me.shorts[id]||0)>0){
         const sectorLabel = SECTORS[STOCKS[id].sector].label || STOCKS[id].sector;
         const value = -(me.shorts[id]*price(id));
-        const basis = Math.round(me.shortBasis[id]||0); // proceeds received when the short was opened — a short's "cost basis"
+        const basis = Math.round((me.shortBasis[id]||0) / me.shorts[id]); // average proceeds received per share, when the short was opened
         holdingRows.push({ value, html: `<tr><td>${id} (${sectorLabel}, short)</td><td>${me.shorts[id]}</td><td>$${basis}</td><td style="color:var(--down);">-$${Math.abs(value)}</td>${glCell(shortGainLoss(me,id))}</tr>` });
       }
     });
@@ -3132,7 +3637,7 @@ function renderSidebar(){
     if(holdingRows.length===0){
       html += `<div class="hint" style="margin:0;">No open positions yet.</div>`;
     } else {
-      html += `<table class="holdings-table"><tr><th>Ticker</th><th>Shares</th><th>Cost Basis</th><th>Value</th><th>Gain/Loss</th></tr>`;
+      html += `<table class="holdings-table"><tr><th>Ticker</th><th>Shares</th><th>Avg Cost</th><th>Value</th><th>Gain/Loss</th></tr>`;
       holdingRows.forEach(r=>{ html += r.html; });
       html += `</table>`;
     }
@@ -3150,6 +3655,13 @@ function renderSidebar(){
     (state.dividendLeaches||[]).forEach(leach=>{
       if(leach.thiefIndex===myPlayerIndex) perkBadges.push(`🩸 Leaching ${state.players[leach.victimIndex].name} (${leach.turnsLeft} left)`);
       if(leach.victimIndex===myPlayerIndex) perkBadges.push(`🩸 Being leached by ${state.players[leach.thiefIndex].name} (${leach.turnsLeft} left)`);
+    });
+    if((me.bannedStocks||[]).length) perkBadges.push(`🚫 Barred from trading: ${me.bannedStocks.join(', ')}`);
+    if(me.firedRoundsLeft>0) perkBadges.push(`💼 Fired — no salary for ${me.firedRoundsLeft} more round${me.firedRoundsLeft===1?'':'s'}`);
+    else if(me.overtimeTurnsLeft>0) perkBadges.push(`💰 Overtime — 1.5x salary for ${me.overtimeTurnsLeft} more turn${me.overtimeTurnsLeft===1?'':'s'}`);
+    if(me.baseSalary!==SALARY_PER_TURN) perkBadges.push(`📈 Salary: $${me.baseSalary.toLocaleString()}/turn`);
+    (me.portfolioManagers||[]).forEach(pm=>{
+      perkBadges.push(`📊 Portfolio Manager — ${pm.turnsLeft} turn${pm.turnsLeft===1?'':'s'} left (+$${Math.round(pm.accumulatedBoost||0).toLocaleString()} banked)`);
     });
     if(perkBadges.length){
       html += `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:10px;">${perkBadges.map(b=>`<span class="frozen-badge">${b}</span>`).join('')}</div>`;
@@ -3254,7 +3766,7 @@ function renderLogModal(){
    Every other card type is public: any player can see what got drawn, even
    though only the drawer can act on it. */
 function isInsiderCard(card){
-  return card && (card.type==='peek' || card.type==='sched_swing' || card.type==='sched_price' || card.type==='sched_price_fake');
+  return card && (card.type==='peek' || card.type==='sched_swing' || card.type==='insider_tip');
 }
 
 function renderCardModal(){
@@ -3265,6 +3777,19 @@ function renderCardModal(){
   if(state.cardMinimized) return ''; // tucked away so the player can check their holdings first
 
   const minimizeBtn = `<button class="btn secondary full" id="minimizeCardBtn" style="margin-top:8px;">Minimize — check my holdings</button>`;
+
+  if(state.awaitingHoldDecision){
+    const canHold = p.hand.length < HAND_LIMIT;
+    return `<div class="overlay"><div class="modal">
+      <div class="card-face"><div class="card-kind">${p.name}'s turn — Holdable Card</div><div class="card-text">${card.text}</div></div>
+      <div style="font-size:13px;color:var(--muted);margin-bottom:10px;">This one can be held and played later instead of resolving right now.${canHold?'':` Your hand is already full (${HAND_LIMIT}/${HAND_LIMIT}) — you'll need to play it now.`}</div>
+      <div class="choice-grid">
+        <button class="btn full" id="playCardNowBtn">Play Now</button>
+        ${canHold?`<button class="btn secondary full" id="holdCardBtn">Hold for Later</button>`:''}
+      </div>
+      ${minimizeBtn}
+    </div></div>`;
+  }
 
   if(card.type==='peek' && state.pendingChoice && state.pendingChoice.kind==='info'){
     return `<div class="overlay"><div class="modal">
@@ -3363,9 +3888,13 @@ function renderChoiceUI(card){
           <button class="btn short" id="c_short">Short (pushes price down)</button>
           <button class="btn secondary" id="c_hold">Hold — no trade</button>
         </div>`;
-    case 'freeze':
+    case 'dividend_leach':
+      return `<div class="trade-row"><select id="c_victim">${state.players.map((pl,i)=> (i!==state.current && !pl.eliminated) ? `<option value="${i}">${pl.name}</option>` : '').join('')}</select></div>
+        <button class="btn full" id="c_leach">Leach</button>`;
+    case 'insider_blocker':
       return `<div class="trade-row"><select id="c_stock">${STOCK_IDS.map(id=>`<option value="${id}">${id}</option>`).join('')}</select></div>
-        <button class="btn full" id="c_freeze">Freeze</button>`;
+        <button class="btn full" id="c_block">Protect This Stock</button>
+        <div class="hint" style="margin-top:6px;">Nobody else will ever know which stock you protected.</div>`;
     default: return '';
   }
 }
@@ -3400,8 +3929,11 @@ function wireChoiceHandlers(card){
       if(byId('c_short')) byId('c_short').onclick = ()=>done({ stock: byId('c_stock').value, qty: parseInt(byId('c_qty').value)||1, side:'short' });
       if(byId('c_hold')) byId('c_hold').onclick = ()=>done({ side:'hold' });
       break;
-    case 'freeze':
-      if(byId('c_freeze')) byId('c_freeze').onclick = ()=>done({ stock: byId('c_stock').value });
+    case 'dividend_leach':
+      if(byId('c_leach')) byId('c_leach').onclick = ()=>done({ victimIndex: parseInt(byId('c_victim').value) });
+      break;
+    case 'insider_blocker':
+      if(byId('c_block')) byId('c_block').onclick = ()=>done({ stock: byId('c_stock').value });
       break;
   }
 }
@@ -3479,6 +4011,7 @@ function render(){
   if(byId('bankruptcyResetBtn')) byId('bankruptcyResetBtn').onclick = humanBankruptcyReset;
   if(byId('endTurnBtn')) byId('endTurnBtn').onclick = requestEndTurn;
   if(byId('eliminatedContinueBtn')) byId('eliminatedContinueBtn').onclick = ()=>{ if(isMyTurn()) endTurn(); };
+  if(byId('jailContinueBtn')) byId('jailContinueBtn').onclick = ()=>{ if(isMyTurn()) endTurn(); };
   if(byId('newGameBtn')) byId('newGameBtn').onclick = wipeGame;
   if(byId('buyBtn')) byId('buyBtn').onclick = guardedTradeClick(()=>buyShares(state.tradeSelection, 1));
   if(byId('buyInsiderBtn')) byId('buyInsiderBtn').onclick = ()=>buyInsiderInfo();
@@ -3499,6 +4032,11 @@ function render(){
   if(byId('cancelRestartBtn')) byId('cancelRestartBtn').onclick = ()=>{ state.confirmRestart=false; render(); };
   if(byId('minimizeCardBtn')) byId('minimizeCardBtn').onclick = ()=>{ state.cardMinimized=true; render(); };
   if(byId('resumeCardBtn')) byId('resumeCardBtn').onclick = ()=>{ state.cardMinimized=false; render(); };
+  if(byId('playCardNowBtn')) byId('playCardNowBtn').onclick = playCardNowFromDraw;
+  if(byId('holdCardBtn')) byId('holdCardBtn').onclick = holdCurrentCard;
+  document.querySelectorAll('[data-play-hand-idx]').forEach(el=>{
+    el.onclick = ()=>{ if(!el.disabled) playCardFromHand(parseInt(el.getAttribute('data-play-hand-idx'))); };
+  });
   document.querySelectorAll('[data-trade-id]').forEach(el=>{
     el.onclick = ()=>{ state.tradeSelection = el.getAttribute('data-trade-id'); render(); };
   });
