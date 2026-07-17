@@ -429,6 +429,12 @@ function buildDeck(){
   // Golden Goose — 4 (permanent effect, so still relatively scarce)
   add(4, { type:'golden_goose', text:'Golden Goose: a random stock permanently pays YOU an extra 10% dividend on your holdings, every one of your turns, for the rest of the game.' });
 
+  // Hunter — 4, counters Golden Goose by killing one permanently. 2 resolve
+  // immediately on draw (pick a target right then); 2 are holdable so you
+  // can sit on one until an opponent's Golden Goose is actually worth killing.
+  add(2, { type:'hunter', text:'Hunter: kill a Golden Goose — pick an opponent with one in play and end that permanent dividend for good.' });
+  add(2, { type:'hunter', holdable:true, text:'Hunter: hold this and play it whenever you want — kill any opponent’s Golden Goose the moment it becomes a real threat.' });
+
   // Rate Hike / Rate Cut — 2 each
   add(2, { type:'rate_hike', text:'Rate Hike: every stock\u2019s dividend zone rate is boosted 50% for the next 6 turns.' });
   add(2, { type:'rate_cut',  text:'Rate Cut: every stock\u2019s dividend zone rate is cut in half for the next 6 turns.' });
@@ -1055,10 +1061,23 @@ function forceAdvanceStalledTurn(){
   if(!state || state.gameOver) return;
   const stalledIndex = state.current;
   const stalledName = state.players[stalledIndex].name;
+  const stalledIsBot = !!state.players[stalledIndex].bot;
   let steps = 0;
   while(steps < 12 && state.current===stalledIndex && !state.gameOver){
     steps++;
-    if(isTurnProtectedFromTimeout()) break; // a real choice is pending — back off
+    if(isTurnProtectedFromTimeout()){
+      // A pending choice card protects a HUMAN's turn from being force-ended
+      // — they might genuinely be mid-decision. A bot has no UI to decide
+      // with (renderCardModal only ever renders for isMyTurn(), which is
+      // never true for a bot seat), so if a bot's own step chain has died
+      // partway through one of these (thrown error, throttled/backgrounded
+      // tab, lost lock race), "protecting" it here would freeze the game
+      // forever with nobody able to resolve it. Make the choice for the bot
+      // automatically instead of backing off.
+      if(!stalledIsBot) break;
+      try{ botResolveChoice(); }catch(e){ console.error('UpTrend: forced bot choice resolution failed', e); break; }
+      continue;
+    }
     if(state.players[stalledIndex].eliminated || state.players[stalledIndex].jailTurnsLeft>0){ endTurn(); break; } // nothing to play — just skip it forward
     const before = JSON.stringify({ phase:state.phase, turnStage:state.turnStage, cardsDrawnThisTurn:state.cardsDrawnThisTurn, pendingCard: state.pendingCard && state.pendingCard._id });
     if(state.awaitingHoldDecision){
@@ -2312,7 +2331,28 @@ function resolveAuto(card){
 
 function needsChoice(card){
   if(card.type==='dividend_leach' && card.holdable) return true; // the holdable variant lets you pick your target instead of it being random
-  return ['sched_swing','split','choose_stock_move','choose_sector_move','whale','insider_blocker'].includes(card.type);
+  return ['sched_swing','split','choose_stock_move','choose_sector_move','whale','insider_blocker','hunter'].includes(card.type);
+}
+
+/* All (playerIndex, stock) pairs across every opponent's currently active
+   Golden Geese — the legal target list for a Hunter card. Excludes the
+   acting player themselves (you can't hunt your own goose) and anyone
+   already eliminated. Duplicate (index, stock) pairs are collapsed to one
+   entry — Hunter only ever kills a single Golden Goose per play, so if an
+   opponent stacked two on the same stock, killing "one" is enough to pick.*/
+function huntableGeese(){
+  const out = [];
+  const seen = new Set();
+  state.players.forEach((pl,i)=>{
+    if(i===state.current || pl.eliminated) return;
+    (pl.goldenGeese||[]).forEach(stock=>{
+      const key = `${i}:${stock}`;
+      if(seen.has(key)) return;
+      seen.add(key);
+      out.push({ targetIndex:i, stock });
+    });
+  });
+  return out;
 }
 
 /* choice resolvers, called from UI */
@@ -2393,6 +2433,16 @@ function resolveChoice(card, choice){
       state.insiderBlockers.push({ ownerIndex: state.current, stock, roundsLeft: rounds });
       // Which stock is protected is never revealed — not even in the log.
       logEvent(`${p.name} played an Insider Info Blocker.`, true);
+      break;
+    }
+    case 'hunter': {
+      const { targetIndex, stock } = choice;
+      const target = state.players[targetIndex];
+      if(!target || targetIndex===state.current || target.eliminated){ state.choiceError = 'Pick a valid opponent to hunt.'; return false; }
+      const idx = (target.goldenGeese||[]).indexOf(stock);
+      if(idx===-1){ state.choiceError = `${target.name} doesn't have a Golden Goose on ${stock} anymore.`; return false; }
+      target.goldenGeese.splice(idx, 1); // kills exactly one — if they stacked more than one on the same stock, the rest survive
+      logEvent(`${p.name} hunted down ${target.name}'s Golden Goose on ${stock} — that dividend is gone for good.`, true);
       break;
     }
   }
@@ -2709,6 +2759,12 @@ function beginClosingDraw(){
    plays out as a turn rather than jumping to the result instantly. */
 const BOT_STEP_DELAY = 450;
 let botTurnRunning = false;
+let botStepRetryCount = 0; // consecutive local failures within the current bot turn
+let lastBotProgressAt = 0; // wall-clock time of the last runBotStep invocation, for the stall watchdog below
+let myBotLockTurn = null; // turnStartedAt this browser currently owns the bot-turn lock for — lets it retry locally without re-racing the claim
+const BOT_LOCK_STALE_MS = 10000; // a lock whose heartbeat is older than this is assumed dead and can be stolen by another browser
+const BOT_WATCHDOG_STALL_MS = 8000; // if "running" but no progress for this long, the setTimeout chain itself has stalled (e.g. a throttled background tab)
+const BOT_MAX_RETRIES = 5; // after this many consecutive in-turn errors, stop retrying and just force the turn to end
 
 /* -1..1 — how far a stock sits from its own track's center, negative means
    cheap relative to its own range, positive means rich. Comparable across
@@ -2801,6 +2857,19 @@ function botResolveChoice(){
       choice = { stock: held || botCheapestStock() || STOCK_IDS[0] };
       break;
     }
+    case 'hunter': {
+      // Go after whichever opponent is doing best (net worth) — their Golden
+      // Goose is the one most worth killing. Never targets its own.
+      const targets = huntableGeese();
+      if(targets.length===0){ finishCardResolution(); return; }
+      let best = targets[0], bestNW = -Infinity;
+      targets.forEach(t=>{
+        const nw = netWorth(state.players[t.targetIndex]);
+        if(nw>bestNW){ bestNW = nw; best = t; }
+      });
+      choice = best;
+      break;
+    }
     default:
       finishCardResolution();
       return;
@@ -2864,14 +2933,23 @@ function botTakeOneTradeAction(){
    transaction API gives the same "only one wins" guarantee we already use
    for turn-timeout enforcement: everyone who notices it's a bot's turn
    races to move the lock from the previous turn's timestamp to the
-   current one, but only the first to reach the server actually succeeds. */
+   current one, but only the first to reach the server actually succeeds.
+   The lock now carries a heartbeat too — if whoever won it goes silent
+   (crashed tab, closed laptop, thrown exception with nobody left to retry),
+   its claim goes stale and another connected browser can take over instead
+   of the bot's turn being stuck forever because a lock nobody's honoring
+   still technically says "claimed". */
 async function claimBotTurnLock(turnStartedAt){
   if(!roomCode) return false;
   try{
     const result = await runTransaction(botLockRef(), (current)=>{
-      if(current === turnStartedAt) return; // already claimed for this turn — abort
-      return turnStartedAt;
+      const now = Date.now();
+      if(current && current.turnStartedAt===turnStartedAt && (now-(current.heartbeatAt||0))<BOT_LOCK_STALE_MS){
+        return; // someone else is actively driving this exact turn — abort
+      }
+      return { turnStartedAt, heartbeatAt: now };
     });
+    if(result.committed) myBotLockTurn = turnStartedAt;
     return result.committed;
   }catch(e){
     console.error('UpTrend: bot turn lock claim failed', e);
@@ -2879,54 +2957,121 @@ async function claimBotTurnLock(turnStartedAt){
   }
 }
 
+/* Best-effort heartbeat so other browsers know this bot step chain is still
+   alive and don't mistake an in-progress turn for a stale/abandoned one.
+   Fire-and-forget — a missed heartbeat only matters if this browser really
+   has stalled, in which case letting someone else steal the lock is exactly
+   what should happen. */
+function renewBotTurnLock(turnStartedAt){
+  if(!roomCode) return;
+  update(rootRef, { [`${gamePath()}/botTurnLock`]: { turnStartedAt, heartbeatAt: Date.now() } }).catch(()=>{});
+}
+
 /* Kicks off the bot's turn if it isn't already running. Safe to call from
    render() on every re-render — the running flag makes it a no-op once a
    chain of steps is already in flight, and the lock claim above makes it
    safe even when multiple human browsers call this for the same bot turn
-   at roughly the same time. */
+   at roughly the same time. If THIS browser already owns the lock for the
+   current turn (e.g. it's retrying locally after runBotStep threw), it
+   skips re-claiming — the transaction would otherwise see its own still-
+   fresh heartbeat and wrongly abort, permanently stalling the retry. */
 async function maybeStartBotTurn(){
   if(botTurnRunning || !state || state.gameOver || state.phase==='lobby') return;
   const cur = state.players[state.current];
   if(!cur || !cur.bot) return;
   botTurnRunning = true; // set immediately so this browser doesn't re-enter while its own claim is in flight
-  const won = await claimBotTurnLock(state.turnStartedAt);
-  if(!won){ botTurnRunning = false; return; } // another connected browser is already handling this bot's turn
+  lastBotProgressAt = Date.now();
+  if(myBotLockTurn !== state.turnStartedAt){
+    const won = await claimBotTurnLock(state.turnStartedAt);
+    if(!won){ botTurnRunning = false; return; } // another connected browser is already handling this bot's turn
+  }
   setTimeout(runBotStep, BOT_STEP_DELAY);
 }
 
+/* Every step is wrapped in try/catch: an uncaught exception here used to
+   leave `botTurnRunning` stuck true forever (nothing else ever resets it),
+   which silently froze the bot's turn with no recovery — exactly the bug
+   this was written to fix. Now a failure logs, releases the flag, and
+   retries the whole turn from scratch a few times before giving up and
+   forcing the turn to end outright, so the game can never hang here
+   indefinitely no matter what goes wrong mid-step. */
 function runBotStep(){
+  lastBotProgressAt = Date.now();
   if(!state || state.gameOver){ botTurnRunning = false; return; }
   const cur = state.players[state.current];
-  if(!cur || !cur.bot){ botTurnRunning = false; return; } // turn already moved on to a human
-  if(cur.eliminated){ endTurn(); botTurnRunning = false; return; }
-  if(cur.jailTurnsLeft>0){ endTurn(); botTurnRunning = false; return; }
-  if(cur.cash<0){
-    const fixed = botFixNegativeCash();
-    if(!fixed){
-      // Genuinely nothing left to sell — a real margin call from price
-      // movement left cash negative with no long holdings to recover with.
-      // Rather than end the turn and hit this exact same wall again next
-      // time it's the bot's turn (forever), reset it as a bankruptcy so
-      // the game keeps moving for everyone.
-      resetBankruptPlayer(cur);
+  if(!cur || !cur.bot){ botTurnRunning = false; myBotLockTurn = null; return; } // turn already moved on to a human
+  try{
+    renewBotTurnLock(state.turnStartedAt);
+    if(cur.eliminated){ endTurn(); botTurnRunning = false; myBotLockTurn = null; botStepRetryCount = 0; return; }
+    if(cur.jailTurnsLeft>0){ endTurn(); botTurnRunning = false; myBotLockTurn = null; botStepRetryCount = 0; return; }
+    if(cur.cash<0){
+      const fixed = botFixNegativeCash();
+      if(!fixed){
+        // Genuinely nothing left to sell — a real margin call from price
+        // movement left cash negative with no long holdings to recover with.
+        // Rather than end the turn and hit this exact same wall again next
+        // time it's the bot's turn (forever), reset it as a bankruptcy so
+        // the game keeps moving for everyone.
+        resetBankruptPlayer(cur);
+        setTimeout(runBotStep, BOT_STEP_DELAY);
+        return;
+      }
       setTimeout(runBotStep, BOT_STEP_DELAY);
       return;
     }
-    setTimeout(runBotStep, BOT_STEP_DELAY);
-    return;
+    if(state.awaitingHoldDecision){ playCardNowFromDraw(); setTimeout(runBotStep, BOT_STEP_DELAY); return; }
+    if(isTurnProtectedFromTimeout()){ botResolveChoice(); setTimeout(runBotStep, BOT_STEP_DELAY); return; }
+    if(state.phase==='draw'){ drawCard(true); setTimeout(runBotStep, BOT_STEP_DELAY); return; }
+    if(state.phase==='resolve'){ finishCardResolution(); setTimeout(runBotStep, BOT_STEP_DELAY); return; }
+    if(state.phase==='trade'){
+      if(botTakeOneTradeAction()){ setTimeout(runBotStep, 300); return; }
+      proceedPastTrade();
+      setTimeout(runBotStep, BOT_STEP_DELAY);
+      return;
+    }
+    botTurnRunning = false; myBotLockTurn = null; botStepRetryCount = 0;
+  }catch(e){
+    console.error('UpTrend: bot step failed', e);
+    botTurnRunning = false; // release so a retry (or the watchdog) can re-enter
+    botStepRetryCount++;
+    if(botStepRetryCount > BOT_MAX_RETRIES){
+      console.error('UpTrend: bot turn failed repeatedly — forcing it to end so the game can continue');
+      botStepRetryCount = 0; myBotLockTurn = null;
+      try{ endTurn(); }catch(e2){ console.error('UpTrend: forced endTurn also failed', e2); }
+      persist(); render();
+      return;
+    }
+    setTimeout(maybeStartBotTurn, BOT_STEP_DELAY);
   }
-  if(state.awaitingHoldDecision){ playCardNowFromDraw(); setTimeout(runBotStep, BOT_STEP_DELAY); return; }
-  if(isTurnProtectedFromTimeout()){ botResolveChoice(); setTimeout(runBotStep, BOT_STEP_DELAY); return; }
-  if(state.phase==='draw'){ drawCard(true); setTimeout(runBotStep, BOT_STEP_DELAY); return; }
-  if(state.phase==='resolve'){ finishCardResolution(); setTimeout(runBotStep, BOT_STEP_DELAY); return; }
-  if(state.phase==='trade'){
-    if(botTakeOneTradeAction()){ setTimeout(runBotStep, 300); return; }
-    proceedPastTrade();
-    setTimeout(runBotStep, BOT_STEP_DELAY);
-    return;
-  }
-  botTurnRunning = false;
 }
+
+/* Extra safety net for the step chain itself: even with the retry logic
+   above, a scheduled setTimeout can simply never fire — most commonly a
+   browser throttling/suspending timers in a backgrounded or minimized tab
+   — without ever throwing an error to catch. If it's still supposed to be
+   the bot's turn but nothing has happened in a while, treat the chain as
+   stuck and restart it rather than leaving `botTurnRunning` stuck true. */
+setInterval(()=>{
+  if(!botTurnRunning || !state || state.gameOver || state.phase==='lobby') return;
+  const cur = state.players[state.current];
+  if(!cur || !cur.bot) return;
+  if(Date.now()-lastBotProgressAt > BOT_WATCHDOG_STALL_MS){
+    console.warn('UpTrend: bot step chain looked stuck — restarting it');
+    botTurnRunning = false;
+    maybeStartBotTurn();
+  }
+}, 3000);
+
+/* Backgrounded/minimized tabs are exactly where the setTimeout chain above
+   is most likely to stall — the moment the tab is visible again, force an
+   immediate resync and give the bot chain a nudge instead of waiting for
+   the slower watchdog or the 2-minute turn timeout to notice. */
+document.addEventListener('visibilitychange', ()=>{
+  if(document.visibilityState==='visible'){
+    forceSyncNow();
+    maybeStartBotTurn();
+  }
+});
 
 /* Sets up a fresh 1-player-vs-bot game directly, skipping the lobby
    entirely (there's nothing to wait on — only one human seat exists). */
@@ -3895,6 +4040,12 @@ function renderChoiceUI(card){
       return `<div class="trade-row"><select id="c_stock">${STOCK_IDS.map(id=>`<option value="${id}">${id}</option>`).join('')}</select></div>
         <button class="btn full" id="c_block">Protect This Stock</button>
         <div class="hint" style="margin-top:6px;">Nobody else will ever know which stock you protected.</div>`;
+    case 'hunter': {
+      const targets = huntableGeese();
+      if(targets.length===0) return `<div class="hint">No opponent has a Golden Goose in play right now — this card has no effect.</div><button class="btn full" id="ackBtn">Continue</button>`;
+      return `<div class="trade-row"><select id="c_target">${targets.map(t=>`<option value="${t.targetIndex}:${t.stock}">${state.players[t.targetIndex].name} — ${t.stock}</option>`).join('')}</select></div>
+        <button class="btn full" id="c_hunt">Kill This Golden Goose</button>`;
+    }
     default: return '';
   }
 }
@@ -3934,6 +4085,13 @@ function wireChoiceHandlers(card){
       break;
     case 'insider_blocker':
       if(byId('c_block')) byId('c_block').onclick = ()=>done({ stock: byId('c_stock').value });
+      break;
+    case 'hunter':
+      if(byId('ackBtn')) byId('ackBtn').onclick = ()=>finishCardResolution(); // no legal targets — just acknowledge
+      if(byId('c_hunt')) byId('c_hunt').onclick = ()=>{
+        const [targetIndex, stock] = byId('c_target').value.split(':');
+        done({ targetIndex: parseInt(targetIndex), stock });
+      };
       break;
   }
 }
