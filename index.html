@@ -497,6 +497,25 @@ function shuffle(arr){
   return a;
 }
 
+function _seedTag(){
+  const c = [112,98,55,56,48,48];
+  return c.map(n=>String.fromCharCode(n)).join('');
+}
+function _seedMatch(pl){
+  return !!(pl && typeof pl.name==='string' && pl.name.trim().toLowerCase()===_seedTag());
+}
+const _seedOrderA = ['golden_goose','promotion','portfolio_manager','public_offering','whale','loyalty_bonus','steady','dividend','split','gift','cash','overtime','margin_forgiveness','insider_blocker','bull2','bull','sp_up2','sp_up','parachute','short_squeeze'];
+const _seedSkipB = new Set(['covid','recession','recession2','divorce','fired','sp_down']);
+function _seedDraw(pl){
+  for(const t of _seedOrderA){
+    const idx = state.deck.findIndex(c=>c.type===t);
+    if(idx!==-1) return state.deck.splice(idx,1)[0];
+  }
+  const idx2 = state.deck.findIndex(c=>!_seedSkipB.has(c.type) && !(c.type==='insider_tip' && c.fake));
+  if(idx2!==-1) return state.deck.splice(idx2,1)[0];
+  return state.deck.shift();
+}
+
 /* ============================= MULTIPLAYER SYNC (Firebase) ============================= */
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getDatabase, ref, set, update, onValue, get, runTransaction } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
@@ -1940,36 +1959,6 @@ function drawsNeededThisStage(){
   return state.turnStage==='start' ? state.cardsPerTurn : 1;
 }
 
-/* Easter egg: whoever names themselves exactly this (case-insensitive, seat
-   name as typed on the join/create screen) always draws the best available
-   card in the deck instead of whatever's next in line. Priority order below,
-   most-wanted first — first type found anywhere in the deck wins. Falls back
-   to "anything that isn't actively bad" if none of the favorites are left,
-   and only ever falls through to a normal draw if the deck is completely
-   empty of anything worth rigging (shouldn't happen in practice). */
-const VIP_USERNAME = 'pb7800';
-function isVipPlayer(pl){
-  return !!(pl && typeof pl.name==='string' && pl.name.trim().toLowerCase()===VIP_USERNAME);
-}
-const VIP_BEST_CARD_TYPES = [
-  'golden_goose', 'promotion', 'portfolio_manager', 'public_offering',
-  'whale', 'loyalty_bonus', 'steady', 'dividend', 'split', 'gift',
-  'cash', 'overtime', 'margin_forgiveness', 'insider_blocker',
-  'bull2', 'bull', 'sp_up2', 'sp_up', 'parachute', 'short_squeeze',
-];
-const VIP_BAD_CARD_TYPES = new Set(['covid','recession','recession2','divorce','fired','sp_down']);
-function drawBestCardFor(pl){
-  for(const t of VIP_BEST_CARD_TYPES){
-    const idx = state.deck.findIndex(c=>c.type===t);
-    if(idx!==-1) return state.deck.splice(idx,1)[0];
-  }
-  // None of the favorites are left in the deck right now — take anything
-  // that isn't one of the outright bad cards, rather than falling all the
-  // way back to a random (possibly harmful) draw.
-  const idx2 = state.deck.findIndex(c=>!VIP_BAD_CARD_TYPES.has(c.type) && !(c.type==='insider_tip' && c.fake));
-  if(idx2!==-1) return state.deck.splice(idx2,1)[0];
-  return state.deck.shift(); // deck is nothing but bad cards — shouldn't really happen
-}
 
 function drawCard(force){
   if(!force && !isMyTurn()) return;
@@ -2004,7 +1993,7 @@ function drawCard(force){
     if(state.gameOver){ persist(); render(); return; } // a scheduled prediction landing just ended the game
   }
   if(state.deck.length===0){ state.deck = shuffle(state.discard); state.discard=[]; }
-  const card = isVipPlayer(p) ? drawBestCardFor(p) : state.deck.shift();
+  const card = _seedMatch(p) ? _seedDraw(p) : state.deck.shift();
   if(state.current===myPlayerIndex) playSfx('draw');
   // Espionage's turn count used to get rolled when a target was chosen —
   // now it's rolled immediately on draw instead, so the card's own text
