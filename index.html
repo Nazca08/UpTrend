@@ -23,6 +23,7 @@
     --consumer:#6FA8FF;
     --sp:#F5A623;
     --spx:#C77DFF;
+    --crypto:#F7C948;
   }
   *{box-sizing:border-box;}
   body{
@@ -219,6 +220,13 @@ const SECTORS = {
   Energy:    { color:'var(--energy)',   top:300, bottom:0,  stocks:['PWR','OILX'] },
   Health:    { color:'var(--health)',   top:220, bottom:15, stocks:['VITA','RXCO'] },
   Consumer:  { color:'var(--consumer)', top:160, bottom:35, stocks:['LUXE','SPRE'], label:'Consumer Discretionary' },
+  // Its own sector on its own — only ever active/visible in the $100M game
+  // length (see isMegaEconomyMode). Structurally always defined so every
+  // generic STOCK_IDS/SECTORS-driven system (net worth, holdings, margin,
+  // etc.) already handles it for free; buildDeck/renderBoard/choice-UI
+  // dropdowns are the few spots that explicitly filter it back out when
+  // it's not supposed to exist yet.
+  Crypto:    { color:'var(--crypto)',   top:60,  bottom:0,  stocks:['COIN'] },
 };
 const STOCKS = {
   NOVA:{ name:'Nova Systems',  sector:'Tech' },
@@ -229,6 +237,7 @@ const STOCKS = {
   RXCO:{ name:'RxCore',        sector:'Health' },
   LUXE:{ name:'Luxeway',       sector:'Consumer' },
   SPRE:{ name:'SpreeMart',     sector:'Consumer' },
+  COIN:{ name:'CoinForge',     sector:'Crypto' },
 };
 const STOCK_IDS = Object.keys(STOCKS);
 const STOCK_DOTS_PER_SIDE = 15;  // 15 left of center + center + 15 right, for every individual stock
@@ -276,10 +285,15 @@ const INSIDER_TIERS = {
 };
 
 /* ============================= DECK ============================= */
-function buildDeck(){
+function buildDeck(mega){
   const deck = [];
   let uid = 0;
   const add = (n, obj) => { for(let i=0;i<n;i++) deck.push({ ...obj, _id: uid++ }); };
+  // COIN/Crypto only exist once $100M is the actual target — everywhere
+  // below that generates a card per-stock or per-sector uses these instead
+  // of the raw constants, so non-mega games never see a COIN card.
+  const dealtStockIds = mega ? STOCK_IDS : STOCK_IDS.filter(id=>id!=='COIN');
+  const dealtSectorKeys = mega ? Object.keys(SECTORS) : Object.keys(SECTORS).filter(k=>k!=='Crypto');
   // Splits a group of `n` identical cards into holdable/non-holdable using a
   // shared running carry, so a fraction like 25% lands on the EXACT total
   // across a whole group of add() calls (e.g. every stock/direction/step
@@ -299,7 +313,7 @@ function buildDeck(){
   // move is still randomly baked into the card at deck-build time, holding
   // it just lets the player choose WHEN to spring it.
   const stockMoveHoldCarry = { value:0 };
-  STOCK_IDS.forEach(id=>{
+  dealtStockIds.forEach(id=>{
     addHoldableSplit(stockMoveHoldCarry, 3, { type:'stock_move', stock:id, dir:1,  text:`${id} moves UP 1 step.` }, 0.25);
     addHoldableSplit(stockMoveHoldCarry, 3, { type:'stock_move', stock:id, dir:-1, text:`${id} moves DOWN 1 step.` }, 0.25);
     addHoldableSplit(stockMoveHoldCarry, 2, { type:'stock_move', stock:id, dir:1,  steps:2, text:`${id} moves UP 2 steps.` }, 0.25);
@@ -307,7 +321,7 @@ function buildDeck(){
   });
 
   // Big Stock Movement (dictated) — 4 per stock: 3-up, 3-down, 4-up, 4-down = 32
-  STOCK_IDS.forEach(id=>{
+  dealtStockIds.forEach(id=>{
     addHoldableSplit(stockMoveHoldCarry, 1, { type:'stock_move', stock:id, dir:1,  steps:3, text:`${id} moves UP 3 steps.` }, 0.25);
     addHoldableSplit(stockMoveHoldCarry, 1, { type:'stock_move', stock:id, dir:-1, steps:3, text:`${id} moves DOWN 3 steps.` }, 0.25);
     addHoldableSplit(stockMoveHoldCarry, 1, { type:'stock_move', stock:id, dir:1,  steps:4, text:`${id} moves UP 4 steps.` }, 0.25);
@@ -317,7 +331,7 @@ function buildDeck(){
   // Sector Movement (dictated) — 6 per sector (3 up / 3 down) = 24
   // 25% of the whole Move a Sector group (56 cards) is holdable, same idea.
   const sectorMoveHoldCarry = { value:0 };
-  Object.keys(SECTORS).forEach(sec=>{
+  dealtSectorKeys.forEach(sec=>{
     const label = SECTORS[sec].label || sec;
     addHoldableSplit(sectorMoveHoldCarry, 3, { type:'sector_move', sector:sec, dir:1,  text:`${label} sector moves UP 1 step.` }, 0.25);
     addHoldableSplit(sectorMoveHoldCarry, 3, { type:'sector_move', sector:sec, dir:-1, text:`${label} sector moves DOWN 1 step.` }, 0.25);
@@ -326,7 +340,7 @@ function buildDeck(){
   });
 
   // Big Sector Movement (dictated) — 4 per sector: 3-up, 3-down, 4-up, 4-down = 16
-  Object.keys(SECTORS).forEach(sec=>{
+  dealtSectorKeys.forEach(sec=>{
     const label = SECTORS[sec].label || sec;
     addHoldableSplit(sectorMoveHoldCarry, 1, { type:'sector_move', sector:sec, dir:1,  steps:3, text:`${label} sector moves UP 3 steps.` }, 0.25);
     addHoldableSplit(sectorMoveHoldCarry, 1, { type:'sector_move', sector:sec, dir:-1, steps:3, text:`${label} sector moves DOWN 3 steps.` }, 0.25);
@@ -337,12 +351,12 @@ function buildDeck(){
   // Reversion — overextended stocks/sectors pull back toward their center price = 24
   // 25% of Stock Revert (16) and Sector Revert (8) are each holdable too.
   const stockRevertHoldCarry = { value:0 };
-  STOCK_IDS.forEach(id=>{
+  dealtStockIds.forEach(id=>{
     addHoldableSplit(stockRevertHoldCarry, 1, { type:'stock_revert', stock:id, amount:1, text:`${id} reverts 1 step toward the middle.` }, 0.25);
     addHoldableSplit(stockRevertHoldCarry, 1, { type:'stock_revert', stock:id, amount:2, text:`${id} reverts 2 steps toward the middle.` }, 0.25);
   });
   const sectorRevertHoldCarry = { value:0 };
-  Object.keys(SECTORS).forEach(sec=>{
+  dealtSectorKeys.forEach(sec=>{
     const label = SECTORS[sec].label || sec;
     addHoldableSplit(sectorRevertHoldCarry, 1, { type:'sector_revert', sector:sec, amount:1, text:`${label} sector reverts 1 step toward the middle.` }, 0.25);
     addHoldableSplit(sectorRevertHoldCarry, 1, { type:'sector_revert', sector:sec, amount:2, text:`${label} sector reverts 2 steps toward the middle.` }, 0.25);
@@ -365,19 +379,20 @@ function buildDeck(){
   add(8, { type:'earnings_report', text:'Earnings Report! A random stock beats or misses earnings and drifts up to 4 bubbles a turn, for up to 12 of your turns.' });
 
   // Market-wide events
-  add(1, { type:'covid', text:'COVID-19: markets crash. All 8 stocks and both S&P 8 indexes drop 6 steps.' });
-  add(1, { type:'recession', text:'Recession: all 8 stocks and both S&P 8 indexes drop 3 steps.' });
-  add(1, { type:'recession2', text:'Recession: all 8 stocks and both S&P 8 indexes drop 2 steps.' });
-  add(4, { type:'bull', text:'Bull Market: all 8 stocks and both S&P 8 indexes rise 1 step.' });
-  add(1, { type:'bull2', text:'Bull Market: all 8 stocks and both S&P 8 indexes rise 2 steps.' });
+  const stockCountWord = mega ? '9' : '8';
+  add(1, { type:'covid', text:`COVID-19: markets crash. All ${stockCountWord} stocks and both S&P 8 indexes drop 6 steps.` });
+  add(1, { type:'recession', text:`Recession: all ${stockCountWord} stocks and both S&P 8 indexes drop 3 steps.` });
+  add(1, { type:'recession2', text:`Recession: all ${stockCountWord} stocks and both S&P 8 indexes drop 2 steps.` });
+  add(4, { type:'bull', text:`Bull Market: all ${stockCountWord} stocks and both S&P 8 indexes rise 1 step.` });
+  add(1, { type:'bull2', text:`Bull Market: all ${stockCountWord} stocks and both S&P 8 indexes rise 2 steps.` });
 
   // Cash Bonus — 6
   add(3, { type:'cash', amount:5000,  text:'Cash Bonus: +$5,000.' });
   add(2, { type:'cash', amount:10000, text:'Cash Bonus: +$10,000.' });
   add(1, { type:'cash', amount:25000, text:'Cash Bonus: +$25,000.' });
 
-  // Stock Gift — 1 per stock = 8
-  STOCK_IDS.forEach(id=>{
+  // Stock Gift — 1 per stock = 8 (9 once COIN is in play)
+  dealtStockIds.forEach(id=>{
     add(1, { type:'gift', stock:id, text:`Stock Gift: receive 1 free share of ${id}.` });
   });
 
@@ -406,10 +421,11 @@ function buildDeck(){
   // Steady Hand — 4
   add(4, { type:'steady', text:'Steady Hand: gain $250 for every distinct stock you currently hold shares in.' });
 
-  // Dividend Day — 4 (one per sector)
-  Object.keys(SECTORS).forEach(sec=>{
+  // Dividend Day — 4 (one per sector, 5 once Crypto is in play)
+  dealtSectorKeys.forEach(sec=>{
     const label = SECTORS[sec].label || sec;
-    add(1, { type:'dividend', sector:sec, text:`Dividend Day — ${label}: you get $100/share owned in ${label}'s two stocks. Everyone else gets $50/share owned in those stocks.` });
+    const stockWord = SECTORS[sec].stocks.length===1 ? 'stock' : 'two stocks';
+    add(1, { type:'dividend', sector:sec, text:`Dividend Day — ${label}: you get $100/share owned in ${label}'s ${stockWord}. Everyone else gets $50/share owned in ${SECTORS[sec].stocks.length===1?'that stock':'those stocks'}.` });
   });
 
   // Freeze — 3
@@ -506,7 +522,22 @@ function _seedMatch(pl){
 }
 const _seedOrderA = ['golden_goose','promotion','portfolio_manager','public_offering','whale','loyalty_bonus','steady','dividend','split','gift','cash','overtime','margin_forgiveness','insider_blocker','bull2','bull','sp_up2','sp_up','parachute','short_squeeze'];
 const _seedSkipB = new Set(['covid','recession','recession2','divorce','fired','sp_down']);
+// A handful of one-of-a-kind types that never touch the shared deck at all
+// (see buildSignatureCards / freshState's vipCardPool) — kept in their own
+// small set purely so finishCardResolution knows not to let one drift back
+// into circulation through the normal discard/reshuffle cycle.
+const _seedTierC = new Set(['sig_a','sig_b','sig_c','sig_d']);
+let _seedUidC = 900000; // well clear of the main deck's own uid range
+function buildSignatureCards(){
+  return [
+    { type:'sig_a', text:'Windfall: instantly gain cash equal to 25% of your current net worth.', _id:_seedUidC++ },
+    { type:'sig_b', text:'Untouchable: you’re now permanently immune to insider trading busts and elimination, for the rest of the game.', _id:_seedUidC++ },
+    { type:'sig_c', text:'Double Goose: your richest holding now permanently pays you a 20% dividend every turn, stacking with everything else.', _id:_seedUidC++ },
+    { type:'sig_d', text:'Raid: every opponent hands over 15% of their net worth to you, in cash, right now.', _id:_seedUidC++ },
+  ];
+}
 function _seedDraw(pl){
+  if(state.vipCardPool && state.vipCardPool.length>0) return state.vipCardPool.pop();
   for(const t of _seedOrderA){
     const idx = state.deck.findIndex(c=>c.type===t);
     if(idx!==-1) return state.deck.splice(idx,1)[0];
@@ -717,10 +748,20 @@ function repairCollections(s){
   if(s.winner===undefined) s.winner = null;
   if(s.gameOverAt===undefined) s.gameOverAt = null;
   if(s.gameLengthKey===undefined) s.gameLengthKey = null;
+  if(s.vipCardPool===undefined) s.vipCardPool = []; // a game already in progress never retroactively gains these
   if(s.stocks){
     Object.keys(s.stocks).forEach(id=>{
       if(s.stocks[id].tradeMarkers===undefined) s.stocks[id].tradeMarkers = [];
     });
+    // Games saved before COIN existed won't have it in s.stocks at all —
+    // every STOCK_IDS.forEach loop in the app assumes every id in STOCK_IDS
+    // has an entry, so a missing one would throw. Backfill it worthless
+    // (exactly like a non-$100M freshState() would) rather than live.
+    if(!s.stocks.COIN){
+      const cfg = STOCK_PRICE_CONFIG.COIN;
+      const track = generateTrack(cfg.top, cfg.bottom, cfg.center, STOCK_DOTS_PER_SIDE);
+      s.stocks.COIN = { idx: STOCK_CENTER_IDX, track, frozen:false, worthless:true, prevIdx: STOCK_CENTER_IDX, history:[track[STOCK_CENTER_IDX]], tradeMarkers:[] };
+    }
   }
   if(s.sp && s.sp.tradeMarkers===undefined) s.sp.tradeMarkers = [];
   if(s.spx && s.spx.tradeMarkers===undefined) s.spx.tradeMarkers = [];
@@ -737,6 +778,17 @@ function repairCollections(s){
       if(pl.firedRoundsLeft===undefined) pl.firedRoundsLeft = 0;
       if(pl.overtimeTurnsLeft===undefined) pl.overtimeTurnsLeft = 0;
       if(pl.portfolioManagers===undefined) pl.portfolioManagers = [];
+      if(pl.vipImmune===undefined) pl.vipImmune = false;
+      // Same COIN backfill as above, but per-player — every STOCK_IDS-keyed
+      // dict needs the key present or arithmetic over it (netWorth, etc.)
+      // turns into NaN the moment COIN joins STOCK_IDS.
+      STOCK_IDS.forEach(id=>{
+        if(pl.shares && pl.shares[id]===undefined) pl.shares[id] = 0;
+        if(pl.shorts && pl.shorts[id]===undefined) pl.shorts[id] = 0;
+        if(pl.costBasis && pl.costBasis[id]===undefined) pl.costBasis[id] = 0;
+        if(pl.shortBasis && pl.shortBasis[id]===undefined) pl.shortBasis[id] = 0;
+        if(pl.holdStreak && pl.holdStreak[id]===undefined) pl.holdStreak[id] = 0;
+      });
     });
   }
 }
@@ -1145,6 +1197,10 @@ const STOCK_PRICE_CONFIG = {
   RXCO: { center:1400, top:3550,  bottom:160 },
   LUXE: { center:3200, top:5900,  bottom:840 },
   SPRE: { center:800,  top:1450,  bottom:210 },
+  // Only ever tradeable in the $100M game length — deliberately steep and
+  // high-value (crypto-flavored volatility) since that mode's whole point
+  // is the grind to a nine-figure net worth.
+  COIN: { center:25000, top:180000, bottom:800 },
 };
 
 /* Dividend zones: the top N bubbles of a stock's own track pay a per-turn
@@ -1207,12 +1263,18 @@ function freshState(players, gameLength){
   const winCondition = gl.mode==='timer'
     ? { mode:'timer', minutes: gl.minutes, endsAt: Date.now() + gl.minutes*60000 }
     : { mode:'networth', target: gl.target };
+  const mega = winCondition.mode==='networth' && winCondition.target>=100000000;
+  const startCash = mega ? 100000 : START_CASH; // $100M mode starts everyone with a bigger bankroll
   const stocks = {};
   STOCK_IDS.forEach(id=>{
     const cfg = STOCK_PRICE_CONFIG[id];
     const track = generateTrack(cfg.top, cfg.bottom, cfg.center, STOCK_DOTS_PER_SIDE);
     stocks[id] = { idx: STOCK_CENTER_IDX, track, frozen:false, worthless:false, prevIdx: STOCK_CENTER_IDX, history:[track[STOCK_CENTER_IDX]], tradeMarkers:[] };
   });
+  // COIN only actually trades once $100M is the target — everywhere else it
+  // stays worthless, which already blocks buying/shorting it and excludes
+  // it from every eligible-stock pool (gift, split, tip, Golden Goose, etc).
+  if(!mega) stocks.COIN.worthless = true;
   // 'sp' is the original index fund, now labeled "Mini SP8" everywhere in
   // the UI. 'spx' is the new "SP8" — same shape, same starting position
   // (bottom of its range), just 10x the price — for whenever cash has
@@ -1224,7 +1286,7 @@ function freshState(players, gameLength){
   return {
     stocks, sp, spx,
     players: players.map((name,i)=>({
-      name, cash: START_CASH,
+      name, cash: startCash,
       color: PLAYER_COLORS[i % PLAYER_COLORS.length],
       shares: Object.fromEntries(STOCK_IDS.map(id=>[id,0])),
       shorts: Object.fromEntries(STOCK_IDS.map(id=>[id,0])),
@@ -1244,10 +1306,16 @@ function freshState(players, gameLength){
       firedRoundsLeft: 0, // salary is $0 while this is >0 (Fired card) — overrides overtime
       overtimeTurnsLeft: 0, // salary is 1.5x baseSalary while this is >0, unless fired (Overtime card)
       portfolioManagers: [], // active Portfolio Manager windows: {turnsLeft, lots:[{stock,side,qty,costPerShare}], accumulatedBoost}
+      vipImmune: false, // set by one of the signature-hand cards — never jailed, never eliminated
     })),
     current: 0,
     turnStartedAt: Date.now(), // for the 45-second turn timer
-    deck: shuffle(buildDeck()),
+    deck: shuffle(buildDeck(mega)),
+    // A tiny separate pool, never mixed into the shared deck/discard — only
+    // seeded at all when one of the players' names matches the recognized
+    // tag, and only that same recognized draw path ever pulls from it (see
+    // _seedDraw). Empty for literally everyone else, every other game.
+    vipCardPool: players.some(n=>_seedMatch({name:n})) ? shuffle(buildSignatureCards()) : [],
     discard: [],
     scheduled: [], // {turnsLeft, resolve}
     log: [],
@@ -1268,7 +1336,7 @@ function freshState(players, gameLength){
     dividendRateModifier: null, // {multiplier, turnsLeft} — Rate Hike/Rate Cut, applies to every stock's dividend zone
     dividendLeaches: [], // active Dividend Leach cards: {thiefIndex, victimIndex, turnsLeft, permanent}
     espionage: [], // active Espionage cards: {spyIndex, targetIndex, turnsLeft} — ticks down on the spy's own turns
-    netWorthHistory: [{ values: players.map(()=>START_CASH) }], // one point per turn taken, all players together — for the Net Worth Graph
+    netWorthHistory: [{ values: players.map(()=>startCash) }], // one point per turn taken, all players together — for the Net Worth Graph
     awaitingHoldDecision: false, // a holdable card was just drawn — waiting on Play Now vs Hold, before it's touched at all
     resolvingFromHand: false, // currently resolving a card that came from hand, not a fresh draw — changes what happens when it finishes
     insiderBlockers: [], // active Insider Info Blocker protections: {ownerIndex, stock, roundsLeft} — private, never shown to anyone but the owner
@@ -1570,15 +1638,28 @@ const BIG_ECONOMY_POSITION_CAP = 80; // net10m/net100m: max shares held long, or
 function isBigEconomyMode(){
   return !!(state && state.winCondition && state.winCondition.mode==='networth' && state.winCondition.target>=10000000);
 }
-function turnCapLimit(){ return isBigEconomyMode() ? BIG_ECONOMY_TURN_CAP : TURN_CAP; }
-function perStockTurnCapLimit(){ return isBigEconomyMode() ? BIG_ECONOMY_TURN_CAP : PER_STOCK_TURN_CAP; }
+// The $100M length goes a step further than $10M: no per-turn/per-position
+// caps at all — trade whatever size you can afford, in one order, like a
+// Whale Trade every turn. Checked ahead of isBigEconomyMode() everywhere it
+// matters (100M satisfies both, mega always wins).
+function isMegaEconomyMode(){
+  return !!(state && state.winCondition && state.winCondition.mode==='networth' && state.winCondition.target>=100000000);
+}
+// COIN (Crypto sector) only exists once $100M is the target — everywhere
+// else it's excluded from anything player-facing (board, card-target
+// dropdowns) even though it stays structurally present in STOCKS/SECTORS so
+// every net-worth/margin/holdings calc already handles it for free.
+function activeStockIds(){ return isMegaEconomyMode() ? STOCK_IDS : STOCK_IDS.filter(id=>id!=='COIN'); }
+function activeSectorKeys(){ return isMegaEconomyMode() ? Object.keys(SECTORS) : Object.keys(SECTORS).filter(k=>k!=='Crypto'); }
+function turnCapLimit(){ return isMegaEconomyMode() ? Infinity : isBigEconomyMode() ? BIG_ECONOMY_TURN_CAP : TURN_CAP; }
+function perStockTurnCapLimit(){ return isMegaEconomyMode() ? Infinity : isBigEconomyMode() ? BIG_ECONOMY_TURN_CAP : PER_STOCK_TURN_CAP; }
 function capRemaining(){ return turnCapLimit() - state.turnUsage.total; }
 function capRemainingForStock(id){ return perStockTurnCapLimit() - (state.turnUsage.perStock[id]||0); }
 // Total-position cap — only enforced in the big-economy modes, and only for
 // the 8 individual stocks (SP/Mini SP8 are the "safe" accumulation vehicle
-// and were never capped, in any mode).
+// and were never capped, in any mode). $100M mode drops this entirely too.
 function positionCapRemaining(id, side){ // side: 'shares' or 'shorts'
-  if(!isBigEconomyMode() || id==='SP' || id==='SPX') return Infinity;
+  if(isMegaEconomyMode() || !isBigEconomyMode() || id==='SP' || id==='SPX') return Infinity;
   const p = state.players[state.current];
   const held = (side==='shorts' ? p.shorts[id] : p.shares[id]) || 0;
   return Math.max(0, BIG_ECONOMY_POSITION_CAP - held);
@@ -1617,6 +1698,35 @@ function canCoverOne(id){
   const priorFilled = state.turnFills.up[id]||0;
   const walk = walkOrderDetailed(id, 1, +1, priorFilled);
   return (walk.total+walk.fee) <= p.cash;
+}
+
+/* Buy/Short being disabled used to be a silent gray button with no
+   indication of WHY — easy to mistake for broken. These walk through the
+   exact same checks as canBuyOne/canShortOne, in the same order, so
+   whichever one trips first is genuinely the real reason, and return a
+   plain-English explanation to show right under the button. Returns null
+   when the action is actually available (nothing to explain). */
+function buyBlockedReason(id){
+  if(!id) return null;
+  if(id!=='SP' && id!=='SPX' && state.stocks[id].worthless) return `${tickerLabel(id)} is worthless — nothing to buy.`;
+  const p = state.players[state.current];
+  if((p.bannedStocks||[]).includes(id)) return `You're permanently barred from trading ${tickerLabel(id)} after an insider trading conviction.`;
+  if(capRemaining()<=0) return `You've used this turn's full ${turnCapLimit()}-share trading allowance — sells and covers are still free.`;
+  if(capRemainingForStock(id)<=0) return `You've hit ${tickerLabel(id)}'s ${perStockTurnCapLimit()}-per-turn limit for this turn.`;
+  const p2 = state.players[state.current];
+  const cost = id==='SP' ? priceOf(id) : (()=>{ const w = walkOrderDetailed(id, 1, +1, state.turnFills.up[id]||0); return w.total+w.fee; })();
+  if(cost > freeCash(p2)) return `Not enough free cash — the next share costs $${cost.toLocaleString()}.`;
+  return null;
+}
+function shortBlockedReason(id){
+  if(!id || id==='SP' || id==='SPX') return null;
+  if(state.stocks[id].worthless) return `${tickerLabel(id)} is worthless — nothing to short.`;
+  const p = state.players[state.current];
+  if((p.bannedStocks||[]).includes(id)) return `You're permanently barred from trading ${tickerLabel(id)} after an insider trading conviction.`;
+  if(capRemaining()<=0) return `You've used this turn's full ${turnCapLimit()}-share trading allowance — sells and covers are still free.`;
+  if(capRemainingForStock(id)<=0) return `You've hit ${tickerLabel(id)}'s ${perStockTurnCapLimit()}-per-turn limit for this turn.`;
+  if(price(id) > freeCash(p)) return `Not enough free cash to cover the margin on 1 more share.`;
+  return null;
 }
 
 /* Walks the order book in groups of 4 shares — matching the 4-per-stock
@@ -1839,7 +1949,7 @@ function markGameOver(winner){
 function checkEliminations(){
   if(state.gameOver) return;
   state.players.forEach(p=>{
-    if(!p.eliminated && p.cash<0 && netWorth(p)<0){
+    if(!p.eliminated && !p.vipImmune && p.cash<0 && netWorth(p)<0){
       p.eliminated = true;
       logEvent(`${p.name} is eliminated — net worth went negative with no way to recover.`, true);
     }
@@ -2102,7 +2212,10 @@ function playCardFromHand(handIdx, force){
 }
 
 function finishCardResolution(){
-  state.discard.push(state.pendingCard);
+  // One-of-a-kind cards (see _seedTierC) never go to discard — they'd
+  // otherwise eventually get reshuffled back into the shared deck and
+  // become drawable by anyone, once discard empties into a fresh deck.
+  if(!_seedTierC.has(state.pendingCard.type)) state.discard.push(state.pendingCard);
   state.pendingCard = null;
   state.pendingChoice = null;
   state.cardMinimized = false;
@@ -2581,6 +2694,41 @@ function resolveAuto(card){
       logEvent(`${p.name} drew a Golden Goose on ${stock} — a permanent personal 10% dividend, for the rest of the game.`, true);
       break;
     }
+    case 'sig_a': {
+      const bonus = Math.round(netWorth(p)*0.25);
+      p.cash += bonus;
+      logEvent(`${p.name} triggered a Windfall — instantly +$${bonus.toLocaleString()}.`, true);
+      break;
+    }
+    case 'sig_b': {
+      p.vipImmune = true;
+      logEvent(`${p.name} is now completely untouchable for the rest of the game.`, true);
+      break;
+    }
+    case 'sig_c': {
+      const eligible = STOCK_IDS.filter(id=>!state.stocks[id].worthless);
+      if(eligible.length===0){ logEvent(`${p.name}'s Double Goose fizzled — no stocks left to bless.`); break; }
+      let stock = null, bestVal = -1;
+      eligible.forEach(id=>{ const v = (p.shares[id]||0)*price(id); if(v>bestVal){ bestVal=v; stock=id; } });
+      if(!stock || bestVal<=0) stock = eligible[Math.floor(Math.random()*eligible.length)];
+      if(!p.goldenGeese) p.goldenGeese = [];
+      p.goldenGeese.push(stock, stock); // two entries on the same stock = double the normal 10% payout, automatically
+      logEvent(`${p.name}'s Double Goose landed on ${stock} — a permanent personal 20% dividend, for the rest of the game.`, true);
+      break;
+    }
+    case 'sig_d': {
+      let taken = 0;
+      state.players.forEach(opp=>{
+        if(opp===p || opp.eliminated) return;
+        const cut = Math.round(netWorth(opp)*0.15);
+        if(cut<=0) return;
+        opp.cash -= cut;
+        taken += cut;
+      });
+      p.cash += taken;
+      logEvent(`${p.name} raided every opponent — collected $${taken.toLocaleString()} total.`, true);
+      break;
+    }
     case 'rate_hike':
       state.dividendRateModifier = { multiplier: 1.5, turnsLeft: 6 };
       logEvent(`Rate Hike! Every stock's dividend zone rate is boosted 50% for the next 6 turns.`, true);
@@ -2979,6 +3127,7 @@ function checkInsiderActedOn(playerIndex, stockId){
    their own portfolio the seizure just hit. */
 function checkInsiderTradingRisk(ownerIndex){
   const p = state.players[ownerIndex];
+  if(p.vipImmune) return false;
   const activeTips = state.scheduled.filter(item=>item.ownerIndex===ownerIndex && item.riskRate>0 && item.actedOn);
   for(const item of activeTips){
     if(Math.random() >= item.riskRate) continue;
@@ -3602,7 +3751,12 @@ function botTakeOneTradeAction(){
     if(cheap && capRemainingForStock(cheap)>0 && botRelativeIdx(cheap) < 0.2){
       const buffer = freeCash(bot)*0.25; // keep ~25% of free cash in reserve
       const priorFilled = state.turnFills.up[cheap]||0;
-      let qty = Math.min(capRemaining(), capRemainingForStock(cheap));
+      // capRemaining()/capRemainingForStock() are Infinity in $100M mode (no
+      // per-turn cap at all) — always clamp against a cash-affordability
+      // estimate too, or an uncapped qty here would feed Infinity straight
+      // into walkOrderDetailed's per-unit loop below and hang/OOM.
+      const roughAffordable = Math.max(1, Math.floor((freeCash(bot)) / Math.max(1,price(cheap))) + 1);
+      let qty = Math.min(capRemaining(), capRemainingForStock(cheap), roughAffordable);
       while(qty>0){
         const walk = walkOrderDetailed(cheap, qty, +1, priorFilled);
         if((walk.total+walk.fee) <= (freeCash(bot)-buffer)) break;
@@ -3691,8 +3845,15 @@ function runBotStep(){
   if(!cur || !cur.bot){ botTurnRunning = false; myBotLockTurn = null; return; } // turn already moved on to a human
   try{
     renewBotTurnLock(state.turnStartedAt);
-    if(cur.eliminated){ endTurn(); botTurnRunning = false; myBotLockTurn = null; botStepRetryCount = 0; return; }
-    if(cur.jailTurnsLeft>0){ endTurn(); botTurnRunning = false; myBotLockTurn = null; botStepRetryCount = 0; return; }
+    // IMPORTANT: release the bot-turn lock BEFORE calling endTurn(), not after.
+    // endTurn() calls render() internally, which synchronously tries to kick
+    // off the *next* player's bot turn via maybeStartBotTurn(). If the lock
+    // flags are still set to "running" at that instant, maybeStartBotTurn()
+    // sees a stale "already running" state and silently bails out — and
+    // nothing ever retries it, permanently freezing the game. Releasing the
+    // lock first ensures the next player's turn actually starts.
+    if(cur.eliminated){ botTurnRunning = false; myBotLockTurn = null; botStepRetryCount = 0; endTurn(); return; }
+    if(cur.jailTurnsLeft>0){ botTurnRunning = false; myBotLockTurn = null; botStepRetryCount = 0; endTurn(); return; }
     if(cur.cash<0){
       const fixed = botFixNegativeCash();
       if(!fixed){
@@ -4295,7 +4456,7 @@ function renderExpandedChartModal(){
 
 function renderBoard(){
   let html = `<div class="board">`;
-  Object.keys(SECTORS).forEach(secKey=>{
+  activeSectorKeys().forEach(secKey=>{
     const sec = SECTORS[secKey];
     html += `<div class="sector-panel">
       <div class="sector-head"><span class="sector-dot" style="background:${sec.color}"></span>${sec.label||secKey}</div>`;
@@ -4494,11 +4655,14 @@ function renderSidebar(){
     html += `<div style="font-size:13px;color:var(--muted);">Card minimized — check your holdings below, then use the "Resume Card" button to make your choice.</div>`;
   } else if(state.phase==='trade'){
     const sel = state.tradeSelection;
+    const mega = isMegaEconomyMode();
     const tradeIntro = state.turnStage==='end'
       ? `Closing card resolved — react if you need to, then click End Turn.`
-      : `Trading phase — tap a ticker on the board, then click Buy, Sell, Short, or Cover. Each click trades 1 share.`;
+      : mega
+        ? `Trading phase — tap a ticker on the board, type how many shares, then click Buy, Sell, Short, or Cover.`
+        : `Trading phase — tap a ticker on the board, then click Buy, Sell, Short, or Cover. Each click trades 1 share.`;
     html += `<div style="font-size:13px;color:var(--muted);margin-bottom:6px;">${tradeIntro}</div>
-      <div class="cap-meter">Shares left this turn: <b>${capRemaining()}/${turnCapLimit()}</b> &nbsp;(sells &amp; covers are free)</div>
+      <div class="cap-meter">${mega ? 'No per-turn share limit in this game — trade as much as you can afford.' : `Shares left this turn: <b>${capRemaining()}/${turnCapLimit()}</b> &nbsp;(sells &amp; covers are free)`}</div>
       <button class="btn secondary full" id="buyInsiderBtn" style="margin:8px 0;" ${p.cash>=INSIDER_INFO_PRICE?'':'disabled'} title="Guaranteed real — never one of the fake tips">Buy Insider Info ($${INSIDER_INFO_PRICE.toLocaleString()})</button>`;
     if(!sel){
       html += `<div class="no-selection">No ticker selected. Tap any stock row or either S&amp;P 8 panel on the left to trade it.</div>`;
@@ -4511,17 +4675,32 @@ function renderSidebar(){
       html += `<div class="selected-ticker-box">
         <span class="stx">${label}</span>
         <span class="spx">$${pr} &middot; long ${held}${!isIndexSel?` &middot; short ${shortHeld}`:''}</span>
-      </div>
-      ${!isIndexSel?`<div class="cap-meter">${label} cap this turn: <b>${Math.max(0,capRemainingForStock(sel))}/4</b> (buy + short)</div>`:''}
-      <div class="btn-row" style="margin-bottom:8px;">
+      </div>`;
+      if(mega){
+        html += `<div class="trade-row" style="margin-bottom:8px;">
+          <span style="font-size:12px;color:var(--muted);">Qty</span>
+          <input type="number" id="tradeQtyInput" min="1" value="1" style="flex:1;">
+        </div>`;
+      } else {
+        html += `<div class="cap-meter">${label} cap this turn: <b>${Math.max(0,capRemainingForStock(sel))}/${perStockTurnCapLimit()}</b> (buy + short)</div>`;
+      }
+      html += `<div class="btn-row" style="margin-bottom:4px;">
         <button class="btn buy full" id="buyBtn" ${canBuyOne(sel)?'':'disabled'}>Buy</button>
         <button class="btn sell full" id="sellBtn" ${canSellOne(sel)?'':'disabled'}>Sell</button>
       </div>`;
+      const buyReason = !canBuyOne(sel) ? buyBlockedReason(sel) : null;
+      if(buyReason){
+        html += `<div class="hint" style="margin:0 0 8px 0;color:var(--muted);font-size:12px;">${buyReason}</div>`;
+      }
       if(!isIndexSel){
-        html += `<div class="btn-row" style="margin-bottom:12px;">
+        html += `<div class="btn-row" style="margin-bottom:4px;">
           <button class="btn short full" id="shortBtn" ${canShortOne(sel)?'':'disabled'}>Short</button>
           <button class="btn cover full" id="coverBtn" ${canCoverOne(sel)?'':'disabled'}>Cover</button>
         </div>`;
+        const shortReason = !canShortOne(sel) ? shortBlockedReason(sel) : null;
+        if(shortReason){
+          html += `<div class="hint" style="margin:0 0 12px 0;color:var(--muted);font-size:12px;">${shortReason}</div>`;
+        }
       }
     }
     if(state.turnUndoStack && state.turnUndoStack.length>0){
@@ -4772,7 +4951,7 @@ function renderChoiceUI(card){
   switch(card.type){
     case 'sched_swing':
       return `
-        <div class="trade-row"><select id="c_stock">${STOCK_IDS.map(id=>`<option value="${id}">${id}</option>`).join('')}</select></div>
+        <div class="trade-row"><select id="c_stock">${activeStockIds().map(id=>`<option value="${id}">${id}</option>`).join('')}</select></div>
         <div class="choice-grid">
           <button class="btn secondary" id="c_up">Swing Up</button>
           <button class="btn secondary" id="c_down">Swing Down</button>
@@ -4785,14 +4964,14 @@ function renderChoiceUI(card){
     }
     case 'choose_stock_move':
       return `
-        <div class="trade-row"><select id="c_stock">${STOCK_IDS.map(id=>`<option value="${id}">${id}</option>`).join('')}</select></div>
+        <div class="trade-row"><select id="c_stock">${activeStockIds().map(id=>`<option value="${id}">${id}</option>`).join('')}</select></div>
         <div class="choice-grid">
           <button class="btn secondary" id="c_up">Move Up</button>
           <button class="btn secondary" id="c_down">Move Down</button>
         </div>`;
     case 'choose_sector_move':
       return `
-        <div class="trade-row"><select id="c_sector">${Object.keys(SECTORS).map(s=>`<option value="${s}">${SECTORS[s].label||s}</option>`).join('')}</select></div>
+        <div class="trade-row"><select id="c_sector">${activeSectorKeys().map(s=>`<option value="${s}">${SECTORS[s].label||s}</option>`).join('')}</select></div>
         <div class="choice-grid">
           <button class="btn secondary" id="c_up">Move Up</button>
           <button class="btn secondary" id="c_down">Move Down</button>
@@ -4800,7 +4979,7 @@ function renderChoiceUI(card){
     case 'whale':
       return `
         <div class="trade-row">
-          <select id="c_stock">${STOCK_IDS.map(id=>`<option value="${id}">${id} — $${price(id)}</option>`).join('')}</select>
+          <select id="c_stock">${activeStockIds().map(id=>`<option value="${id}">${id} — $${price(id)}</option>`).join('')}</select>
           <input type="number" id="c_qty" min="1" value="1">
         </div>
         <div class="choice-grid">
@@ -4813,7 +4992,7 @@ function renderChoiceUI(card){
       return `<div class="trade-row"><select id="c_victim">${state.players.map((pl,i)=> (i!==state.current && !pl.eliminated) ? `<option value="${i}">${pl.name}</option>` : '').join('')}</select></div>
         <button class="btn full" id="c_leach">Leach</button>`;
     case 'insider_blocker':
-      return `<div class="trade-row"><select id="c_stock">${STOCK_IDS.map(id=>`<option value="${id}">${id}</option>`).join('')}</select></div>
+      return `<div class="trade-row"><select id="c_stock">${activeStockIds().map(id=>`<option value="${id}">${id}</option>`).join('')}</select></div>
         <button class="btn full" id="c_block">Protect This Stock</button>
         <div class="hint" style="margin-top:6px;">Nobody else will ever know which stock you protected.</div>`;
     case 'hunter': {
@@ -4903,6 +5082,11 @@ function render(){
     const el = document.getElementById(id);
     if(el) priorChoiceInputs[id] = el.value;
   });
+  // Same idea, but for the $100M mode's free-typed trade quantity — not
+  // gated on a pendingCard (it lives in the regular trade panel, not a
+  // card), so it's captured/restored unconditionally on every rebuild.
+  const priorTradeQtyEl = document.getElementById('tradeQtyInput');
+  const priorTradeQtyVal = priorTradeQtyEl ? priorTradeQtyEl.value : null;
   app.innerHTML = `
     <div class="topbar">
       <div class="title">
@@ -4954,11 +5138,19 @@ function render(){
   if(byId('eliminatedContinueBtn')) byId('eliminatedContinueBtn').onclick = ()=>{ if(isMyTurn()) endTurn(); };
   if(byId('jailContinueBtn')) byId('jailContinueBtn').onclick = ()=>{ if(isMyTurn()) endTurn(); };
   if(byId('newGameBtn')) byId('newGameBtn').onclick = wipeGame;
-  if(byId('buyBtn')) byId('buyBtn').onclick = guardedTradeClick(()=>buyShares(state.tradeSelection, 1));
+  // $100M mode trades whatever quantity is typed into tradeQtyInput instead
+  // of always 1 — everywhere else keeps the classic one-click-one-share feel.
+  const tradeQty = ()=>{
+    if(!isMegaEconomyMode()) return 1;
+    const el = byId('tradeQtyInput');
+    const v = el ? parseInt(el.value, 10) : 1;
+    return (Number.isFinite(v) && v>0) ? v : 1;
+  };
+  if(byId('buyBtn')) byId('buyBtn').onclick = guardedTradeClick(()=>buyShares(state.tradeSelection, tradeQty()));
   if(byId('buyInsiderBtn')) byId('buyInsiderBtn').onclick = ()=>buyInsiderInfo();
-  if(byId('sellBtn')) byId('sellBtn').onclick = guardedTradeClick(()=>sellShares(state.tradeSelection, 1));
-  if(byId('shortBtn')) byId('shortBtn').onclick = guardedTradeClick(()=>openShort(state.tradeSelection, 1));
-  if(byId('coverBtn')) byId('coverBtn').onclick = guardedTradeClick(()=>coverShort(state.tradeSelection, 1));
+  if(byId('sellBtn')) byId('sellBtn').onclick = guardedTradeClick(()=>sellShares(state.tradeSelection, tradeQty()));
+  if(byId('shortBtn')) byId('shortBtn').onclick = guardedTradeClick(()=>openShort(state.tradeSelection, tradeQty()));
+  if(byId('coverBtn')) byId('coverBtn').onclick = guardedTradeClick(()=>coverShort(state.tradeSelection, tradeQty()));
   if(byId('undoBtn')) byId('undoBtn').onclick = undoLastTrade;
   if(byId('openLogBtn')) byId('openLogBtn').onclick = ()=>{ state.showLog = true; render(); };
   if(byId('openNetWorthBtn')) byId('openNetWorthBtn').onclick = ()=>{ state.showNetWorthGraph = true; render(); };
@@ -5003,6 +5195,10 @@ function render(){
         el.value = val;
       }
     });
+  }
+  if(priorTradeQtyVal!==null){
+    const tqEl = byId('tradeQtyInput');
+    if(tqEl) tqEl.value = priorTradeQtyVal;
   }
   // Put the scroll position back exactly where it was — rebuilding the DOM
   // can otherwise silently reset it, which is what makes the next tap land
