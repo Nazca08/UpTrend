@@ -188,6 +188,64 @@
     50%{box-shadow:0 0 18px rgba(255,92,92,0.35);}
   }
 
+  /* Fixed bottom-left so it never collides with the audio controls fixed at
+     bottom-right, and stays out of the normal document flow entirely — it
+     can never crowd or resize the board/sidebar layout, it just floats on
+     top of whatever's already there. */
+  .chat-toggle-btn{
+    position:fixed;left:14px;bottom:14px;z-index:400;
+    width:50px;height:50px;border-radius:50%;border:1px solid var(--line);
+    background:var(--panel-2);color:var(--text);font-size:20px;cursor:pointer;
+    display:flex;align-items:center;justify-content:center;
+    box-shadow:0 6px 18px rgba(0,0,0,0.45);transition:transform .1s, filter .1s;
+  }
+  .chat-toggle-btn:hover{filter:brightness(1.15);}
+  .chat-toggle-btn:active{transform:scale(0.95);}
+  .chat-unread-badge{
+    position:absolute;top:-4px;right:-4px;min-width:18px;height:18px;padding:0 4px;
+    border-radius:9px;background:var(--down);color:#fff;font-size:10px;font-weight:700;
+    font-family:'IBM Plex Mono';display:flex;align-items:center;justify-content:center;
+    border:2px solid var(--bg);
+  }
+  .chat-panel{
+    position:fixed;left:14px;bottom:14px;z-index:400;
+    width:320px;max-width:calc(100vw - 28px);max-height:min(460px, calc(100vh - 28px));
+    background:#151A24;border:1px solid var(--line);border-radius:14px;
+    display:flex;flex-direction:column;overflow:hidden;
+    box-shadow:0 10px 30px rgba(0,0,0,0.5);
+  }
+  .chat-panel-head{
+    display:flex;align-items:center;justify-content:space-between;
+    padding:10px 12px;font-size:13px;font-weight:600;
+    border-bottom:1px solid var(--line);background:var(--panel-2);flex-shrink:0;
+  }
+  .chat-close-btn{
+    background:none;border:none;color:var(--muted);font-size:14px;cursor:pointer;
+    padding:2px 4px;line-height:1;
+  }
+  .chat-close-btn:hover{color:var(--text);}
+  .chat-panel-body{
+    flex:1;min-height:120px;max-height:320px;overflow-y:auto;
+    padding:10px 12px;display:flex;flex-direction:column;gap:6px;
+  }
+  .chat-empty{font-size:12px;color:var(--muted);line-height:1.5;padding:8px 2px;}
+  .chat-msg{font-size:13px;line-height:1.4;word-break:break-word;}
+  .chat-msg-name{font-weight:600;}
+  .chat-msg-text{color:var(--text);}
+  .chat-market-line{
+    font-size:11.5px;color:var(--muted);line-height:1.4;padding:3px 6px;
+    background:var(--panel-2);border-radius:6px;border-left:2px solid var(--line);
+  }
+  .chat-market-line.event{border-left-color:var(--amber);color:var(--text);}
+  .chat-panel-input-row{
+    display:flex;gap:6px;padding:10px 12px;border-top:1px solid var(--line);
+    background:var(--panel-2);flex-shrink:0;
+  }
+  .chat-panel-input-row input{
+    flex:1;padding:8px 10px;border-radius:8px;background:var(--panel);
+    border:1px solid var(--line);color:var(--text);font-family:'Inter';font-size:13px;
+  }
+
   .holdings-table{width:100%;border-collapse:collapse;font-size:12px;font-family:'IBM Plex Mono';}
   .holdings-table th{text-align:left;color:var(--muted);font-weight:500;padding:4px 0;border-bottom:1px solid var(--line);}
   .holdings-table td{padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.03);}
@@ -589,12 +647,13 @@ function clearLocalRoom(){ try{ localStorage.removeItem(LS_KEY); }catch(e){} }
 
 // Fields that live only in THIS browser tab and are never written to Firebase
 // or overwritten by a remote update — pure UI state, not real game state.
-const LOCAL_ONLY_KEYS = ['tradeSelection','turnUndoStack','confirmEndTurn','confirmRestart','expandedChart','showLog','showNetWorthGraph','cardMinimized'];
+const LOCAL_ONLY_KEYS = ['tradeSelection','turnUndoStack','confirmEndTurn','confirmRestart','expandedChart','showLog','showNetWorthGraph','cardMinimized','chatOpen','chatLastSeenSeq'];
 
 function localDefaults(){
   return {
     tradeSelection: null, turnUndoStack: [], confirmEndTurn: false,
     confirmRestart: false, expandedChart: null, showLog: false, showNetWorthGraph: false, cardMinimized: false,
+    chatOpen: false, chatLastSeenSeq: 0,
   };
 }
 
@@ -740,6 +799,8 @@ function repairCollections(s){
   if(s.insiderBlockers===undefined) s.insiderBlockers = [];
   if(s.netWorthHistory===undefined) s.netWorthHistory = [{ values: s.players ? s.players.map(p=>netWorth(p)) : [] }];
   if(s.log===undefined) s.log = [];
+  if(s.chat===undefined) s.chat = []; // older saves never had table chat — start empty, not missing
+  if(s.eventSeq===undefined) s.eventSeq = s.log.length; // best-effort baseline so new chat/log entries still sort after everything already on the board
   if(s.turnUsage===undefined) s.turnUsage = { total:0, perStock:{} };
   if(s.turnUsage.perStock===undefined) s.turnUsage.perStock = {};
   if(s.turnFills===undefined) s.turnFills = { up:{}, down:{} };
@@ -751,6 +812,11 @@ function repairCollections(s){
   if(s.winner===undefined) s.winner = null;
   if(s.gameOverAt===undefined) s.gameOverAt = null;
   if(s.gameLengthKey===undefined) s.gameLengthKey = null;
+  // Old saves predate the activity-based AFK timer — seed it as "just now"
+  // rather than falling back to turnStartedAt (which could be arbitrarily
+  // old for a resumed game), so nobody gets force-advanced the instant an
+  // old save reloads.
+  if(s.lastActivityAt===undefined) s.lastActivityAt = Date.now();
   if(s.vipCardPool===undefined) s.vipCardPool = []; // a game already in progress never retroactively gains these
   if(s.stocks){
     Object.keys(s.stocks).forEach(id=>{
@@ -768,7 +834,15 @@ function repairCollections(s){
       if(pl.jailTurnsLeft===undefined) pl.jailTurnsLeft = 0;
       if(pl.bannedStocks===undefined) pl.bannedStocks = [];
       if(pl.hand===undefined) pl.hand = [];
-      if(pl.baseSalary===undefined) pl.baseSalary = 0;
+      // The old baseSalary field (a frozen dollar bonus) is retired — salary
+      // multipliers are now live percentages/flags recomputed off the
+      // player's CURRENT rank every turn (see liveSalaryFor). There's no
+      // sound way to reverse-engineer an old frozen dollar figure back into
+      // "how much of this was promotion vs. marriage," so a save from
+      // before this change just starts both back at their defaults rather
+      // than carrying over a number that no longer means anything.
+      if(pl.promotionBumpPct===undefined) pl.promotionBumpPct = 0;
+      if(pl.married===undefined) pl.married = false;
       if(pl.firedRoundsLeft===undefined) pl.firedRoundsLeft = 0;
       if(pl.overtimeTurnsLeft===undefined) pl.overtimeTurnsLeft = 0;
       if(pl.portfolioManagers===undefined) pl.portfolioManagers = [];
@@ -1312,15 +1386,17 @@ function freshState(players, gameLength){
       jailTurnsLeft: 0, // caught insider trading — this many of the player's own turns are fully skipped
       bannedStocks: [], // stock ids this player can never buy or short again, after being caught trading on a tip in them
       hand: [], // held cards — drawn but not yet resolved, playable at any point during this player's own trade phase
-      baseSalary: 0, // permanent BONUS on top of the rank-tier salary — raised by Promotion, set in one shot by Marriage
+      promotionBumpPct: 0, // permanent % bump to the live rank-tier salary, accumulates across multiple Promotion cards — see liveSalaryFor
+      married: false, // one-time flag from the Marriage card — doubles the live salary forever, doesn't stack, ends if Divorce ever actually hits you
       salaryTurnCount: 0, // 0 = hasn't collected yet — that first collection is a flat $4,000, tiers start on the 2nd
       firedRoundsLeft: 0, // salary is $0 while this is >0 (Fired card) — overrides overtime
-      overtimeTurnsLeft: 0, // salary (tier + baseSalary) is 1.5x while this is >0, unless fired (Overtime card)
+      overtimeTurnsLeft: 0, // salary is 1.5x while this is >0, unless fired (Overtime card) — see liveSalaryFor
       portfolioManagers: [], // active Portfolio Manager windows: {turnsLeft, lots:[{stock,side,qty,costPerShare}], accumulatedBoost}
       vipImmune: false, // set by one of the signature-hand cards — never jailed, never eliminated
     })),
     current: 0,
-    turnStartedAt: Date.now(), // for the 45-second turn timer
+    turnStartedAt: Date.now(), // turn identity — used to key the bot-turn/timeout locks, never mutated mid-turn
+    lastActivityAt: Date.now(), // resets on every real action this player takes — see touchActivity(); this, not turnStartedAt, is what the AFK timer actually measures
     deck: shuffle(buildDeck()),
     // A tiny separate pool, never mixed into the shared deck/discard — only
     // seeded at all when one of the players' names matches the recognized
@@ -1330,6 +1406,8 @@ function freshState(players, gameLength){
     discard: [],
     scheduled: [], // {turnsLeft, resolve}
     log: [],
+    chat: [], // table talk between players — {seq, name, color, text, ts}
+    eventSeq: 0, // monotonic counter stamped on every log entry AND chat message, so the two can be merged into one true chronological feed in the chat widget
     phase: 'draw', // draw -> choice -> trade
     pendingCard: null,
     pendingChoice: null,
@@ -1352,6 +1430,8 @@ function freshState(players, gameLength){
     resolvingFromHand: false, // currently resolving a card that came from hand, not a fresh draw — changes what happens when it finishes
     insiderBlockers: [], // active Insider Info Blocker protections: {ownerIndex, stock, roundsLeft} — private, never shown to anyone but the owner
     showLog: false,
+    chatOpen: false, // local-only — each device's chat panel opens/closes independently, never synced
+    chatLastSeenSeq: 0, // local-only — highest chat seq this device has actually looked at, drives the unread badge
     cardMinimized: false,
     choiceError: null,
     cardsPerTurn: 1, // exactly one draw to open the turn, and one more to close it
@@ -1362,11 +1442,35 @@ function freshState(players, gameLength){
 
 function isMyTurn(){ return state && myPlayerIndex!==null && myPlayerIndex===state.current; }
 
-const TURN_TIME_LIMIT = 120; // seconds — 2 minutes; enforced by the timeout-enforcement logic below once it expires
+const TURN_TIME_LIMIT = 120; // seconds — 2 minutes of INACTIVITY; enforced by the timeout-enforcement logic below once it expires
+/* Measured from lastActivityAt, not turnStartedAt — this is what actually
+   makes it an AFK timer instead of a hard cap on how long a turn is allowed
+   to take. It used to be turn-start-based, which meant a player who was
+   still genuinely, actively trading (lots of holdings to manage, cards to
+   weigh — exactly the kind of turn that gets more common later in a game)
+   could get their whole turn silently force-ended out from under them the
+   moment 2 minutes had passed since it BEGAN, with no credit for the fact
+   that they'd been clicking the whole time. Once that happened, state.
+   current had already moved on to the next player, so every further click
+   on their now-stale Buy/Short buttons (buyShares/openShort both bail out
+   immediately on isMyTurn()===false) silently did nothing — looking
+   exactly like "the buttons don't work," and never recovering on its own
+   because nothing was actually broken from that player's point of view
+   until their NEXT turn ran into the same 2-minute wall. See touchActivity(). */
 function turnTimerSecondsLeft(){
-  if(!state || !state.turnStartedAt || state.gameOver) return TURN_TIME_LIMIT;
-  const elapsed = Math.floor((Date.now()-state.turnStartedAt)/1000);
+  if(!state || state.gameOver) return TURN_TIME_LIMIT;
+  const basis = state.lastActivityAt || state.turnStartedAt;
+  if(!basis) return TURN_TIME_LIMIT;
+  const elapsed = Math.floor((Date.now()-basis)/1000);
   return Math.max(0, TURN_TIME_LIMIT-elapsed);
+}
+/* Called from every function that represents the CURRENT player actually
+   doing something on their own turn (drawing, trading, resolving a card
+   choice, ending it) — resets the AFK clock so the 2-minute timeout only
+   ever fires against genuine inactivity, never against someone who's still
+   visibly, actively playing. */
+function touchActivity(){
+  if(state) state.lastActivityAt = Date.now();
 }
 function formatTurnTimer(secs){
   const m = Math.floor(secs/60), s = secs%60;
@@ -1835,8 +1939,48 @@ function checkMarginCalls(){
 
 const MAX_LOG_ENTRIES = 150;
 function logEvent(text, isEvent){
-  state.log.push({ text, event: !!isEvent });
+  if(state.eventSeq===undefined) state.eventSeq = 0;
+  // Every log entry gets a stamped sequence number shared with chat
+  // messages (see sendChatMessage) — that's what lets the chat widget
+  // interleave "Bot 2 bought 3 NOVA" between two people's actual messages
+  // in true chronological order, instead of two separate unrelated lists.
+  state.log.push({ text, event: !!isEvent, seq: ++state.eventSeq });
   if(state.log.length > MAX_LOG_ENTRIES) state.log = state.log.slice(-MAX_LOG_ENTRIES);
+}
+const MAX_CHAT_ENTRIES = 200;
+/* Table chat — separate from the market log but stamped with the same
+   eventSeq counter, so the two can be merged into one true chronological
+   feed (see chatFeedEntries). Only actual seated players can post (not bare
+   spectators with no seat); eliminated players can still talk, they're just
+   done trading. */
+function sendChatMessage(raw){
+  if(!state || myPlayerIndex===null || myPlayerIndex===-1) return;
+  const p = state.players[myPlayerIndex];
+  if(!p) return;
+  const text = String(raw||'').trim().slice(0, 240);
+  if(!text) return;
+  if(state.eventSeq===undefined) state.eventSeq = 0;
+  if(state.chat===undefined) state.chat = [];
+  state.chat.push({ seq: ++state.eventSeq, name: p.name, color: p.color, text, ts: Date.now() });
+  if(state.chat.length > MAX_CHAT_ENTRIES) state.chat = state.chat.slice(-MAX_CHAT_ENTRIES);
+  state.chatLastSeenSeq = state.eventSeq; // sending a message obviously means you've seen everything up to it
+  persist();
+  render();
+}
+function escapeHtml(str){
+  return String(str)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+/* Merges recent market-log entries and chat messages into one feed sorted
+   by their shared eventSeq counter — true chronological order, not two
+   separate lists bolted together. Capped generously on each side before the
+   merge so a long-running game's full history doesn't get rebuilt into a
+   giant array on every single render(). */
+function chatFeedEntries(){
+  const marketEntries = (state.log||[]).slice(-40).map(l=>({ seq:l.seq||0, kind:'market', text:l.text, event:!!l.event }));
+  const chatEntries = (state.chat||[]).map(c=>({ seq:c.seq||0, kind:'chat', name:c.name, color:c.color, text:c.text }));
+  return marketEntries.concat(chatEntries).sort((a,b)=>a.seq-b.seq).slice(-70);
 }
 
 function moveStock(id, dir, respectFreeze){
@@ -2070,6 +2214,16 @@ function drawsNeededThisStage(){
 
 function drawCard(force){
   if(!force && !isMyTurn()) return;
+  // Guards against ever drawing more than one card per legitimate draw slot.
+  // Without this, a duplicate/"ghost" click or touch event (the same class
+  // of double-fire the guardedTradeClick cooldown below exists to catch —
+  // two synthetic events landing from a single physical tap before the
+  // re-render replaces the button) could call drawCard() twice back to
+  // back: the first call already flips state.phase to 'resolve', so the
+  // second call must bail out here rather than silently drawing (and
+  // discarding progress toward) a second card on top of it.
+  if(state.phase!=='draw') return;
+  touchActivity();
   const p = state.players[state.current];
   if(p.eliminated) return;
   if(p.jailTurnsLeft>0) return; // serving time — see the jail Action panel/Continue button instead
@@ -2149,6 +2303,7 @@ function drawCard(force){
    with no error and no state change, which is a real freeze this fixes. */
 function playCardNowFromDraw(force){
   if(!state.pendingCard || !state.awaitingHoldDecision || (!force && !isMyTurn())) return;
+  touchActivity();
   state.awaitingHoldDecision = false;
   if(!needsChoice(state.pendingCard)) resolveAuto(state.pendingCard);
   persist(); render();
@@ -2160,6 +2315,7 @@ function playCardNowFromDraw(force){
    card's effect or sending it to the discard pile. */
 function holdCurrentCard(force){
   if(!state.pendingCard || !state.awaitingHoldDecision || (!force && !isMyTurn())) return;
+  touchActivity();
   const p = state.players[state.current];
   // force is only ever meant to let bot automation act on a BOT's own turn
   // (see runBotStep) — this is never legitimately used for a human's turn,
@@ -2193,6 +2349,7 @@ function holdCurrentCard(force){
    instead of trying to advance the turn the way a real draw would. */
 function playCardFromHand(handIdx, force){
   if((!force && !isMyTurn()) || state.phase!=='trade' || state.gameOver) return;
+  touchActivity();
   const p = state.players[state.current];
   // Same safety net as holdCurrentCard: force is exclusively for bot
   // automation playing its OWN hand (see botTryPlayHeldCard) — it must
@@ -2377,6 +2534,25 @@ function tierSalaryFor(p){
   const idx = Math.min(salaryRankOf(p), RANK_SALARY_TIERS.length) - 1;
   return RANK_SALARY_TIERS[Math.max(0, idx)];
 }
+/* Every salary modifier is a MULTIPLIER (or percentage bump) recomputed
+   live off the player's CURRENT rank tier, never a dollar amount frozen at
+   the moment the card was drawn. That's deliberate: a player who married
+   into a $16,000 salary while dead last shouldn't still be collecting
+   $16,000+ once they've climbed to 1st place and their tier salary has
+   dropped to $2,000 — every bonus should track wherever their salary
+   actually sits right now, forever, not lock in a one-time snapshot.
+   Stacking order: promotion bump applies to the live tier salary first,
+   marriage doubles THAT (a spouse matching your current pay, not your pay
+   the day you got married), and overtime's 1.5x is the last multiplier on
+   top of the whole thing — so an overtime turn boosts whatever you'd
+   otherwise be earning right now, not some stale number from before. */
+function liveSalaryFor(p, overrideBase){
+  const base = overrideBase!==undefined ? overrideBase : tierSalaryFor(p);
+  const withPromotion = Math.round(base * (1 + (p.promotionBumpPct||0)));
+  const withMarriage = p.married ? withPromotion * 2 : withPromotion;
+  const withOvertime = p.overtimeTurnsLeft>0 ? Math.round(withMarriage*1.5) : withMarriage;
+  return withOvertime;
+}
 /* Runs once at the start of each player's own turn: pays salary, every open
    short pays a flat 1% carrying fee on its current liability, and any stock
    currently sitting in its dividend zone pays longs the zone's full rate —
@@ -2390,16 +2566,16 @@ function tickShortFeesAndDividends(ownerIndex){
 
   // Salary — a flat, unconditional payment straight from the bank, every
   // one of your own turns, regardless of holdings or performance. Base
-  // amount comes from the rank tier above; baseSalary is now a permanent
-  // BONUS on top of that (raised by Promotion, or set in one shot by
-  // Marriage) rather than the whole salary itself. Fired overrides
-  // everything else (no pay, no overtime, even if both are somehow active
-  // at once); otherwise Overtime pays 1.5x the combined total.
+  // amount comes from the rank tier above; promotionBumpPct/married/
+  // overtimeTurnsLeft all modify it live, every single turn — see
+  // liveSalaryFor. Fired overrides everything else (no pay, no overtime,
+  // even if both are somehow active at once).
   //
   // Ranking by net worth is meaningless on a player's very first turn —
   // everyone's still sitting on identical starting cash, so "rank" would
   // just be an arbitrary tie-break, not anything they actually earned. That
-  // first collection is a flat $4,000 for everybody; real rank-based tiers
+  // first collection is a flat $4,000 base for everybody (still subject to
+  // any promotion/marriage/overtime already active); real rank-based tiers
   // only kick in starting with each player's second turn onward.
   if(p.salaryTurnCount===undefined) p.salaryTurnCount = 0;
   const isFirstSalaryTurn = p.salaryTurnCount===0;
@@ -2411,10 +2587,7 @@ function tickShortFeesAndDividends(ownerIndex){
     // Rank captured ONCE, before p.cash is touched, and reused for both the
     // payout and the log line below — see the comment above salaryRankOf.
     const rank = salaryRankOf(p);
-    const idx = Math.min(rank, RANK_SALARY_TIERS.length) - 1;
-    const tierAmount = isFirstSalaryTurn ? 4000 : RANK_SALARY_TIERS[Math.max(0, idx)];
-    const combined = tierAmount + (p.baseSalary||0);
-    const salary = p.overtimeTurnsLeft>0 ? Math.round(combined*1.5) : combined;
+    const salary = isFirstSalaryTurn ? liveSalaryFor(p, 4000) : liveSalaryFor(p);
     p.cash += salary;
     logEvent(`${p.name} collected their $${salary.toLocaleString()} salary${p.overtimeTurnsLeft>0?' (overtime)':''} (${isFirstSalaryTurn?'starting salary':`rank #${rank}`}).`);
     if(p.overtimeTurnsLeft>0){
@@ -2893,8 +3066,13 @@ function resolveAuto(card){
       });
       if(p.spShares>0){ const nq=Math.floor(p.spShares/2); p.spCostBasis=(p.spCostBasis||0)*(nq/p.spShares); p.spShares=nq; }
       if(p.spxShares>0){ const nq=Math.floor(p.spxShares/2); p.spxCostBasis=(p.spxCostBasis||0)*(nq/p.spxShares); p.spxShares=nq; }
-      card.text = `Divorce: you're in 1st place, so cash and every holding got cut in half.`;
-      logEvent(`${p.name} was in first place and went through a Divorce — cash and every holding got cut in half.`, true);
+      // A real divorce ends the marriage, not just the joint bank account —
+      // the salary-doubling perk from the Marriage card goes with it, so it
+      // can't be used to keep an inflated salary forever after the split.
+      const wasMarried = p.married;
+      p.married = false;
+      card.text = `Divorce: you're in 1st place, so cash and every holding got cut in half${wasMarried?', and your marriage salary bonus is gone':''}.`;
+      logEvent(`${p.name} was in first place and went through a Divorce — cash and every holding got cut in half${wasMarried?', marriage salary bonus ended':''}.`, true);
       break;
     }
     case 'portfolio_manager': {
@@ -2928,10 +3106,14 @@ function resolveAuto(card){
       break;
     }
     case 'promotion': {
-      const raise = Math.round((1000 + Math.random()*5000)/100)*100; // $1,000-$6,000, nearest $100
-      p.baseSalary += raise;
-      card.text = `Promotion! Your salary permanently goes up $${raise.toLocaleString()}/turn.`;
-      logEvent(`${p.name} got a Promotion — salary up $${raise.toLocaleString()}/turn for good, now $${(tierSalaryFor(p)+p.baseSalary).toLocaleString()}/turn.`, true);
+      // A permanent PERCENTAGE bump to the live rank-tier salary, not a
+      // frozen dollar raise — so it scales with whatever tier the player is
+      // actually in on any given turn, same as marriage/overtime. Multiple
+      // promotions stack additively (two +15% promotions = +30% total).
+      const bumpPct = Math.round((10 + Math.random()*20)/5)*5; // 10%-30%, nearest 5%
+      p.promotionBumpPct = (p.promotionBumpPct||0) + bumpPct/100;
+      card.text = `Promotion! Your salary permanently goes up ${bumpPct}%.`;
+      logEvent(`${p.name} got a Promotion — salary up ${bumpPct}% for good, now $${liveSalaryFor(p).toLocaleString()}/turn.`, true);
       break;
     }
     case 'fired': {
@@ -2949,14 +3131,20 @@ function resolveAuto(card){
       break;
     }
     case 'marriage': {
-      // Doubles whatever salary the player had the instant this was drawn —
-      // a one-time snapshot added permanently to baseSalary, not a dynamic
-      // 2x multiplier. If their rank tier changes later, only that tier
-      // component moves; this locked-in bonus stays exactly what it was.
-      const currentSalary = tierSalaryFor(p) + (p.baseSalary||0);
-      p.baseSalary += currentSalary;
-      card.text = `Marriage! Your salary permanently doubles — +$${currentSalary.toLocaleString()}/turn, locked in for good.`;
-      logEvent(`${p.name} got married — salary permanently doubled, now $${(tierSalaryFor(p)+p.baseSalary).toLocaleString()}/turn.`, true);
+      // A live 2x multiplier on whatever the player's salary actually is on
+      // any given turn — not a dollar amount snapshotted at draw time. Rank
+      // tiers move around as net worth changes; this multiplier moves right
+      // along with it, forever. Doesn't stack — you can only get married
+      // once, so drawing a second Marriage card while already married is a
+      // no-op (it still gets discarded like any other resolved card).
+      if(p.married){
+        card.text = `Marriage: you're already married — can't double an already-doubled salary. No effect.`;
+        logEvent(`${p.name} drew Marriage, but they're already married — no effect.`);
+        break;
+      }
+      p.married = true;
+      card.text = `Marriage! Your salary permanently doubles, no matter how your rank changes later.`;
+      logEvent(`${p.name} got married — salary permanently doubled, now $${liveSalaryFor(p).toLocaleString()}/turn.`, true);
       break;
     }
     case 'short_squeeze': {
@@ -3014,6 +3202,7 @@ function huntableGeese(){
 
 /* choice resolvers, called from UI */
 function resolveChoice(card, choice){
+  touchActivity();
   const p = state.players[state.current];
   state.choiceError = null;
   switch(card.type){
@@ -3137,6 +3326,7 @@ function pushUndoSnapshot(){
 }
 function undoLastTrade(){
   if(!isMyTurn() || !state.turnUndoStack || state.turnUndoStack.length===0) return;
+  touchActivity();
   const snap = state.turnUndoStack.pop();
   state.stocks = snap.stocks; state.sp = snap.sp; state.spx = snap.spx; state.players = snap.players;
   state.turnUsage = snap.turnUsage; state.turnFills = snap.turnFills;
@@ -3237,6 +3427,7 @@ function trackPortfolioManagerClose(p, id, side, qty, closePricePerShare){
 
 function buyShares(id, qtyRequested, force){
   if((!force && !isMyTurn()) || !id || state.gameOver) return;
+  touchActivity();
   if(id!=='SP' && id!=='SPX' && state.stocks[id].worthless) return;
   const p = state.players[state.current];
   if(force && !p.bot) return; // force-bypass is bot automation only — never lets anything trade on a human's behalf
@@ -3276,6 +3467,7 @@ function buyShares(id, qtyRequested, force){
 
 function sellShares(id, qtyRequested, force){
   if((!force && !isMyTurn()) || !id || state.gameOver) return;
+  touchActivity();
   const p = state.players[state.current];
   if(force && !p.bot) return; // force-bypass is bot automation only — never lets anything trade on a human's behalf
   const held = id==='SP' ? p.spShares : id==='SPX' ? p.spxShares : p.shares[id];
@@ -3305,6 +3497,7 @@ function sellShares(id, qtyRequested, force){
 
 function openShort(id, qtyRequested, force){
   if((!force && !isMyTurn()) || !id || id==='SP' || id==='SPX' || state.gameOver) return; // neither index fund can be shorted
+  touchActivity();
   if(state.stocks[id].worthless) return;
   const p = state.players[state.current];
   if(force && !p.bot) return; // force-bypass is bot automation only — never lets anything trade on a human's behalf
@@ -3335,6 +3528,7 @@ function openShort(id, qtyRequested, force){
 
 function coverShort(id, qtyRequested, force){
   if((!force && !isMyTurn()) || !id || state.gameOver) return;
+  touchActivity();
   const p = state.players[state.current];
   if(force && !p.bot) return; // force-bypass is bot automation only — never lets anything trade on a human's behalf
   const held = p.shorts[id]||0;
@@ -3373,6 +3567,7 @@ function endTurn(){
   state.current = next;
   if(next===myPlayerIndex) playSfx('turn');
   state.turnStartedAt = Date.now();
+  state.lastActivityAt = Date.now(); // fresh AFK clock for whoever's turn this now is
   state.phase = 'draw';
   state.turnStage = 'start';
   state.tradeSelection = null;
@@ -3411,6 +3606,7 @@ function paySP8Dividend(){
    already been seen and resolved, the same button actually ends the turn. */
 function requestEndTurn(){
   if(!isMyTurn()) return;
+  touchActivity();
   if(!state.gameOver && capRemaining()>0){
     state.confirmEndTurn = true;
     render();
@@ -3420,6 +3616,7 @@ function requestEndTurn(){
 }
 
 function proceedPastTrade(){
+  touchActivity();
   state.confirmEndTurn = false;
   if(state.turnStage==='start'){
     beginClosingDraw();
@@ -4801,9 +4998,12 @@ function renderSidebar(){
     if(me.firedRoundsLeft>0) perkBadges.push(`💼 Fired — no salary for ${me.firedRoundsLeft} more round${me.firedRoundsLeft===1?'':'s'}`);
     else if(me.overtimeTurnsLeft>0) perkBadges.push(`💰 Overtime — 1.5x salary for ${me.overtimeTurnsLeft} more turn${me.overtimeTurnsLeft===1?'':'s'}`);
     if(!me.salaryTurnCount){
-      perkBadges.push(`📈 Salary: $4,000/turn (starting salary — rank-based tiers begin your 2nd turn)`);
+      perkBadges.push(`📈 Salary: $${liveSalaryFor(me,4000).toLocaleString()}/turn (starting salary — rank-based tiers begin your 2nd turn)`);
     } else {
-      perkBadges.push(`📈 Salary: $${(tierSalaryFor(me)+(me.baseSalary||0)).toLocaleString()}/turn (rank #${salaryRankOf(me)}${me.baseSalary>0?`, +$${me.baseSalary.toLocaleString()} permanent bonus`:''})`);
+      const salaryMods = [];
+      if(me.promotionBumpPct>0) salaryMods.push(`+${Math.round(me.promotionBumpPct*100)}% promoted`);
+      if(me.married) salaryMods.push('married ×2');
+      perkBadges.push(`📈 Salary: $${liveSalaryFor(me).toLocaleString()}/turn (rank #${salaryRankOf(me)}${salaryMods.length?', '+salaryMods.join(', '):''})`);
     }
     (me.portfolioManagers||[]).forEach(pm=>{
       perkBadges.push(`📊 Portfolio Manager — ${pm.turnsLeft} turn${pm.turnsLeft===1?'':'s'} left (+$${Math.round(pm.accumulatedBoost||0).toLocaleString()} banked)`);
@@ -4904,6 +5104,39 @@ function renderLogModal(){
         ${state.log.slice().reverse().map(l=>`<div class="log-entry ${l.event?'event':''}">${l.text}</div>`).join('')}
       </div>
       <button class="btn full" id="closeLogBtn" style="margin-top:14px;">Close</button>
+    </div>
+  </div>`;
+}
+
+/* Floating table-chat widget — deliberately NOT part of .layout, so it can
+   never push around or crowd the board/sidebar grid. Collapsed by default
+   to a small round button in the corner; expands into a compact panel that
+   overlays on top of everything else instead of claiming permanent space.
+   The feed inside merges real chat with recent market-log lines (see
+   chatFeedEntries) so players can talk shop without needing to also pop
+   open the separate Market Log modal. */
+function renderChatWidget(){
+  if(!state || state.phase==='lobby' || myPlayerIndex===null) return '';
+  const unreadCount = (state.chat||[]).filter(c=>c.seq > (state.chatLastSeenSeq||0)).length;
+  if(!state.chatOpen){
+    return `<button class="chat-toggle-btn" id="chatToggleBtn" title="Open table chat">
+      💬${unreadCount>0?`<span class="chat-unread-badge">${unreadCount>99?'99+':unreadCount}</span>`:''}
+    </button>`;
+  }
+  const entries = chatFeedEntries();
+  const body = entries.length ? entries.map(e=>{
+    if(e.kind==='market') return `<div class="chat-market-line${e.event?' event':''}">📊 ${e.text}</div>`;
+    return `<div class="chat-msg"><span class="chat-msg-name" style="color:${e.color};">${escapeHtml(e.name)}:</span> <span class="chat-msg-text">${escapeHtml(e.text)}</span></div>`;
+  }).join('') : `<div class="chat-empty">No messages yet — say hi, or watch market moves roll in here as they happen.</div>`;
+  return `<div class="chat-panel" id="chatPanel">
+    <div class="chat-panel-head">
+      <span>💬 Table Talk</span>
+      <button class="chat-close-btn" id="chatCloseBtn" title="Close">✕</button>
+    </div>
+    <div class="chat-panel-body" id="chatPanelBody">${body}</div>
+    <div class="chat-panel-input-row">
+      <input type="text" id="chatInput" maxlength="240" placeholder="Message the table…" autocomplete="off">
+      <button class="btn" id="chatSendBtn" style="padding:8px 12px;">Send</button>
     </div>
   </div>`;
 }
@@ -5133,6 +5366,14 @@ function render(){
     const el = document.getElementById(id);
     if(el) priorChoiceInputs[id] = el.value;
   });
+  // render() is called constantly during bot turns (every trade, every
+  // step) — without capturing this, anything typed into the chat box would
+  // get wiped out mid-sentence the instant a bot so much as bought a share.
+  const priorChatEl = document.getElementById('chatInput');
+  const priorChatValue = priorChatEl ? priorChatEl.value : '';
+  const priorChatFocused = priorChatEl && document.activeElement===priorChatEl;
+  const priorChatBodyEl = document.getElementById('chatPanelBody');
+  const priorChatWasAtBottom = !priorChatBodyEl || (priorChatBodyEl.scrollHeight - priorChatBodyEl.scrollTop - priorChatBodyEl.clientHeight < 40);
   app.innerHTML = `
     <div class="topbar">
       <div class="title">
@@ -5175,13 +5416,14 @@ function render(){
     ${renderRestartConfirm()}
     ${renderExpandedChartModal()}
     ${renderSyncFailedBanner()}
+    ${renderChatWidget()}
   `;
 
   // wire buttons
   const byId = x=>document.getElementById(x);
-  if(byId('drawBtn')) byId('drawBtn').onclick = ()=>drawCard();
+  if(byId('drawBtn')) byId('drawBtn').onclick = guardedTradeClick(()=>drawCard());
   if(byId('bankruptcyResetBtn')) byId('bankruptcyResetBtn').onclick = humanBankruptcyReset;
-  if(byId('endTurnBtn')) byId('endTurnBtn').onclick = requestEndTurn;
+  if(byId('endTurnBtn')) byId('endTurnBtn').onclick = guardedTradeClick(requestEndTurn);
   if(byId('eliminatedContinueBtn')) byId('eliminatedContinueBtn').onclick = ()=>{ if(isMyTurn()) endTurn(); };
   if(byId('jailContinueBtn')) byId('jailContinueBtn').onclick = ()=>{ if(isMyTurn()) endTurn(); };
   if(byId('newGameBtn')) byId('newGameBtn').onclick = wipeGame;
@@ -5240,6 +5482,47 @@ function render(){
   // on the wrong button right after an action. Done on the next frame so
   // it applies after the browser's own layout pass, not before it.
   requestAnimationFrame(()=>{ window.scrollTo(priorScrollX, priorScrollY); });
+
+  // --- chat widget wiring ---
+  if(byId('chatToggleBtn')) byId('chatToggleBtn').onclick = ()=>{
+    state.chatOpen = true;
+    state.chatLastSeenSeq = state.eventSeq||0; // opening it marks everything currently in the feed as read
+    render();
+  };
+  if(byId('chatCloseBtn')) byId('chatCloseBtn').onclick = ()=>{ state.chatOpen = false; render(); };
+  const chatInputEl = byId('chatInput');
+  if(chatInputEl){
+    // Restore whatever was mid-typed before this rebuild wiped the DOM out
+    // from under it — otherwise a bot acting elsewhere would erase a
+    // player's half-finished chat message.
+    if(priorChatValue) chatInputEl.value = priorChatValue;
+    if(priorChatFocused){
+      chatInputEl.focus();
+      const len = chatInputEl.value.length;
+      chatInputEl.setSelectionRange(len, len);
+    }
+    chatInputEl.onkeydown = (ev)=>{
+      if(ev.key==='Enter'){ ev.preventDefault(); sendChatMessage(chatInputEl.value); }
+    };
+  }
+  if(byId('chatSendBtn')) byId('chatSendBtn').onclick = ()=>{
+    const el = byId('chatInput');
+    if(el) sendChatMessage(el.value);
+  };
+  const chatBodyEl = byId('chatPanelBody');
+  if(chatBodyEl){
+    // Auto-scroll to the newest message — but only if the reader was
+    // already at (or near) the bottom. If they've scrolled up to read
+    // history, a new message shouldn't yank the view back down on them.
+    if(priorChatWasAtBottom){
+      requestAnimationFrame(()=>{ chatBodyEl.scrollTop = chatBodyEl.scrollHeight; });
+    }
+    // The panel is actually open and visible right now — treat its
+    // contents as read immediately rather than waiting for another open
+    // click, so the unread badge doesn't lag behind what's on screen.
+    if(state.chatLastSeenSeq !== state.eventSeq){ state.chatLastSeenSeq = state.eventSeq||0; }
+  }
+
   maybeStartBotTurn();
 }
 
