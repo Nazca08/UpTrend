@@ -773,6 +773,10 @@ function repairCollections(s){
       if(pl.overtimeTurnsLeft===undefined) pl.overtimeTurnsLeft = 0;
       if(pl.portfolioManagers===undefined) pl.portfolioManagers = [];
       if(pl.vipImmune===undefined) pl.vipImmune = false;
+      // A game already in progress has obviously had its first-turn salary
+      // already — default to 1 (already past it), not 0, so resuming an
+      // older save doesn't hand out a surprise extra flat-rate payment.
+      if(pl.salaryTurnCount===undefined) pl.salaryTurnCount = 1;
       // Defensive: every STOCK_IDS-keyed dict needs every key present, or
       // arithmetic over a missing one (netWorth, etc.) turns into NaN.
       STOCK_IDS.forEach(id=>{
@@ -1309,6 +1313,7 @@ function freshState(players, gameLength){
       bannedStocks: [], // stock ids this player can never buy or short again, after being caught trading on a tip in them
       hand: [], // held cards — drawn but not yet resolved, playable at any point during this player's own trade phase
       baseSalary: 0, // permanent BONUS on top of the rank-tier salary — raised by Promotion, set in one shot by Marriage
+      salaryTurnCount: 0, // 0 = hasn't collected yet — that first collection is a flat $4,000, tiers start on the 2nd
       firedRoundsLeft: 0, // salary is $0 while this is >0 (Fired card) — overrides overtime
       overtimeTurnsLeft: 0, // salary (tier + baseSalary) is 1.5x while this is >0, unless fired (Overtime card)
       portfolioManagers: [], // active Portfolio Manager windows: {turnsLeft, lots:[{stock,side,qty,costPerShare}], accumulatedBoost}
@@ -2350,19 +2355,28 @@ function inDividendZone(id){
   return s.idx >= s.track.length - zone.dots;
 }
 
-/* Salary is tiered by net-worth rank, not flat — a catch-up mechanic: the
-   further behind you are, the bigger your paycheck. Ranked among every
-   player still in the game (eliminated players don't take turns anyway),
-   richest to poorest; ties keep stable array order. Ranks beyond the tier
-   list (shouldn't happen — max 4 players) just clamp to the last tier. */
-const RANK_SALARY_TIERS = [2000, 4000, 6000, 8000]; // 1st, 2nd, 3rd, last
-function salaryRankOf(p){
-  const sorted = state.players.slice().sort((a,b)=> netWorth(b)-netWorth(a));
-  return sorted.indexOf(p) + 1; // 1 = highest net worth
+/* Salary is tiered by net worth as an absolute measure — a catch-up
+   mechanic: the closer you are to $0, the bigger your paycheck; the closer
+   you are to the game's win target, the smaller it gets. This is deliberately
+   NOT relative to other players — someone sitting on $400k pays the same
+   salary whether everyone else is bankrupt or a millionaire, since it's
+   measured against the fixed target, not the table. */
+const NET_WORTH_SALARY_TIERS = [
+  { minFrac: 0.75, amount: 2000 }, // at/above 75% of target
+  { minFrac: 0.50, amount: 4000 }, // 50-75%
+  { minFrac: 0.25, amount: 6000 }, // 25-50%
+  { minFrac: -Infinity, amount: 8000 }, // below 25%
+];
+function salaryTargetRef(){
+  return (state.winCondition && state.winCondition.target) || 500000;
+}
+function salaryNetWorthFrac(p){
+  return netWorth(p) / salaryTargetRef();
 }
 function tierSalaryFor(p){
-  const idx = Math.min(salaryRankOf(p), RANK_SALARY_TIERS.length) - 1;
-  return RANK_SALARY_TIERS[Math.max(0, idx)];
+  const frac = salaryNetWorthFrac(p);
+  for(const tier of NET_WORTH_SALARY_TIERS){ if(frac >= tier.minFrac) return tier.amount; }
+  return NET_WORTH_SALARY_TIERS[NET_WORTH_SALARY_TIERS.length-1].amount;
 }
 /* Runs once at the start of each player's own turn: pays salary, every open
    short pays a flat 1% carrying fee on its current liability, and any stock
@@ -2382,15 +2396,25 @@ function tickShortFeesAndDividends(ownerIndex){
   // Marriage) rather than the whole salary itself. Fired overrides
   // everything else (no pay, no overtime, even if both are somehow active
   // at once); otherwise Overtime pays 1.5x the combined total.
+  //
+  // Ranking by net worth is meaningless on a player's very first turn —
+  // everyone's still sitting on identical starting cash, so "rank" would
+  // just be an arbitrary tie-break, not anything they actually earned. That
+  // first collection is a flat $4,000 for everybody; real rank-based tiers
+  // only kick in starting with each player's second turn onward.
+  if(p.salaryTurnCount===undefined) p.salaryTurnCount = 0;
+  const isFirstSalaryTurn = p.salaryTurnCount===0;
+  p.salaryTurnCount += 1;
+
   if(p.firedRoundsLeft>0){
     logEvent(`${p.name} is out of work this turn — no salary.`);
   } else {
-    const rank = salaryRankOf(p); // captured BEFORE cash changes — the payment itself must never shift the rank it was based on
-    const tierAmount = RANK_SALARY_TIERS[Math.min(rank, RANK_SALARY_TIERS.length) - 1];
+    const tierAmount = isFirstSalaryTurn ? 4000 : tierSalaryFor(p);
     const combined = tierAmount + (p.baseSalary||0);
     const salary = p.overtimeTurnsLeft>0 ? Math.round(combined*1.5) : combined;
     p.cash += salary;
-    logEvent(`${p.name} collected their $${salary.toLocaleString()} salary${p.overtimeTurnsLeft>0?' (overtime)':''} (rank #${rank}).`);
+    const pctOfTarget = Math.round(salaryNetWorthFrac(p)*100);
+    logEvent(`${p.name} collected their $${salary.toLocaleString()} salary${p.overtimeTurnsLeft>0?' (overtime)':''} (${isFirstSalaryTurn?'starting salary':`${pctOfTarget}% of target`}).`);
     if(p.overtimeTurnsLeft>0){
       p.overtimeTurnsLeft -= 1;
       if(p.overtimeTurnsLeft===0) logEvent(`${p.name}'s overtime period has ended.`);
@@ -4774,7 +4798,11 @@ function renderSidebar(){
     if((me.bannedStocks||[]).length) perkBadges.push(`🚫 Barred from trading: ${me.bannedStocks.join(', ')}`);
     if(me.firedRoundsLeft>0) perkBadges.push(`💼 Fired — no salary for ${me.firedRoundsLeft} more round${me.firedRoundsLeft===1?'':'s'}`);
     else if(me.overtimeTurnsLeft>0) perkBadges.push(`💰 Overtime — 1.5x salary for ${me.overtimeTurnsLeft} more turn${me.overtimeTurnsLeft===1?'':'s'}`);
-    perkBadges.push(`📈 Salary: $${(tierSalaryFor(me)+(me.baseSalary||0)).toLocaleString()}/turn (rank #${salaryRankOf(me)}${me.baseSalary>0?`, +$${me.baseSalary.toLocaleString()} permanent bonus`:''})`);
+    if(!me.salaryTurnCount){
+      perkBadges.push(`📈 Salary: $4,000/turn (starting salary — rank-based tiers begin your 2nd turn)`);
+    } else {
+      perkBadges.push(`📈 Salary: $${(tierSalaryFor(me)+(me.baseSalary||0)).toLocaleString()}/turn (${Math.round(salaryNetWorthFrac(me)*100)}% of target${me.baseSalary>0?`, +$${me.baseSalary.toLocaleString()} permanent bonus`:''})`);
+    }
     (me.portfolioManagers||[]).forEach(pm=>{
       perkBadges.push(`📊 Portfolio Manager — ${pm.turnsLeft} turn${pm.turnsLeft===1?'':'s'} left (+$${Math.round(pm.accumulatedBoost||0).toLocaleString()} banked)`);
     });
