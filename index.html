@@ -282,6 +282,43 @@
   }
   .count-opt.selected{border-color:var(--amber);color:var(--amber);}
   .hint{font-size:11px;color:var(--muted);margin-top:10px;line-height:1.5;}
+
+  /* ---------- rulebook ---------- */
+  .rb-modal{max-width:860px;max-height:85vh;overflow-y:auto;}
+  .rb-section{margin-bottom:22px;}
+  .rb-section:last-child{margin-bottom:0;}
+  .rb-section h3{
+    font-size:15px;margin:0 0 8px 0;color:var(--up);display:flex;align-items:center;gap:8px;
+  }
+  .rb-section p{font-size:13px;line-height:1.6;color:var(--text);margin:0 0 8px 0;}
+  .rb-section ul{margin:0 0 8px 0;padding-left:18px;}
+  .rb-section li{font-size:13px;line-height:1.6;color:var(--text);margin-bottom:4px;}
+  .rb-subhead{
+    font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);
+    margin:16px 0 8px 0;padding-top:12px;border-top:1px solid var(--line);
+  }
+  .rb-subhead:first-child{margin-top:0;padding-top:0;border-top:none;}
+  .rb-card-grid{display:grid;grid-template-columns:1fr;gap:6px;}
+  @media (min-width:640px){.rb-card-grid{grid-template-columns:1fr 1fr;}}
+  .rb-card{
+    background:var(--panel-2);border:1px solid var(--line);border-radius:9px;padding:9px 11px;
+  }
+  .rb-card .rb-card-name{font-weight:600;font-size:12.5px;color:var(--text);margin-bottom:2px;}
+  .rb-card .rb-card-desc{font-size:12px;line-height:1.5;color:var(--muted);}
+  .rb-tag{
+    display:inline-block;font-size:9px;text-transform:uppercase;letter-spacing:0.5px;font-weight:600;
+    padding:1px 6px;border-radius:20px;margin-left:6px;vertical-align:middle;
+  }
+  .rb-tag.holdable{background:rgba(245,166,35,0.15);color:var(--amber);}
+  .rb-tag.choice{background:rgba(76,141,255,0.15);color:#7EA6FF;}
+  .rb-toc{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:18px;}
+  .rb-toc a{
+    font-size:11px;padding:5px 10px;border-radius:20px;background:var(--panel-2);
+    border:1px solid var(--line);color:var(--muted);text-decoration:none;
+  }
+  .rb-table{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:8px;}
+  .rb-table th{text-align:left;color:var(--muted);font-weight:600;padding:4px 8px 4px 0;border-bottom:1px solid var(--line);}
+  .rb-table td{padding:5px 8px 5px 0;border-bottom:1px solid var(--line);color:var(--text);}
 </style>
 </head>
 <body>
@@ -343,10 +380,12 @@ function generateTrack(top, bottom, center, dotsPerSide){
    more likely to be made up and never has any risk attached. `riskRate` is
    the per-turn chance of getting caught WHILE actively acting on that
    specific tip (see checkInsiderTradingRisk); `jailTurns` and `fineRate`
-   (of net worth, at the instant of the catch) apply if it hits. */
+   apply if it hits — fineRate is the seizure rate taken off EVERY holding
+   (cash, every stock, both index funds), with the tipped stock itself
+   seized at DOUBLE that rate on top of the general hit. */
 const INSIDER_TIERS = {
-  csuite: { label:'C-Suite',         count:7, fakeCount:0, riskRate:0.02,  jailTurns:2, fineRate:0.10 },
-  expert: { label:'Industry Expert', count:7, fakeCount:1, riskRate:0.01,  jailTurns:2, fineRate:0.08 },
+  csuite: { label:'C-Suite',         count:7, fakeCount:0, riskRate:0.02,  jailTurns:2, fineRate:0.20 },
+  expert: { label:'Industry Expert', count:7, fakeCount:1, riskRate:0.01,  jailTurns:2, fineRate:0.15 },
   friend: { label:'Friend',          count:7, fakeCount:2, riskRate:0.005, jailTurns:1, fineRate:0.05 },
   napkin: { label:'Napkin',          count:7, fakeCount:3, riskRate:0,     jailTurns:0, fineRate:0    },
 };
@@ -477,7 +516,7 @@ function buildDeck(){
   add(4, { type:'whale', text:'Whale Trade: trade a stock at today\u2019s price right now — your trade then pushes the price 2 steps in that direction.' });
 
   // Golden Parachute — 3
-  add(3, { type:'parachute', text:'Golden Parachute: if your net worth is under $30,000, receive a $20,000 bailout.' });
+  add(3, { type:'parachute', text:'Golden Parachute: if you’re in last place by net worth, receive a $20,000 bailout.' });
 
   // Steady Hand — 4
   add(4, { type:'steady', text:'Steady Hand: gain $250 for every distinct stock you currently hold shares in.' });
@@ -519,14 +558,15 @@ function buildDeck(){
   // Public Offering — 2
   add(2, { type:'public_offering', text:'Public Offering: this turn, buy up to 4 shares each of up to 3 different stocks with no group fee and no price impact (buys only).' });
 
-  // Dividend Leach — 2
-  add(2, { type:'dividend_leach', text:'Dividend Leach: attach to a random opponent \u2014 skim 10% of their dividend earnings for a few of their turns.' });
-  add(2, { type:'dividend_leach', holdable:true, text:'Dividend Leach: hold this and play it whenever you want \u2014 you choose exactly which opponent to leach.' });
+  // Dividend Leach — 2. Always attaches to whoever's in 1st place by net
+  // worth (2nd place if that's you), not a fixed player, so the target
+  // can shift over the leach's lifetime as the lead changes hands.
+  add(2, { type:'dividend_leach', text:'Dividend Leach: skims 10% of the dividend earnings of whoever\u2019s in 1st place by net worth (2nd place if that\u2019s you) for a random number of rounds.' });
 
-  // Permanent Dividend Leach \u2014 2. Random opponent (no choice, not
-  // holdable), and never expires \u2014 scarce for the same reason Golden
-  // Goose is, and with no card anywhere that removes it.
-  add(2, { type:'perma_leach', text:'Permanent Dividend Leach: attaches to a random opponent for the rest of the game \u2014 skims 10% of their dividend earnings, forever.' });
+  // Permanent Dividend Leach \u2014 2. Same dynamic 1st-place targeting as
+  // above, but never expires \u2014 scarce for the same reason Golden Goose
+  // is, and with no card anywhere that removes it.
+  add(2, { type:'perma_leach', text:'Permanent Dividend Leach: skims 10% of the dividend earnings of whoever\u2019s in 1st place by net worth (2nd place if that\u2019s you), forever.' });
 
   // Margin Call Forgiveness — 2
   add(4, { type:'margin_forgiveness', text:'Margin Call Forgiveness: shields you from your next forced margin-call liquidation.' });
@@ -560,7 +600,7 @@ function buildDeck(){
   add(4, { type:'promotion', text:'Promotion: your salary permanently goes up somewhere between $1,000 and $6,000 per turn.' });
   add(4, { type:'fired', text:'Fired: no salary for a randomly determined number of rounds.' });
   add(4, { type:'overtime', text:'Overtime: earn 1.5x salary for a randomly determined number of turns.' });
-  add(4, { type:'marriage', text:'Marriage: your salary permanently doubles — locked in at whatever it was the moment you drew this.' });
+  add(4, { type:'marriage', text:'Marriage: your spouse gets their own job — a flat $2,000-$8,000/turn based on your net worth rank, live every turn. Never boosted by your own Promotion or Overtime.' });
 
   return deck;
 }
@@ -832,7 +872,12 @@ function repairCollections(s){
       if(pl.marginShield===undefined) pl.marginShield = false;
       if(pl.publicOffering && pl.publicOffering.usedStocks===undefined) pl.publicOffering.usedStocks = [];
       if(pl.jailTurnsLeft===undefined) pl.jailTurnsLeft = 0;
-      if(pl.bannedStocks===undefined) pl.bannedStocks = [];
+      // The old bannedStocks field (a single permanent ban list) is retired
+      // in favor of tradeBans (a stacking, time-limited list) — no sound way
+      // to convert an old permanent ban into "N turns left," so an old save
+      // just starts with a clean slate here rather than carrying over a
+      // ban that no longer has a duration to attach to.
+      if(pl.tradeBans===undefined) pl.tradeBans = [];
       if(pl.hand===undefined) pl.hand = [];
       // The old baseSalary field (a frozen dollar bonus) is retired — salary
       // multipliers are now live percentages/flags recomputed off the
@@ -1123,8 +1168,16 @@ function playSfx(name){
       playTone(160, {duration:0.22, type:'sawtooth', gain:0.24, delay:0.1});
       break;
     case 'jail':
-      playTone(200, {duration:0.2, type:'square', gain:0.22});
-      playTone(150, {duration:0.28, type:'square', gain:0.2, delay:0.12});
+      // Hammer strike — a short, punchy low-end thud plus a hair of bright
+      // click at the moment of impact.
+      playTone(85, {duration:0.06, type:'square', gain:0.5, attack:0.002, decayTo:0.0001});
+      playTone(1500, {duration:0.03, type:'square', gain:0.18, attack:0.001, decayTo:0.0001});
+      // Anvil ring — a few inharmonic high tones ringing out just after the
+      // strike, each decaying at a slightly different rate so it sounds like
+      // metal rather than a clean chord.
+      playTone(1180, {duration:0.4, type:'triangle', gain:0.22, delay:0.03, attack:0.002, decayTo:0.0001});
+      playTone(1760, {duration:0.32, type:'triangle', gain:0.16, delay:0.035, attack:0.002, decayTo:0.0001});
+      playTone(2640, {duration:0.24, type:'triangle', gain:0.1, delay:0.04, attack:0.002, decayTo:0.0001});
       break;
     case 'turn': playTone(587.33, {duration:0.09, type:'sine', gain:0.2}); break;
     case 'error': playTone(180, {duration:0.18, type:'sawtooth', gain:0.22}); break;
@@ -1158,6 +1211,35 @@ function popupSfxGate(key, isShowing, sfxName){
   } else {
     shownPopups.delete(key);
   }
+}
+
+/* Jail sound, broadcast to every connected browser (spectators included) —
+   not just whoever's browser happened to execute the code that caught the
+   player. checkInsiderTradingRisk() only ever runs on ONE driving browser
+   at a time, so a playSfx() call placed there would only ever be heard by
+   that one browser. render(), on the other hand, runs on every connected
+   client any time state changes — so this compares each player's
+   jailTurnsLeft against what THIS client last saw, and plays the clang the
+   moment it notices any player's count go UP (the only way that happens is
+   a fresh catch — a normal turn only ever ticks it down). Reset to null by
+   startBotGame()/startGameFromLobby() so a brand new game always
+   re-baselines instead of comparing against the previous game's numbers. */
+let lastSeenJailTurns = null;
+function checkJailSfx(){
+  if(!state || !state.players) return;
+  if(lastSeenJailTurns===null){
+    // First render since load/reconnect/new game — just record where things
+    // stand, so someone already sitting in jail when you join doesn't
+    // trigger a replay of the sound.
+    lastSeenJailTurns = state.players.map(p=>p.jailTurnsLeft||0);
+    return;
+  }
+  state.players.forEach((p,i)=>{
+    const cur = p.jailTurnsLeft||0;
+    const prev = lastSeenJailTurns[i]||0;
+    if(cur > prev) playSfx('jail');
+  });
+  lastSeenJailTurns = state.players.map(p=>p.jailTurnsLeft||0);
 }
 
 // Generative background music, v2: a slow four-chord pad progression
@@ -1271,6 +1353,7 @@ function renderAudioControls(){
   byIdSafe('musicToggleBtn').onclick = toggleMusic;
 }
 function byIdSafe(id){ return document.getElementById(id) || { set onclick(v){} }; }
+const byId = x=>document.getElementById(x); // shared shorthand — used throughout button-wiring code below
 
 // Individual starting prices per the agreed price ladder (each stock opens
 // at its own `center`; `top`/`bottom` preserve the same volatility ratio
@@ -1384,10 +1467,10 @@ function freshState(players, gameLength){
       marginShield: false, // one-time margin-call forgiveness (Margin Call Forgiveness card)
       publicOffering: null, // {active, usedStocks} — this-turn-only fee/price-impact waiver on up to 3 stocks
       jailTurnsLeft: 0, // caught insider trading — this many of the player's own turns are fully skipped
-      bannedStocks: [], // stock ids this player can never buy or short again, after being caught trading on a tip in them
+      tradeBans: [], // {stock, turnsLeft} — one entry per stock currently off-limits after an insider trading conviction; multiple can stack if caught on different stocks. Counts down only on turns actually played (not jail turns) — see tickTradeBans
       hand: [], // held cards — drawn but not yet resolved, playable at any point during this player's own trade phase
       promotionBumpPct: 0, // permanent % bump to the live rank-tier salary, accumulates across multiple Promotion cards — see liveSalaryFor
-      married: false, // one-time flag from the Marriage card — doubles the live salary forever, doesn't stack, ends if Divorce ever actually hits you
+      married: false, // one-time flag from the Marriage card — adds a live, rank-based spouse salary on top of your own (see liveSalaryFor), doesn't stack, ends if Divorce ever actually hits you
       salaryTurnCount: 0, // 0 = hasn't collected yet — that first collection is a flat $4,000, tiers start on the 2nd
       firedRoundsLeft: 0, // salary is $0 while this is >0 (Fired card) — overrides overtime
       overtimeTurnsLeft: 0, // salary is 1.5x while this is >0, unless fired (Overtime card) — see liveSalaryFor
@@ -1395,8 +1478,8 @@ function freshState(players, gameLength){
       vipImmune: false, // set by one of the signature-hand cards — never jailed, never eliminated
     })),
     current: 0,
-    turnStartedAt: Date.now(), // turn identity — used to key the bot-turn/timeout locks, never mutated mid-turn
-    lastActivityAt: Date.now(), // resets on every real action this player takes — see touchActivity(); this, not turnStartedAt, is what the AFK timer actually measures
+    turnStartedAt: Date.now(), // turn identity — used to key the bot-turn/timeout locks, and is what the 90s turn timer counts down from (see turnTimerSecondsLeft)
+    lastActivityAt: Date.now(), // resets on every real action this player takes — see touchActivity(); bookkeeping only, not consulted by the turn timer
     deck: shuffle(buildDeck()),
     // A tiny separate pool, never mixed into the shared deck/discard — only
     // seeded at all when one of the players' names matches the recognized
@@ -1423,7 +1506,7 @@ function freshState(players, gameLength){
     expandedChart: null, // stock id or 'SP' currently shown in the big chart modal
     recurringEffects: [], // active Earnings Report drips: {stock, dir, bubblesPerTurn, turnsLeft, ownerIndex}
     dividendRateModifier: null, // {multiplier, turnsLeft} — Rate Hike/Rate Cut, applies to every stock's dividend zone
-    dividendLeaches: [], // active Dividend Leach cards: {thiefIndex, victimIndex, turnsLeft, permanent}
+    dividendLeaches: [], // active Dividend Leach cards: {thiefIndex, roundsLeft, permanent} — no fixed victim; see currentLeachTargets()
     espionage: [], // active Espionage cards: {spyIndex, targetIndex, turnsLeft} — ticks down on the spy's own turns
     netWorthHistory: [{ values: players.map(()=>START_CASH) }], // one point per turn taken, all players together — for the Net Worth Graph
     awaitingHoldDecision: false, // a holdable card was just drawn — waiting on Play Now vs Hold, before it's touched at all
@@ -1442,33 +1525,32 @@ function freshState(players, gameLength){
 
 function isMyTurn(){ return state && myPlayerIndex!==null && myPlayerIndex===state.current; }
 
-const TURN_TIME_LIMIT = 120; // seconds — 2 minutes of INACTIVITY; enforced by the timeout-enforcement logic below once it expires
-/* Measured from lastActivityAt, not turnStartedAt — this is what actually
-   makes it an AFK timer instead of a hard cap on how long a turn is allowed
-   to take. It used to be turn-start-based, which meant a player who was
-   still genuinely, actively trading (lots of holdings to manage, cards to
-   weigh — exactly the kind of turn that gets more common later in a game)
-   could get their whole turn silently force-ended out from under them the
-   moment 2 minutes had passed since it BEGAN, with no credit for the fact
-   that they'd been clicking the whole time. Once that happened, state.
-   current had already moved on to the next player, so every further click
-   on their now-stale Buy/Short buttons (buyShares/openShort both bail out
-   immediately on isMyTurn()===false) silently did nothing — looking
-   exactly like "the buttons don't work," and never recovering on its own
-   because nothing was actually broken from that player's point of view
-   until their NEXT turn ran into the same 2-minute wall. See touchActivity(). */
+const TURN_TIME_LIMIT = 90; // seconds — a hard total budget for the whole turn, not an inactivity timer (see turnTimerSecondsLeft)
+/* A fixed, total-per-turn budget: measured from turnStartedAt (set the
+   instant the previous player's turn ends — see endTurn()), NOT from
+   lastActivityAt. This used to be activity-based on purpose (an earlier
+   version measured from lastActivityAt specifically so a player who was
+   still genuinely, actively trading right up to the wire would never get
+   silently force-ended out from under them) — that tradeoff has been
+   deliberately reversed here: 90 seconds is a hard cap per turn, and it now
+   applies the same way whether the player is actively clicking or AFK. If
+   this ever needs to go back to rewarding active play instead of enforcing
+   a strict budget, swap the basis back to `state.lastActivityAt ||
+   state.turnStartedAt` (touchActivity() below still maintains it either
+   way, just isn't consulted here anymore). */
 function turnTimerSecondsLeft(){
   if(!state || state.gameOver) return TURN_TIME_LIMIT;
-  const basis = state.lastActivityAt || state.turnStartedAt;
+  const basis = state.turnStartedAt;
   if(!basis) return TURN_TIME_LIMIT;
   const elapsed = Math.floor((Date.now()-basis)/1000);
   return Math.max(0, TURN_TIME_LIMIT-elapsed);
 }
 /* Called from every function that represents the CURRENT player actually
    doing something on their own turn (drawing, trading, resolving a card
-   choice, ending it) — resets the AFK clock so the 2-minute timeout only
-   ever fires against genuine inactivity, never against someone who's still
-   visibly, actively playing. */
+   choice, ending it). Kept even though turnTimerSecondsLeft() no longer
+   reads lastActivityAt — it's harmless bookkeeping (e.g. useful if a "last
+   active" indicator gets added later) and several call sites already
+   depend on it existing, so it's left in place rather than ripped out. */
 function touchActivity(){
   if(state) state.lastActivityAt = Date.now();
 }
@@ -1767,11 +1849,12 @@ function positionCapRemaining(id, side){ // side: 'shares' or 'shorts'
   return Math.max(0, BIG_ECONOMY_POSITION_CAP - held);
 }
 
+function tradeBanFor(p, id){ return (p.tradeBans||[]).find(b=>b.stock===id) || null; }
 function canBuyOne(id){
   if(!id || state.gameOver) return false;
   if(id!=='SP' && id!=='SPX' && state.stocks[id].worthless) return false;
   const p = state.players[state.current];
-  if((p.bannedStocks||[]).includes(id)) return false;
+  if(tradeBanFor(p, id)) return false;
   if(capRemaining()<=0 || capRemainingForStock(id)<=0) return false;
   if(id==='SP') return priceOf(id) <= freeCash(p); // flat price, no walk, no fee
   const priorFilled = state.turnFills.up[id]||0;
@@ -1788,7 +1871,7 @@ function canShortOne(id){
   if(!id || id==='SP' || id==='SPX' || state.gameOver) return false;
   if(state.stocks[id].worthless) return false;
   const p = state.players[state.current];
-  if((p.bannedStocks||[]).includes(id)) return false;
+  if(tradeBanFor(p, id)) return false;
   if(capRemaining()<=0 || capRemainingForStock(id)<=0) return false;
   return price(id) <= freeCash(p);
 }
@@ -1812,7 +1895,8 @@ function buyBlockedReason(id){
   if(!id) return null;
   if(id!=='SP' && id!=='SPX' && state.stocks[id].worthless) return `${tickerLabel(id)} is worthless — nothing to buy.`;
   const p = state.players[state.current];
-  if((p.bannedStocks||[]).includes(id)) return `You're permanently barred from trading ${tickerLabel(id)} after an insider trading conviction.`;
+  const buyBan = tradeBanFor(p, id);
+  if(buyBan) return `You're barred from trading ${tickerLabel(id)} for ${buyBan.turnsLeft} more turn${buyBan.turnsLeft===1?'':'s'} after an insider trading conviction.`;
   if(capRemaining()<=0) return `You've used this turn's full ${turnCapLimit()}-share trading allowance — sells and covers are still free.`;
   if(capRemainingForStock(id)<=0) return `You've hit ${tickerLabel(id)}'s ${perStockTurnCapLimit()}-per-turn limit for this turn.`;
   const p2 = state.players[state.current];
@@ -1824,7 +1908,8 @@ function shortBlockedReason(id){
   if(!id || id==='SP' || id==='SPX') return null;
   if(state.stocks[id].worthless) return `${tickerLabel(id)} is worthless — nothing to short.`;
   const p = state.players[state.current];
-  if((p.bannedStocks||[]).includes(id)) return `You're permanently barred from trading ${tickerLabel(id)} after an insider trading conviction.`;
+  const shortBan = tradeBanFor(p, id);
+  if(shortBan) return `You're barred from trading ${tickerLabel(id)} for ${shortBan.turnsLeft} more turn${shortBan.turnsLeft===1?'':'s'} after an insider trading conviction.`;
   if(capRemaining()<=0) return `You've used this turn's full ${turnCapLimit()}-share trading allowance — sells and covers are still free.`;
   if(capRemainingForStock(id)<=0) return `You've hit ${tickerLabel(id)}'s ${perStockTurnCapLimit()}-per-turn limit for this turn.`;
   if(price(id) > freeCash(p)) return `Not enough free cash to cover the margin on 1 more share.`;
@@ -2246,6 +2331,7 @@ function drawCard(force){
     }
     tickRecurringEffects(state.current);
     tickHoldStreaks(state.current);
+    tickTradeBans(state.current); // only reached on a real turn — jail turns bail out above before ever getting here
     tickShortFeesAndDividends(state.current);
     tickPortfolioManagers(state.current);
     tickDividendRateModifier();
@@ -2534,24 +2620,54 @@ function tierSalaryFor(p){
   const idx = Math.min(salaryRankOf(p), RANK_SALARY_TIERS.length) - 1;
   return RANK_SALARY_TIERS[Math.max(0, idx)];
 }
-/* Every salary modifier is a MULTIPLIER (or percentage bump) recomputed
-   live off the player's CURRENT rank tier, never a dollar amount frozen at
-   the moment the card was drawn. That's deliberate: a player who married
-   into a $16,000 salary while dead last shouldn't still be collecting
-   $16,000+ once they've climbed to 1st place and their tier salary has
-   dropped to $2,000 — every bonus should track wherever their salary
-   actually sits right now, forever, not lock in a one-time snapshot.
-   Stacking order: promotion bump applies to the live tier salary first,
-   marriage doubles THAT (a spouse matching your current pay, not your pay
-   the day you got married), and overtime's 1.5x is the last multiplier on
-   top of the whole thing — so an overtime turn boosts whatever you'd
-   otherwise be earning right now, not some stale number from before. */
+/* Promotion and Overtime are both modifiers on the player's OWN salary,
+   recomputed live off their CURRENT rank tier every turn rather than a
+   dollar amount frozen at the moment the card was drawn — a promoted
+   player who drops to a worse rank tier sees that percentage applied to
+   the new, lower tier, not the old one.
+   Marriage is different: it's not a multiplier on your own pay at all, it's
+   a second, independent income — your spouse's own salary. That's a flat
+   lookup on the SAME rank tiers ($2,000/$4,000/$6,000/$8,000 for
+   1st/2nd/3rd/last), based on your current net worth rank, but deliberately
+   untouched by your own Promotion bump or Overtime multiplier — those are
+   perks from YOUR job, not theirs. Like everything else here, it's live,
+   not frozen: married while dead last, her contribution is $8,000; climb to
+   1st place and it drops to $2,000 that same turn, no matter what it used
+   to be. */
 function liveSalaryFor(p, overrideBase){
   const base = overrideBase!==undefined ? overrideBase : tierSalaryFor(p);
   const withPromotion = Math.round(base * (1 + (p.promotionBumpPct||0)));
-  const withMarriage = p.married ? withPromotion * 2 : withPromotion;
-  const withOvertime = p.overtimeTurnsLeft>0 ? Math.round(withMarriage*1.5) : withMarriage;
-  return withOvertime;
+  const withOvertime = p.overtimeTurnsLeft>0 ? Math.round(withPromotion*1.5) : withPromotion;
+  // Spouse's income never uses overrideBase (the first-turn $4,000
+  // flattening) — net worth ranking is well-defined from turn 1, so there's
+  // no equivalent ambiguity to flatten away for her side of it.
+  const spouseSalary = p.married ? tierSalaryFor(p) : 0;
+  return withOvertime + spouseSalary;
+}
+/* Who a given Dividend Leach thief is CURRENTLY skimming from — recomputed
+   fresh every time it's needed rather than stored, since the whole point of
+   these cards is that the target follows 1st place as the lead changes
+   hands over the leach's lifetime. Normally that's whoever has the highest
+   net worth among players still in the game; if the thief themselves is
+   (tied for) that spot, it falls back to whoever's next tier down ("2nd
+   place") instead, so nobody ever ends up skimming their own dividends.
+   Returns an array of player indices rather than a single one — with real
+   dollar net worths an exact tie is rare, but when two or more players
+   share the target spot, everyone in that group gets skimmed (split evenly
+   — see tickShortFeesAndDividends) rather than picking one arbitrarily. */
+function currentLeachTargets(thiefIndex){
+  const active = state.players.map((pl,i)=>i).filter(i=>!state.players[i].eliminated);
+  if(active.length===0) return [];
+  const nwOf = i => netWorth(state.players[i]);
+  const topValue = Math.max(...active.map(nwOf));
+  let tier = active.filter(i=>nwOf(i)===topValue);
+  if(tier.includes(thiefIndex)){
+    const remaining = active.filter(i=>!tier.includes(i));
+    if(remaining.length===0) return []; // thief ties for 1st with literally everyone else left — nobody to leach this round
+    const nextValue = Math.max(...remaining.map(nwOf));
+    tier = remaining.filter(i=>nwOf(i)===nextValue);
+  }
+  return tier;
 }
 /* Runs once at the start of each player's own turn: pays salary, every open
    short pays a flat 1% carrying fee on its current liability, and any stock
@@ -2639,31 +2755,23 @@ function tickShortFeesAndDividends(ownerIndex){
   if(totalFee>0) logEvent(`${p.name} paid $${totalFee} in short fees.`, true);
 
   // Dividend Leach: redirects 10% of whatever THIS player just collected
-  // above to whoever's leaching them — a real skim out of the payout, not
-  // money created from nothing. Also clamped for the same reason as above.
-  if(state.dividendLeaches && state.dividendLeaches.length){
-    if(totalDiv>0){
-      state.dividendLeaches.forEach(leach=>{
-        if(leach.victimIndex!==ownerIndex) return;
-        const cut = takeClamped(Math.round(totalDiv*0.10));
-        if(cut>0){
-          p.cash -= cut;
-          state.players[leach.thiefIndex].cash += cut;
-          logEvent(`${state.players[leach.thiefIndex].name}'s Dividend Leach skimmed $${cut} from ${p.name}.`, true);
-        }
-      });
-    }
-    // The countdown on a TEMPORARY leach has to tick on the victim's own
-    // turn no matter what — previously this was nested inside the
-    // `totalDiv>0` check above, so a victim who happened to hold nothing
-    // sitting in a dividend zone that turn never advanced the countdown at
-    // all. A victim who went dividend-dry for the rest of the game could
-    // end up carrying a "temporary" leach forever, which defeats the whole
-    // point of it being temporary. Permanent leaches are unaffected — the
-    // `permanent` flag already keeps them out of both the decrement and
-    // the expiry filter below.
-    state.dividendLeaches.forEach(leach=>{ if(leach.victimIndex===ownerIndex && !leach.permanent) leach.turnsLeft -= 1; });
-    state.dividendLeaches = state.dividendLeaches.filter(l=>l.permanent || l.turnsLeft>0);
+  // above to whoever's leaching them right now — a real skim out of the
+  // payout, not money created from nothing. Also clamped for the same
+  // reason as above. Targets are dynamic (see currentLeachTargets), so this
+  // is recomputed fresh every time rather than checking a fixed victim —
+  // split evenly across everyone tied for the target spot, so a 2-way tie
+  // for 1st means 5% from each instead of 10% from one.
+  if(state.dividendLeaches && state.dividendLeaches.length && totalDiv>0){
+    state.dividendLeaches.forEach(leach=>{
+      const targets = currentLeachTargets(leach.thiefIndex);
+      if(!targets.includes(ownerIndex)) return;
+      const cut = takeClamped(Math.round(totalDiv*0.10/targets.length));
+      if(cut>0){
+        p.cash -= cut;
+        state.players[leach.thiefIndex].cash += cut;
+        logEvent(`${state.players[leach.thiefIndex].name}'s Dividend Leach skimmed $${cut} from ${p.name}.`, true);
+      }
+    });
   }
 }
 
@@ -2732,6 +2840,14 @@ function tickRoundBoundaryEffects(){
   if(state.insiderBlockers && state.insiderBlockers.length){
     state.insiderBlockers.forEach(b=>{ b.roundsLeft -= 1; });
     state.insiderBlockers = state.insiderBlockers.filter(b=>b.roundsLeft>0);
+  }
+  // Temporary Dividend Leaches count down once per full round now, not per
+  // victim-turn — there's no longer a single fixed victim whose "own turn"
+  // would mean anything, since the target follows 1st place and can change
+  // hands mid-leach. Permanent leaches are untouched, same as above.
+  if(state.dividendLeaches && state.dividendLeaches.length){
+    state.dividendLeaches.forEach(l=>{ if(!l.permanent) l.roundsLeft -= 1; });
+    state.dividendLeaches = state.dividendLeaches.filter(l=>l.permanent || l.roundsLeft>0);
   }
 }
 
@@ -2857,10 +2973,16 @@ function resolveAuto(card){
         logEvent(`${p.name} received 1 free share of ${card.stock}.`);
       }
       break;
-    case 'parachute':
-      if(netWorth(p) < START_CASH){ p.cash += 20000; logEvent(`${p.name} was below starting capital ($${START_CASH}) — Golden Parachute pays $20,000.`, true); }
-      else logEvent(`${p.name}'s net worth is healthy — Golden Parachute has no effect.`);
+    case 'parachute': {
+      // Last place by net worth (ties included — this only ever checks the
+      // drawing player, so it doesn't matter whether anyone else shares the
+      // bottom spot) among players still in the game.
+      const active = state.players.filter(pl=>!pl.eliminated);
+      const lowestNetWorth = Math.min(...active.map(pl=>netWorth(pl)));
+      if(netWorth(p) <= lowestNetWorth){ p.cash += 20000; logEvent(`${p.name} is in last place by net worth — Golden Parachute pays $20,000.`, true); }
+      else logEvent(`${p.name} isn't in last place — Golden Parachute has no effect.`);
       break;
+    }
     case 'steady': {
       const heldCount = STOCK_IDS.filter(id=>p.shares[id]>0).length;
       const gain = heldCount*250;
@@ -2952,32 +3074,28 @@ function resolveAuto(card){
       logEvent(`${p.name} drew a Public Offering — up to 4 shares each on up to 3 different stocks this turn, no group fee, no price impact.`, true);
       break;
     case 'dividend_leach': {
-      const others = state.players.map((pl,i)=>i).filter(i=>i!==state.current && !state.players[i].eliminated);
-      if(others.length===0){ logEvent(`${p.name} has no one to leach — Dividend Leach fizzles.`); break; }
-      const victimIndex = others[Math.floor(Math.random()*others.length)];
-      const turns = 2 + Math.floor(Math.random()*4); // 2-5 inclusive
+      // No target is picked here at all — see currentLeachTargets(), which
+      // recomputes who this skims from fresh every round (whoever's in 1st
+      // place, or the thief's own current rank falls back to 2nd place if
+      // THEY'RE the one in 1st). rounds ticks down once per full round (see
+      // tickRoundBoundaryEffects), not per victim-turn — there's no longer
+      // a single fixed victim whose "own turn" would even mean anything.
+      const rounds = 2 + Math.floor(Math.random()*4); // 2-5 inclusive
       if(!state.dividendLeaches) state.dividendLeaches = [];
-      state.dividendLeaches.push({ thiefIndex: state.current, victimIndex, turnsLeft: turns });
-      card.text = `Dividend Leach: you'll skim 10% of ${state.players[victimIndex].name}'s dividend earnings for their next ${turns} turn${turns===1?'':'s'}.`;
-      logEvent(`${p.name} attached a Dividend Leach to ${state.players[victimIndex].name} for ${turns} turn${turns===1?'':'s'}.`, true);
+      state.dividendLeaches.push({ thiefIndex: state.current, roundsLeft: rounds, permanent: false });
+      card.text = `Dividend Leach: skimming whoever's in 1st place (2nd place if that's you) for the next ${rounds} round${rounds===1?'':'s'}.`;
+      logEvent(`${p.name} attached a Dividend Leach — skimming whoever's in 1st place (2nd place if that's them) for ${rounds} round${rounds===1?'':'s'}.`, true);
       break;
     }
     case 'perma_leach': {
-      // Random opponent, no choice involved (unlike the holdable regular
-      // Dividend Leach), and — unlike the timed version — this one is
-      // marked `permanent:true` so tickShortFeesAndDividends below never
-      // decrements or expires it. There's no card anywhere that removes it.
-      const others = state.players.map((pl,i)=>i).filter(i=>i!==state.current && !state.players[i].eliminated);
-      if(others.length===0){ logEvent(`${p.name} has no one to leach — Permanent Dividend Leach fizzles.`); break; }
-      const victimIndex = others[Math.floor(Math.random()*others.length)];
+      // Same dynamic 1st-place targeting as the timed version above (see
+      // currentLeachTargets()), just marked `permanent:true` so
+      // tickRoundBoundaryEffects never decrements or expires it. There's no
+      // card anywhere that removes it.
       if(!state.dividendLeaches) state.dividendLeaches = [];
-      // turnsLeft is never read for a permanent leach (every place that
-      // touches it checks the `permanent` flag first) — using `null` here
-      // rather than Infinity because Firebase/JSON can't represent Infinity
-      // and would silently mangle it on the next sync round-trip.
-      state.dividendLeaches.push({ thiefIndex: state.current, victimIndex, turnsLeft: null, permanent: true });
-      card.text = `Permanent Dividend Leach: you'll skim 10% of ${state.players[victimIndex].name}'s dividend earnings for the rest of the game.`;
-      logEvent(`${p.name} attached a Permanent Dividend Leach to ${state.players[victimIndex].name} — for the rest of the game.`, true);
+      state.dividendLeaches.push({ thiefIndex: state.current, roundsLeft: null, permanent: true });
+      card.text = `Permanent Dividend Leach: skimming whoever's in 1st place (2nd place if that's you) for the rest of the game.`;
+      logEvent(`${p.name} attached a Permanent Dividend Leach — skimming whoever's in 1st place (2nd place if that's them) for the rest of the game.`, true);
       break;
     }
     case 'margin_forgiveness':
@@ -3131,20 +3249,21 @@ function resolveAuto(card){
       break;
     }
     case 'marriage': {
-      // A live 2x multiplier on whatever the player's salary actually is on
-      // any given turn — not a dollar amount snapshotted at draw time. Rank
-      // tiers move around as net worth changes; this multiplier moves right
-      // along with it, forever. Doesn't stack — you can only get married
-      // once, so drawing a second Marriage card while already married is a
-      // no-op (it still gets discarded like any other resolved card).
+      // Your spouse gets their own job — a flat tier salary matching your
+      // CURRENT net worth rank, recomputed live every turn right alongside
+      // your own (see liveSalaryFor). Not a multiplier on your pay, and
+      // never boosted by your own Promotion or Overtime. Doesn't stack —
+      // you can only get married once, so drawing a second Marriage card
+      // while already married is a no-op (it still gets discarded like any
+      // other resolved card).
       if(p.married){
-        card.text = `Marriage: you're already married — can't double an already-doubled salary. No effect.`;
+        card.text = `Marriage: you're already married — no effect.`;
         logEvent(`${p.name} drew Marriage, but they're already married — no effect.`);
         break;
       }
       p.married = true;
-      card.text = `Marriage! Your salary permanently doubles, no matter how your rank changes later.`;
-      logEvent(`${p.name} got married — salary permanently doubled, now $${liveSalaryFor(p).toLocaleString()}/turn.`, true);
+      card.text = `Marriage! Your spouse now earns their own salary — a flat $2,000-$8,000/turn based on your net worth rank, live every turn, never boosted by your own Promotion or Overtime.`;
+      logEvent(`${p.name} got married — spouse contributes $${tierSalaryFor(p).toLocaleString()}/turn (rank #${salaryRankOf(p)}), now $${liveSalaryFor(p).toLocaleString()}/turn combined.`, true);
       break;
     }
     case 'short_squeeze': {
@@ -3175,7 +3294,8 @@ function resolveAuto(card){
 }
 
 function needsChoice(card){
-  if(card.type==='dividend_leach' && card.holdable) return true; // the holdable variant lets you pick your target instead of it being random
+  // Both Dividend Leach cards always auto-target 1st place now — neither
+  // variant is holdable/choosable anymore, so this never applies to them.
   return ['sched_swing','split','choose_stock_move','choose_sector_move','whale','insider_blocker','hunter','espionage'].includes(card.type);
 }
 
@@ -3259,16 +3379,6 @@ function resolveChoice(card, choice){
       } else {
         logEvent(`${p.name} held off — no whale trade made.`);
       }
-      break;
-    }
-    case 'dividend_leach': {
-      const victimIndex = choice.victimIndex;
-      const valid = state.players.some((pl,i)=> i===victimIndex && i!==state.current && !pl.eliminated);
-      if(!valid){ state.choiceError = 'Pick a valid opponent to leach.'; return false; }
-      const turns = 2 + Math.floor(Math.random()*4); // 2-5 inclusive — duration still random, only the target is chosen
-      if(!state.dividendLeaches) state.dividendLeaches = [];
-      state.dividendLeaches.push({ thiefIndex: state.current, victimIndex, turnsLeft: turns });
-      logEvent(`${p.name} attached a Dividend Leach to ${state.players[victimIndex].name} for ${turns} turn${turns===1?'':'s'}.`, true);
       break;
     }
     case 'insider_blocker': {
@@ -3364,33 +3474,99 @@ function checkInsiderActedOn(playerIndex, stockId){
   });
 }
 
+/* Seizes `rate` off of a single share/short position, proportionally
+   trimming its cost basis the same way a partial sell would (average-cost
+   method) so unrealized gain/loss stays accurate on whatever's left. */
+function seizeFraction(p, id, rate){
+  if(rate<=0) return;
+  if(p.shares[id]>0){
+    const qty = Math.min(p.shares[id], Math.round(p.shares[id]*rate));
+    if(qty>0){
+      const frac = qty/p.shares[id];
+      p.costBasis[id] = Math.round((p.costBasis[id]||0)*(1-frac));
+      p.shares[id] -= qty;
+    }
+  }
+  if((p.shorts[id]||0)>0){
+    const qty = Math.min(p.shorts[id], Math.round(p.shorts[id]*rate));
+    if(qty>0){
+      const frac = qty/p.shorts[id];
+      p.shortBasis[id] = Math.round((p.shortBasis[id]||0)*(1-frac));
+      p.shorts[id] -= qty;
+    }
+  }
+}
 /* Rolls the dice, once per active acted-on tip this player is holding, at
    the start of their own turn — stacking risk if they've got more than one
    live at once. The first one that hits stops the check right there (only
    one violation processed per turn). Returns true if they got caught, so
-   drawCard can forfeit the rest of this turn. Fine is calculated on net
-   worth BEFORE anything is seized, per spec — seizing first would make the
-   fine smaller than it should be. Which stock it was stays out of the
-   public log; the player themselves obviously still sees it, since it's
-   their own portfolio the seizure just hit. */
+   drawCard can forfeit the rest of this turn.
+   The seizure is a flat percentage (by tip tier: Friend 5%, Expert 15%,
+   C-Suite 20%) taken off EVERY holding — cash, every stock's shares/shorts,
+   both index funds — with the specific stock they were tipped on seized at
+   DOUBLE that rate on top of the general hit. The trade ban that follows
+   only ever applies to that one stock, lasts exactly 2 of the player's own
+   turns starting once they're actually out of jail (see tickTradeBans), and
+   stacks with any other active ban rather than replacing it — getting
+   caught on a second stock while still serving an earlier ban means both
+   are off-limits at once. Which stock it was stays out of the public log;
+   the player themselves obviously still sees it, since it's their own
+   portfolio the seizure just hit. */
 function checkInsiderTradingRisk(ownerIndex){
   const p = state.players[ownerIndex];
   if(p.vipImmune) return false;
   const activeTips = state.scheduled.filter(item=>item.ownerIndex===ownerIndex && item.riskRate>0 && item.actedOn);
   for(const item of activeTips){
     if(Math.random() >= item.riskRate) continue;
-    const fine = Math.round(netWorth(p) * item.fineRate);
-    p.cash -= fine;
-    p.shares[item.stock] = 0; p.costBasis[item.stock] = 0; p.holdStreak[item.stock] = 0;
-    p.shorts[item.stock] = 0; p.shortBasis[item.stock] = 0;
-    if(!p.bannedStocks) p.bannedStocks = [];
-    if(!p.bannedStocks.includes(item.stock)) p.bannedStocks.push(item.stock);
+    const rate = item.fineRate;
+    const cashSeized = Math.round(p.cash * rate);
+    p.cash -= cashSeized;
+    STOCK_IDS.forEach(id=> seizeFraction(p, id, id===item.stock ? Math.min(1, rate*2) : rate));
+    if(p.spShares>0){
+      const qty = Math.min(p.spShares, Math.round(p.spShares*rate));
+      if(qty>0){ const frac = qty/p.spShares; p.spCostBasis = Math.round((p.spCostBasis||0)*(1-frac)); p.spShares -= qty; }
+    }
+    if(p.spxShares>0){
+      const qty = Math.min(p.spxShares, Math.round(p.spxShares*rate));
+      if(qty>0){ const frac = qty/p.spxShares; p.spxCostBasis = Math.round((p.spxCostBasis||0)*(1-frac)); p.spxShares -= qty; }
+    }
+    if(!p.tradeBans) p.tradeBans = [];
+    const existingBan = p.tradeBans.find(b=>b.stock===item.stock);
+    if(existingBan){ existingBan.turnsLeft = 2; } // re-caught on the same stock — refreshes rather than duplicating
+    else p.tradeBans.push({ stock: item.stock, turnsLeft: 2 });
     p.jailTurnsLeft = item.jailTurns;
-    logEvent(`${p.name} was caught insider trading — fined $${fine.toLocaleString()}, had the position seized, and is now permanently barred from trading that stock. Serving ${item.jailTurns} turn${item.jailTurns===1?'':'s'} in jail.`, true);
-    if(ownerIndex===myPlayerIndex) playSfx('jail');
+    // This specific tip is spent the moment it catches you — remove it from
+    // state.scheduled so it can't independently roll the dice against you
+    // again on some future turn (that would both re-punish the exact same
+    // offense repeatedly AND, since checkInsiderTradingRisk only processes
+    // one violation per turn, permanently block any OTHER still-live tip
+    // from ever being reached — which is exactly what would prevent two
+    // different stocks from ever stacking bans the way they're supposed to).
+    state.scheduled = state.scheduled.filter(x=>x!==item);
+    logEvent(`${p.name} was caught insider trading — ${Math.round(rate*100)}% of everything seized (${Math.round(Math.min(1,rate*2)*100)}% on the tipped stock), and is barred from trading it for 2 turns after release. Serving ${item.jailTurns} turn${item.jailTurns===1?'':'s'} in jail.`, true);
+    // Sound is handled by checkJailSfx() in render() instead of a direct
+    // call here — this function only ever runs on whichever ONE connected
+    // browser happens to be driving the current turn (the jailed player's
+    // own browser for a normal turn, but someone else's if their turn got
+    // force-advanced for being AFK). Detecting the jailTurnsLeft change
+    // during render() instead is what lets every connected browser —
+    // including spectators — hear it, not just whoever ran this code.
     return true;
   }
   return false;
+}
+/* Counts down every active trade ban by one — called once per real turn
+   this player gets to play (same start-of-turn tick block as salary/fees/
+   dividends), which is exactly why jail turns don't consume any of the 2
+   turns: that whole tick block, this function included, only runs on turns
+   where drawCard() actually got past the jailTurnsLeft check. */
+function tickTradeBans(ownerIndex){
+  const p = state.players[ownerIndex];
+  if(!p.tradeBans || p.tradeBans.length===0) return;
+  p.tradeBans.forEach(b=> b.turnsLeft -= 1);
+  const expired = p.tradeBans.filter(b=>b.turnsLeft<=0);
+  if(expired.length) expired.forEach(b=> logEvent(`${p.name} is no longer barred from trading ${b.stock}.`));
+  p.tradeBans = p.tradeBans.filter(b=>b.turnsLeft>0);
 }
 
 /* Portfolio Manager tracking — each active window on a player keeps its own
@@ -3431,7 +3607,7 @@ function buyShares(id, qtyRequested, force){
   if(id!=='SP' && id!=='SPX' && state.stocks[id].worthless) return;
   const p = state.players[state.current];
   if(force && !p.bot) return; // force-bypass is bot automation only — never lets anything trade on a human's behalf
-  if((p.bannedStocks||[]).includes(id)){ logEvent(`${p.name} is permanently barred from trading ${id} after being caught insider trading.`); render(); return; }
+  if(tradeBanFor(p, id)){ logEvent(`${p.name} is still barred from trading ${id} after being caught insider trading.`); render(); return; }
   const qty = Math.min(qtyRequested||0, capRemaining(), capRemainingForStock(id), positionCapRemaining(id,'shares'));
   if(qty<=0){ logEvent(`No cap left this turn to buy ${tickerLabel(id)}.`); render(); return; }
   const offer = p.publicOffering;
@@ -3501,7 +3677,7 @@ function openShort(id, qtyRequested, force){
   if(state.stocks[id].worthless) return;
   const p = state.players[state.current];
   if(force && !p.bot) return; // force-bypass is bot automation only — never lets anything trade on a human's behalf
-  if((p.bannedStocks||[]).includes(id)){ logEvent(`${p.name} is permanently barred from trading ${id} after being caught insider trading.`); render(); return; }
+  if(tradeBanFor(p, id)){ logEvent(`${p.name} is still barred from trading ${id} after being caught insider trading.`); render(); return; }
   const qty = Math.min(qtyRequested||0, capRemaining(), capRemainingForStock(id), positionCapRemaining(id,'shorts'));
   if(qty<=0){ logEvent(`No cap left this turn to short ${id}.`); render(); return; }
   const requiredMargin = qty*price(id);
@@ -3566,8 +3742,8 @@ function endTurn(){
   do { next = (next+1)%state.players.length; } while(state.players[next].eliminated && next!==state.current);
   state.current = next;
   if(next===myPlayerIndex) playSfx('turn');
-  state.turnStartedAt = Date.now();
-  state.lastActivityAt = Date.now(); // fresh AFK clock for whoever's turn this now is
+  state.turnStartedAt = Date.now(); // the new current player's 90s turn timer starts counting down from exactly this moment
+  state.lastActivityAt = Date.now(); // bookkeeping only — see touchActivity()
   state.phase = 'draw';
   state.turnStage = 'start';
   state.tradeSelection = null;
@@ -3831,17 +4007,6 @@ function botResolveChoice(){
       else { choice = { side:'hold' }; }
       break;
     }
-    case 'dividend_leach': {
-      let target = null, bestNW = -Infinity;
-      state.players.forEach((pl,i)=>{
-        if(i===state.current || pl.eliminated) return;
-        const nw = netWorth(pl);
-        if(nw>bestNW){ bestNW = nw; target = i; }
-      });
-      if(target===null){ finishCardResolution(); return; }
-      choice = { victimIndex: target };
-      break;
-    }
     case 'insider_blocker': {
       const held = botLargestHolding(bot);
       choice = { stock: held || botCheapestStock() || STOCK_IDS[0] };
@@ -3891,11 +4056,6 @@ function botResolveChoice(){
    always just get played immediately, same as before. */
 function botShouldHoldCard(bot, card){
   if(card.type==='hunter') return huntableGeese().length===0; // nothing to kill yet — worth waiting for a target
-  if(card.type==='dividend_leach' && card.holdable){
-    let leaderNW = -Infinity;
-    state.players.forEach(pl=>{ if(!pl.eliminated){ const nw=netWorth(pl); if(nw>leaderNW) leaderNW=nw; } });
-    return !(leaderNW > netWorth(bot)*1.15); // no clear leader worth leaching yet
-  }
   if(card.type==='choose_stock_move' || card.type==='choose_sector_move'){
     // Worth holding onto if the bot doesn't yet have a position sizable
     // enough to actually benefit from nudging a price right now.
@@ -3914,11 +4074,6 @@ function botTryPlayHeldCard(){
   for(let i=0;i<bot.hand.length;i++){
     const card = bot.hand[i];
     if(card.type==='hunter' && huntableGeese().length>0){ playCardFromHand(i, true); return true; }
-    if(card.type==='dividend_leach' && card.holdable){
-      let leaderNW = -Infinity;
-      state.players.forEach(pl=>{ if(!pl.eliminated){ const nw=netWorth(pl); if(nw>leaderNW) leaderNW=nw; } });
-      if(leaderNW > netWorth(bot)*1.15){ playCardFromHand(i, true); return true; }
-    }
     if((card.type==='choose_stock_move' || card.type==='choose_sector_move') && (botLargestHolding(bot) || botLargestShortHolding(bot))){
       playCardFromHand(i, true); return true;
     }
@@ -4269,6 +4424,7 @@ function startBotGame(){
   lastKnownSnapshot = {};
   lastSpeedrunRecordedAt = null;
   speedrunWasNewBest = false;
+  lastSeenJailTurns = null; // fresh game — don't compare against the last one's jail state
   persistFull(); render();
 }
 
@@ -4307,8 +4463,6 @@ function renderRestartConfirm(){
 /* ============================= RENDER ============================= */
 const app = document.getElementById('app');
 
-function esc(s){ return s; }
-
 function renderSetup(){
   if(!roomCode){ renderLandingScreen(); return; }
   if(!state){ renderCreateGameScreen(); return; }
@@ -4318,7 +4472,13 @@ function renderSetup(){
 
 /* True entry point — no room chosen yet. Create a fresh room (random
    6-digit code) or join one someone else already made. */
+// Local-only UI toggle (never synced) — the rulebook has to be reachable
+// from the very first screen, before a room or any game state exists at
+// all, so it can't live inside `state` the way in-game modals do.
+let showRulebook = false;
+
 function renderLandingScreen(){
+  if(showRulebook){ renderRulebookScreen(()=>{ showRulebook = false; renderLandingScreen(); }); return; }
   app.innerHTML = `
     <div class="overlay">
       <div class="modal">
@@ -4326,6 +4486,7 @@ function renderLandingScreen(){
         <div class="sub">A turn-based stock market game, playable live with friends on separate screens.</div>
         <button class="btn full" id="createRoomBtn">Create Game</button>
         <button class="btn secondary full" id="vsBotBtn" style="margin-top:8px;">Play vs Bot (1 Player)</button>
+        <button class="btn secondary full" id="rulebookBtn" style="margin-top:8px;">📖 How to Play &amp; Card Guide</button>
         <div class="hint" style="margin:14px 0 8px 0;">— or join a game already running —</div>
         <div class="trade-row">
           <input type="text" id="joinCodeInput" inputmode="numeric" maxlength="6" placeholder="6-digit room code" style="flex:1;padding:9px 10px;border-radius:8px;background:var(--panel-2);border:1px solid var(--line);color:var(--text);font-family:'IBM Plex Mono';">
@@ -4336,11 +4497,203 @@ function renderLandingScreen(){
     </div>`;
   document.getElementById('createRoomBtn').onclick = ()=>{ subscribeToRoom(genRoomCode()); render(); };
   document.getElementById('vsBotBtn').onclick = ()=>{ subscribeToRoom(genRoomCode()); startBotGame(); };
+  document.getElementById('rulebookBtn').onclick = ()=>{ showRulebook = true; renderLandingScreen(); };
   document.getElementById('joinRoomBtn').onclick = ()=>{
     const code = document.getElementById('joinCodeInput').value.trim().replace(/\D/g,'');
     if(code.length!==6){ document.getElementById('joinError').textContent = 'Enter the 6-digit code your host shared with you.'; return; }
     subscribeToRoom(code); render();
   };
+}
+
+/* Full rulebook + card compendium, reachable from the landing screen via
+   "How to Play". Written as one static template — nothing here depends on
+   `state`, deliberately, since this has to work before any game or room
+   exists. `onClose` is passed in by the caller rather than hardcoded so
+   this same screen could be reused from elsewhere later (e.g. an in-game
+   help button) without any changes. */
+function renderRulebookScreen(onClose){
+  app.innerHTML = `
+    <div class="overlay">
+      <div class="modal rb-modal">
+        <h2><span style="color:#FFFFFF;">Up</span><span style="color:var(--up);">Trend</span> — How to Play</h2>
+        <div class="sub">Everything you need to play, plus what every card in the deck actually does.</div>
+
+        <div class="rb-toc">
+          <a href="#rb-objective">Objective</a>
+          <a href="#rb-board">The Board</a>
+          <a href="#rb-turn">Turn Structure</a>
+          <a href="#rb-trading">Trading</a>
+          <a href="#rb-dividends">Dividend Zones</a>
+          <a href="#rb-salary">Salary</a>
+          <a href="#rb-insider">Insider Info &amp; Jail</a>
+          <a href="#rb-risk">Margin Calls &amp; Bankruptcy</a>
+          <a href="#rb-winning">Winning</a>
+          <a href="#rb-cards">Card Guide</a>
+        </div>
+
+        <div class="rb-section" id="rb-objective">
+          <h3>🎯 Objective</h3>
+          <p>UpTrend is a turn-based stock market game for 1-4 players (play solo against bots, or live with friends on separate screens). Everyone starts with $30,000 in cash and nothing else. Buy, sell, and short stocks, collect dividends, draw cards that move the market (and your fortunes), and try to build the biggest net worth in the game — cash plus everything you own, minus everything you owe.</p>
+        </div>
+
+        <div class="rb-section" id="rb-board">
+          <h3>📊 The Board</h3>
+          <p>8 stocks across 4 sectors, 2 stocks per sector:</p>
+          <ul>
+            <li><b style="color:var(--tech);">Tech</b> — Nova Systems (NOVA), Qubit AI (QBIT)</li>
+            <li><b style="color:var(--energy);">Energy</b> — Ampere Power (PWR), OilCross (OILX)</li>
+            <li><b style="color:var(--health);">Health</b> — Vitalis Health (VITA), RxCore (RXCO)</li>
+            <li><b style="color:var(--consumer);">Consumer Discretionary</b> — Luxeway (LUXE), SpreeMart (SPRE)</li>
+          </ul>
+          <p>Every stock has its own price track that moves in discrete steps as cards are drawn and trades are made. Tech and Energy stocks can crash all the way to $0 and go worthless — delisted for good, with anyone still holding shares wiped out and any open shorts auto-covered for free. Health and Consumer stocks have a floor and can never fully bottom out.</p>
+          <p>Two index funds are always tradeable alongside the 8 stocks: <b>Mini SP8</b> and <b>SP8</b>. They're steadier, diversified alternatives to individual stocks, and both pay a flat 4% dividend on your holdings at the end of every full round, regardless of price — no dividend zone required.</p>
+        </div>
+
+        <div class="rb-section" id="rb-turn">
+          <h3>🔄 Turn Structure</h3>
+          <p>On your turn:</p>
+          <ul>
+            <li><b>Draw an opening card</b> — its effect resolves right away, unless it's holdable (see below), in which case you can choose to save it instead.</li>
+            <li><b>Trade phase</b> — buy, sell, short, or cover; play any cards you're holding; optionally spend $10,000 to buy a guaranteed-real Insider Info tip.</li>
+            <li><b>Draw a closing card</b> and resolve it.</li>
+            <li>Turn passes to the next player.</li>
+          </ul>
+          <p>You get <b>90 seconds total</b> for your whole turn, starting the instant the previous player's turn ends — not reset by clicking around. If time runs out, your turn gets auto-advanced (drawing and skipping through automatically) so the game never stalls waiting on one player.</p>
+          <p><b>Holdable cards:</b> some cards let you choose to hold onto them (up to 3 in hand at once) instead of resolving immediately, so you can spring them at a better moment. Play a held card any time during your own trade phase.</p>
+        </div>
+
+        <div class="rb-section" id="rb-trading">
+          <h3>💹 Trading</h3>
+          <ul>
+            <li>Buy, Sell, Short, and Cover each trade exactly 1 share per click.</li>
+            <li>Selling and covering are always free and unlimited on your turn.</li>
+            <li>Buying and shorting are capped per turn — 12 shares total, 4 per individual stock (raised to 20 total in the $10,000,000 "big economy" game length, where individual positions can also run much bigger).</li>
+            <li>Every trade nudges the price a little — buying pushes it up, selling or shorting pushes it down. Big orders move the market against you as you keep going, so buying in bulk gets progressively more expensive.</li>
+            <li>Shorting locks up cash as collateral (see Margin Calls below) and charges a small ongoing carrying fee every one of your turns.</li>
+          </ul>
+        </div>
+
+        <div class="rb-section" id="rb-dividends">
+          <h3>💰 Dividend Zones</h3>
+          <p>As a stock's price climbs into roughly the top quarter to third of its all-time range, it enters its <b>dividend zone</b> — highlighted right on its price track. While it's up there, every share you hold pays you cash automatically at the start of each of <b>your own</b> turns, and the rate climbs the closer it gets to the very top — some stocks pay out well over 20% per turn at their absolute peak. Shorting a stock that's currently in its own dividend zone costs you an extra penalty fee instead, since you're betting against a stock that's actively paying its holders.</p>
+        </div>
+
+        <div class="rb-section" id="rb-salary">
+          <h3>💼 Salary</h3>
+          <p>Every player draws a salary every turn, tiered by <b>current net-worth rank</b> — a built-in catch-up mechanic. Whoever's actually in last place gets paid the most; whoever's in 1st gets paid the least. This is recalculated live off your current standing every single turn, not locked in when the game starts:</p>
+          <table class="rb-table">
+            <tr><th>Rank</th><th>Salary per turn</th></tr>
+            <tr><td>1st place</td><td>$2,000</td></tr>
+            <tr><td>2nd place</td><td>$4,000</td></tr>
+            <tr><td>3rd place</td><td>$6,000</td></tr>
+            <tr><td>Last place</td><td>$8,000</td></tr>
+          </table>
+        </div>
+
+        <div class="rb-section" id="rb-insider">
+          <h3>🕵️ Insider Info &amp; Jail</h3>
+          <p>Insider Info tips predict that a random stock will hit a random price within 12 turns. They come from 4 kinds of sources, each trading reliability against legal risk:</p>
+          <table class="rb-table">
+            <tr><th>Source</th><th>Chance it's fake</th><th>Risk per turn acting on a real one</th><th>If caught</th></tr>
+            <tr><td>C-Suite</td><td>Never fake</td><td>~2%</td><td>2 turns jail, 20% of everything seized (40% on the tipped stock)</td></tr>
+            <tr><td>Industry Expert</td><td>~1 in 7</td><td>~1%</td><td>2 turns jail, 15% seized (30% on the tipped stock)</td></tr>
+            <tr><td>Friend</td><td>~2 in 7</td><td>~0.5%</td><td>1 turn jail, 5% seized (10% on the tipped stock)</td></tr>
+            <tr><td>Napkin</td><td>~3 in 7</td><td>No risk</td><td>Never — it's just gossip</td></tr>
+          </table>
+          <p>You can also spend $10,000 during your trade phase to buy a guaranteed-real tip outright. If you get caught acting on a real one, you go to jail for the listed number of turns — no cards, no dividends, no salary while serving time — get temporarily barred from trading the tipped stock after release, and a slice of your entire portfolio gets seized on the spot.</p>
+        </div>
+
+        <div class="rb-section" id="rb-risk">
+          <h3>⚠️ Margin Calls, Bankruptcy &amp; Elimination</h3>
+          <ul>
+            <li><b>Margin call:</b> if the cash locked up as short collateral ever exceeds your actual cash on hand, your biggest short gets force-covered automatically until you're back in the clear. Margin Call Forgiveness cards can shield you from one of these.</li>
+            <li><b>Bankruptcy:</b> if your cash goes negative and you don't have enough sellable holdings to cover it, you're bankrupt — you get a fresh, reduced $20,000 restart. Only your own game resets; everyone else keeps playing untouched.</li>
+            <li><b>Elimination:</b> if your net worth AND cash are both negative with truly nothing left to sell, you're eliminated. Once only one player is left standing, they win automatically.</li>
+          </ul>
+        </div>
+
+        <div class="rb-section" id="rb-winning">
+          <h3>🏆 Winning</h3>
+          <p>Every game is set up with one of two win conditions, chosen when the game is created:</p>
+          <ul>
+            <li><b>Net worth target</b> — first player to reach the target ($250,000 / $500,000 / $1,000,000 / $10,000,000) wins immediately.</li>
+            <li><b>Timer</b> — whoever has the highest net worth when a 30-minute clock runs out wins.</li>
+          </ul>
+        </div>
+
+        <div class="rb-section" id="rb-cards">
+          <h3>🃏 Card Guide</h3>
+          <p>The deck has 47 different kinds of cards. <span class="rb-tag holdable">Holdable</span> means some or all copies can be saved for later instead of resolving immediately. <span class="rb-tag choice">Choice</span> means you make a decision when it resolves, instead of it just happening to you.</p>
+
+          <div class="rb-subhead">Market-Wide Events</div>
+          <div class="rb-card-grid">
+            <div class="rb-card"><div class="rb-card-name">Bull Market</div><div class="rb-card-desc">All 8 stocks and both index funds rise 1 or 2 steps.</div></div>
+            <div class="rb-card"><div class="rb-card-name">Recession / COVID-19</div><div class="rb-card-desc">A market-wide crash — 2, 3, or (rarely) 6 steps off every stock and both indexes, depending on severity.</div></div>
+            <div class="rb-card"><div class="rb-card-name">Buyout</div><div class="rb-card-desc">A random stock is bought out at a random price — every long and short position in it settles instantly at that price, then it reopens and trades normally.</div></div>
+            <div class="rb-card"><div class="rb-card-name">Short Squeeze</div><div class="rb-card-desc">A random stock surges hard, forcing everyone shorting it to cover immediately at the new, higher price.</div></div>
+            <div class="rb-card"><div class="rb-card-name">Freeze</div><div class="rb-card-desc">A random stock becomes immune to the next dictated movement card that targets it.</div></div>
+            <div class="rb-card"><div class="rb-card-name">Rate Hike / Rate Cut</div><div class="rb-card-desc">Every stock's dividend zone rate is boosted 50% or cut in half, for the next 6 turns.</div></div>
+          </div>
+
+          <div class="rb-subhead">Stock &amp; Sector Movement</div>
+          <div class="rb-card-grid">
+            <div class="rb-card"><div class="rb-card-name">Move a Stock / Move a Sector<span class="rb-tag holdable">Holdable</span></div><div class="rb-card-desc">A specific stock or sector (baked into the card) moves 1-4 steps up or down. Some copies are holdable so you can time when it lands.</div></div>
+            <div class="rb-card"><div class="rb-card-name">Reversion<span class="rb-tag holdable">Holdable</span></div><div class="rb-card-desc">An overextended stock or sector pulls back 1-2 steps toward its center price.</div></div>
+            <div class="rb-card"><div class="rb-card-name">Move Any Stock / Move Any Sector<span class="rb-tag holdable">Holdable</span><span class="rb-tag choice">Choice</span></div><div class="rb-card-desc">You choose which stock or sector, and which direction, to nudge 1 step. Half of each copy is holdable.</div></div>
+            <div class="rb-card"><div class="rb-card-name">Whale Trade<span class="rb-tag choice">Choice</span></div><div class="rb-card-desc">Trade a stock right now at today's price — your own trade then pushes the price 2 extra steps in that direction on top of the usual effect.</div></div>
+            <div class="rb-card"><div class="rb-card-name">Stock Split<span class="rb-tag choice">Choice</span></div><div class="rb-card-desc">Pick a stock you own — your share count in it doubles.</div></div>
+          </div>
+
+          <div class="rb-subhead">Insider Info &amp; Intelligence</div>
+          <div class="rb-card-grid">
+            <div class="rb-card"><div class="rb-card-name">Market Peek</div><div class="rb-card-desc">Reveals the next 3 cards in the deck.</div></div>
+            <div class="rb-card"><div class="rb-card-name">Scheduled Swing<span class="rb-tag choice">Choice</span></div><div class="rb-card-desc">Pick a stock and a direction now — it swings 2 steps that way, exactly 2 turns from now.</div></div>
+            <div class="rb-card"><div class="rb-card-name">Insider Info Tip</div><div class="rb-card-desc">A random stock will hit a random price within 12 turns. See the Insider Info section above for reliability and risk by source.</div></div>
+            <div class="rb-card"><div class="rb-card-name">Earnings Report</div><div class="rb-card-desc">A random stock publicly beats or misses earnings and drifts up to 4 steps a turn, for up to 12 of your own turns.</div></div>
+            <div class="rb-card"><div class="rb-card-name">Insider Info Blocker<span class="rb-tag holdable">Holdable</span><span class="rb-tag choice">Choice</span></div><div class="rb-card-desc">Secretly protect one stock — nobody else ever finds out which — from any Insider Info tip moving its price, for a random number of rounds.</div></div>
+            <div class="rb-card"><div class="rb-card-name">Espionage<span class="rb-tag choice">Choice</span></div><div class="rb-card-desc">Pick an opponent — see their complete real holdings for a random 1-5 of your own turns.</div></div>
+          </div>
+
+          <div class="rb-subhead">Cash, Income &amp; Perks</div>
+          <div class="rb-card-grid">
+            <div class="rb-card"><div class="rb-card-name">Cash Bonus</div><div class="rb-card-desc">Instant flat cash — $5,000, $10,000, or $25,000.</div></div>
+            <div class="rb-card"><div class="rb-card-name">Stock Gift</div><div class="rb-card-desc">1 free share of a specific stock.</div></div>
+            <div class="rb-card"><div class="rb-card-name">Steady Hand</div><div class="rb-card-desc">$250 for every distinct stock you currently hold any shares in.</div></div>
+            <div class="rb-card"><div class="rb-card-name">Dividend Day</div><div class="rb-card-desc">A specific sector pays out — you get $100/share owned in its two stocks, everyone else gets $50/share.</div></div>
+            <div class="rb-card"><div class="rb-card-name">Loyalty Bonus</div><div class="rb-card-desc">Pays out based on how many turns in a row you've held your longest-held stock without selling.</div></div>
+            <div class="rb-card"><div class="rb-card-name">Golden Goose</div><div class="rb-card-desc">A random stock permanently pays you an extra 10% dividend on your holdings in it, every one of your own turns, for the rest of the game — stacks with the normal dividend zone.</div></div>
+            <div class="rb-card"><div class="rb-card-name">Hunter<span class="rb-tag holdable">Holdable</span><span class="rb-tag choice">Choice</span></div><div class="rb-card-desc">Kill an opponent's Golden Goose for good. Some copies are holdable so you can wait for a real target.</div></div>
+            <div class="rb-card"><div class="rb-card-name">Public Offering</div><div class="rb-card-desc">This turn only: buy up to 4 shares each of up to 3 different stocks, with no group fee and no price impact.</div></div>
+            <div class="rb-card"><div class="rb-card-name">Portfolio Manager</div><div class="rb-card-desc">For a random number of your own turns, anything you buy or short gets a 20% boost on any gain, paid out as a lump sum when the window closes.</div></div>
+            <div class="rb-card"><div class="rb-card-name">Inheritance</div><div class="rb-card-desc">A random windfall between $0-$100,000 for anyone, or between $0-$250,000 if you're specifically in last place.</div></div>
+            <div class="rb-card"><div class="rb-card-name">Golden Parachute</div><div class="rb-card-desc">If you're in last place by net worth (ties included), get a $20,000 bailout.</div></div>
+          </div>
+
+          <div class="rb-subhead">Threats</div>
+          <div class="rb-card-grid">
+            <div class="rb-card"><div class="rb-card-name">Dividend Leach</div><div class="rb-card-desc">Skims 10% of the dividend earnings of whoever's currently in 1st place by net worth (2nd place instead if that's you), for a random 2-5 rounds. The target isn't locked in — it follows the lead as it changes hands.</div></div>
+            <div class="rb-card"><div class="rb-card-name">Permanent Dividend Leach</div><div class="rb-card-desc">The same as Dividend Leach above, but never expires.</div></div>
+          </div>
+
+          <div class="rb-subhead">Career &amp; Life</div>
+          <div class="rb-card-grid">
+            <div class="rb-card"><div class="rb-card-name">Promotion</div><div class="rb-card-desc">Your own salary permanently goes up somewhere between $1,000-$6,000 per turn.</div></div>
+            <div class="rb-card"><div class="rb-card-name">Fired</div><div class="rb-card-desc">No salary for a random number of rounds.</div></div>
+            <div class="rb-card"><div class="rb-card-name">Overtime</div><div class="rb-card-desc">Earn 1.5x salary for a random number of turns.</div></div>
+            <div class="rb-card"><div class="rb-card-name">Marriage</div><div class="rb-card-desc">Your spouse gets an independent salary of their own, based on your current net-worth rank (same tiers as Salary above) — live every turn, never boosted by your own Promotion or Overtime.</div></div>
+            <div class="rb-card"><div class="rb-card-name">Divorce</div><div class="rb-card-desc">If you're in 1st place by net worth, your cash and every holding gets cut in half. No effect otherwise.</div></div>
+          </div>
+
+          <div class="rb-subhead">Protection</div>
+          <div class="rb-card-grid">
+            <div class="rb-card"><div class="rb-card-name">Margin Call Forgiveness</div><div class="rb-card-desc">Shields you from your next forced margin-call liquidation.</div></div>
+          </div>
+        </div>
+
+        <button class="btn full" id="closeRulebookBtn" style="margin-top:6px;">Back</button>
+      </div>
+    </div>`;
+  document.getElementById('closeRulebookBtn').onclick = onClose;
 }
 
 function renderCreateGameScreen(){
@@ -4458,6 +4811,7 @@ function startGameFromLobby(){
   state.createdAt = createdAt;
   Object.assign(state, locals);
   lastKnownSnapshot = {}; // structure changed completely — full replace, not a diff
+  lastSeenJailTurns = null; // fresh game — don't compare against the last one's jail state
   persistFull(); render();
 }
 
@@ -4467,10 +4821,31 @@ function renderLobbyScreen(){
   const allFilled = seats.every(s=>!!s) && seats.length>=2;
   const allBots = seats.every((s,i)=>bots[i]);
   const iHaveASeat = myPlayerIndex!==null && seats[myPlayerIndex] && !bots[myPlayerIndex];
+  // This screen rebuilds via innerHTML any time the lobby state changes AT
+  // ALL — including someone ELSE claiming a different seat, or adding a
+  // bot. Without capturing what's already typed into every still-open
+  // seat's name field first, that rebuild would otherwise silently reset
+  // everyone else's in-progress typing back to the "Player N" default —
+  // exactly the bug this fixes (same technique already used for the chat
+  // box and choice-card inputs elsewhere in render()).
+  const priorNameInputs = {};
+  let focusedSeatIdx = null;
+  seats.forEach((name,i)=>{
+    if(name) return; // already claimed — nothing to preserve
+    const el = document.getElementById('claimName'+i);
+    if(el){
+      priorNameInputs[i] = el.value;
+      if(document.activeElement===el) focusedSeatIdx = i;
+    }
+  });
   app.innerHTML = `
     <div class="overlay">
       <div class="modal">
         <h2><span style="color:#FFFFFF;">Up</span><span style="color:var(--up);">Trend</span> — Lobby</h2>
+        <div class="selected-ticker-box" style="margin-bottom:12px;">
+          <span class="stx">Room Code</span>
+          <span class="spx mono" style="font-size:18px;letter-spacing:1px;">${roomCode}</span>
+        </div>
         <div class="sub">${seats.filter(s=>s).length}/${seats.length} seats claimed. Everyone needs to claim a seat (or fill it with a bot) before the game can start.</div>
         <div class="hint" style="margin-bottom:10px;">Game length: <b>${(state.gameLength||GAME_LENGTH_OPTIONS.net500).label}</b></div>
         ${seats.map((name,i)=>{
@@ -4503,6 +4878,20 @@ function renderLobbyScreen(){
       if(claimBtn) claimBtn.onclick = ()=>claimSeat(i);
       const botBtn = document.getElementById('botBtn'+i);
       if(botBtn) botBtn.onclick = ()=>fillSeatWithBot(i);
+      // Put back whatever this seat's box had typed into it before the
+      // rebuild (see capture above), and restore focus + cursor position
+      // if that's the box the person was actively typing in — otherwise
+      // every keystroke elsewhere in the lobby would bump their cursor
+      // back out of the field entirely, not just lose the text.
+      const nameInput = document.getElementById('claimName'+i);
+      if(nameInput && priorNameInputs[i]!==undefined){
+        nameInput.value = priorNameInputs[i];
+        if(focusedSeatIdx===i){
+          nameInput.focus();
+          const len = nameInput.value.length;
+          nameInput.setSelectionRange(len, len);
+        }
+      }
     } else if(bots[i]){
       const removeBtn = document.getElementById('removeBotBtn'+i);
       if(removeBtn) removeBtn.onclick = ()=>removeBotFromSeat(i);
@@ -4990,11 +5379,17 @@ function renderSidebar(){
       perkBadges.push(`🏷️ Public Offering — ${left} stock${left===1?'':'s'} left this turn`);
     }
     (state.dividendLeaches||[]).forEach(leach=>{
-      const dur = leach.permanent ? 'permanent' : `${leach.turnsLeft} left`;
-      if(leach.thiefIndex===myPlayerIndex) perkBadges.push(`🩸 Leaching ${state.players[leach.victimIndex].name} (${dur})`);
-      if(leach.victimIndex===myPlayerIndex) perkBadges.push(`🩸 Being leached by ${state.players[leach.thiefIndex].name} (${dur})`);
+      // Target(s) are dynamic — always whoever's currently in 1st place, so
+      // recompute who that is right now rather than showing a fixed name.
+      const dur = leach.permanent ? 'permanent' : `${leach.roundsLeft} round${leach.roundsLeft===1?'':'s'} left`;
+      const targets = currentLeachTargets(leach.thiefIndex);
+      if(leach.thiefIndex===myPlayerIndex){
+        const names = targets.length ? targets.map(i=>state.players[i].name).join(' & ') : 'no one right now';
+        perkBadges.push(`🩸 Leaching ${names} (${dur})`);
+      }
+      if(myPlayerIndex!==null && targets.includes(myPlayerIndex)) perkBadges.push(`🩸 Being leached by ${state.players[leach.thiefIndex].name} (${dur})`);
     });
-    if((me.bannedStocks||[]).length) perkBadges.push(`🚫 Barred from trading: ${me.bannedStocks.join(', ')}`);
+    (me.tradeBans||[]).forEach(b=> perkBadges.push(`🚫 Barred from trading ${b.stock} — ${b.turnsLeft} more turn${b.turnsLeft===1?'':'s'}`));
     if(me.firedRoundsLeft>0) perkBadges.push(`💼 Fired — no salary for ${me.firedRoundsLeft} more round${me.firedRoundsLeft===1?'':'s'}`);
     else if(me.overtimeTurnsLeft>0) perkBadges.push(`💰 Overtime — 1.5x salary for ${me.overtimeTurnsLeft} more turn${me.overtimeTurnsLeft===1?'':'s'}`);
     if(!me.salaryTurnCount){
@@ -5002,7 +5397,7 @@ function renderSidebar(){
     } else {
       const salaryMods = [];
       if(me.promotionBumpPct>0) salaryMods.push(`+${Math.round(me.promotionBumpPct*100)}% promoted`);
-      if(me.married) salaryMods.push('married ×2');
+      if(me.married) salaryMods.push(`spouse +$${tierSalaryFor(me).toLocaleString()}`);
       perkBadges.push(`📈 Salary: $${liveSalaryFor(me).toLocaleString()}/turn (rank #${salaryRankOf(me)}${salaryMods.length?', '+salaryMods.join(', '):''})`);
     }
     (me.portfolioManagers||[]).forEach(pm=>{
@@ -5272,9 +5667,6 @@ function renderChoiceUI(card){
           <button class="btn short" id="c_short">Short (pushes price down)</button>
           <button class="btn secondary" id="c_hold">Hold — no trade</button>
         </div>`;
-    case 'dividend_leach':
-      return `<div class="trade-row"><select id="c_victim">${state.players.map((pl,i)=> (i!==state.current && !pl.eliminated) ? `<option value="${i}">${pl.name}</option>` : '').join('')}</select></div>
-        <button class="btn full" id="c_leach">Leach</button>`;
     case 'insider_blocker':
       return `<div class="trade-row"><select id="c_stock">${STOCK_IDS.map(id=>`<option value="${id}">${id}</option>`).join('')}</select></div>
         <button class="btn full" id="c_block">Protect This Stock</button>
@@ -5293,7 +5685,6 @@ function renderChoiceUI(card){
 }
 
 function wireChoiceHandlers(card){
-  const byId = x=>document.getElementById(x);
   const done = (choice)=>{
     const ok = resolveChoice(card, choice);
     if(ok===false){ render(); return; } // keep the card open so they can adjust and retry
@@ -5322,9 +5713,6 @@ function wireChoiceHandlers(card){
       if(byId('c_short')) byId('c_short').onclick = ()=>done({ stock: byId('c_stock').value, qty: parseInt(byId('c_qty').value)||1, side:'short' });
       if(byId('c_hold')) byId('c_hold').onclick = ()=>done({ side:'hold' });
       break;
-    case 'dividend_leach':
-      if(byId('c_leach')) byId('c_leach').onclick = ()=>done({ victimIndex: parseInt(byId('c_victim').value) });
-      break;
     case 'insider_blocker':
       if(byId('c_block')) byId('c_block').onclick = ()=>done({ stock: byId('c_stock').value });
       break;
@@ -5344,6 +5732,7 @@ function wireChoiceHandlers(card){
 function render(){
   if(!state || state.phase==='lobby' || myPlayerIndex===null){ renderSetup(); return; }
   repairCollections(state); // belt-and-suspenders: guarantee these exist no matter how state got here
+  checkJailSfx(); // broadcasts the jail clang to this client if anyone's jailTurnsLeft just ticked up
   const p = state.players[state.current];
   // render() fully rebuilds the DOM via innerHTML below — on many mobile
   // browsers, replacing all that content resets (or otherwise disturbs)
@@ -5420,7 +5809,6 @@ function render(){
   `;
 
   // wire buttons
-  const byId = x=>document.getElementById(x);
   if(byId('drawBtn')) byId('drawBtn').onclick = guardedTradeClick(()=>drawCard());
   if(byId('bankruptcyResetBtn')) byId('bankruptcyResetBtn').onclick = humanBankruptcyReset;
   if(byId('endTurnBtn')) byId('endTurnBtn').onclick = guardedTradeClick(requestEndTurn);
