@@ -1525,19 +1525,30 @@ function freshState(players, gameLength){
 
 function isMyTurn(){ return state && myPlayerIndex!==null && myPlayerIndex===state.current; }
 
-const TURN_TIME_LIMIT = 90; // seconds — a hard total budget for the whole turn, not an inactivity timer (see turnTimerSecondsLeft)
-/* A fixed, total-per-turn budget: measured from turnStartedAt (set the
-   instant the previous player's turn ends — see endTurn()), NOT from
-   lastActivityAt. This used to be activity-based on purpose (an earlier
-   version measured from lastActivityAt specifically so a player who was
-   still genuinely, actively trading right up to the wire would never get
-   silently force-ended out from under them) — that tradeoff has been
-   deliberately reversed here: 90 seconds is a hard cap per turn, and it now
-   applies the same way whether the player is actively clicking or AFK. If
-   this ever needs to go back to rewarding active play instead of enforcing
-   a strict budget, swap the basis back to `state.lastActivityAt ||
-   state.turnStartedAt` (touchActivity() below still maintains it either
-   way, just isn't consulted here anymore). */
+const TURN_TIME_LIMIT = 90; // seconds — the total budget a turn is expected to fit inside, counted from turnStartedAt
+const ACTIVITY_GRACE_MS = 20000; // once the budget is up, a player still gets force-advanced only after this long with no real action
+/* Any OTHER connected browser only learns about the acting player's clicks
+   once that write round-trips through Firebase (touchActivity() updates are
+   local-first, pushed out via the debounced schedulePersist()) — so a
+   spectator's or another player's own copy of state.lastActivityAt always
+   lags the true value by some amount of real sync latency. Without this,
+   the moment the 90s budget expires, whichever OTHER browser's 1-second
+   check happens to land inside that lag window sees a stale "quiet" signal
+   and can force-advance a turn the player is actively working through right
+   now. Only the acting player's own browser has zero lag on its own
+   activity, so it keeps the tight ACTIVITY_GRACE_MS window; every other
+   browser is required to see an additional buffer of true silence before
+   it's allowed to intervene — see hasRecentActivity(). */
+const CROSS_CLIENT_SYNC_BUFFER_MS = 15000;
+/* Hybrid budget: the clock is a hard 90s counted from turnStartedAt (set the
+   instant the previous player's turn ends — see endTurn()), so a truly AFK
+   player is always cut off a few seconds after the 90s mark. But a player
+   who is genuinely still clicking around — drawing, trading, resolving a
+   choice — keeps refreshing lastActivityAt via touchActivity(), and
+   isTurnProtectedFromTimeout() below checks that too, so someone actively
+   engaged past 90s is never yanked out mid-decision the way a pure
+   turnStartedAt-only cutoff would. Enforcement only fires once BOTH the 90s
+   budget is spent AND the player has gone quiet for ACTIVITY_GRACE_MS. */
 function turnTimerSecondsLeft(){
   if(!state || state.gameOver) return TURN_TIME_LIMIT;
   const basis = state.turnStartedAt;
@@ -1547,10 +1558,8 @@ function turnTimerSecondsLeft(){
 }
 /* Called from every function that represents the CURRENT player actually
    doing something on their own turn (drawing, trading, resolving a card
-   choice, ending it). Kept even though turnTimerSecondsLeft() no longer
-   reads lastActivityAt — it's harmless bookkeeping (e.g. useful if a "last
-   active" indicator gets added later) and several call sites already
-   depend on it existing, so it's left in place rather than ripped out. */
+   choice, ending it). Drives the activity-grace side of the hybrid timeout
+   check in isTurnProtectedFromTimeout() — see ACTIVITY_GRACE_MS above. */
 function touchActivity(){
   if(state) state.lastActivityAt = Date.now();
 }
@@ -1593,9 +1602,28 @@ setInterval(()=>{
 /* A card that still needs a choice protects the turn from being force-ended
    regardless of the clock — an auto-resolved card just sitting in its
    "Continue" acknowledgment modal does NOT protect it, since its effect
-   already happened and nothing is left to decide. */
+   already happened and nothing is left to decide. This is deliberately
+   narrow (choice cards only) because forceAdvanceStalledTurn() below also
+   consults it step-by-step once enforcement is already underway — see
+   hasRecentActivity() for the separate, broader check that gates whether
+   enforcement should even begin. */
 function isTurnProtectedFromTimeout(){
   return !!(state && state.pendingCard && needsChoice(state.pendingCard));
+}
+
+/* True if the current player has taken a real action within the last
+   ACTIVITY_GRACE_MS (see touchActivity()/lastActivityAt). This is what
+   keeps an actively-trading player from getting their buy/sell/short/cover
+   buttons yanked out mid-decision the instant the 90s budget hits zero —
+   only checked once, before enforcement decides whether to start at all,
+   not on every step of forceAdvanceStalledTurn()'s internal loop (once
+   underway, that loop should run straight through without re-checking
+   activity that's now stale by definition). */
+function hasRecentActivity(){
+  if(!state) return false;
+  const lastActive = state.lastActivityAt || state.turnStartedAt || 0;
+  const buffer = isMyTurn() ? ACTIVITY_GRACE_MS : (ACTIVITY_GRACE_MS + CROSS_CLIENT_SYNC_BUFFER_MS);
+  return (Date.now() - lastActive) < buffer;
 }
 
 /* Any connected browser can notice a stalled turn, but only one of them
@@ -1667,14 +1695,16 @@ function forceAdvanceStalledTurn(){
   persist(); render();
 }
 
-/* Runs every tick alongside the visible countdown: once time's up and the
-   turn isn't protected by a pending choice card, try to claim the lock and
-   push the stalled player's turn forward. */
+/* Runs every tick alongside the visible countdown: once time's up, the turn
+   isn't protected by a pending choice card, AND the player has gone quiet
+   for ACTIVITY_GRACE_MS (see hasRecentActivity()), try to claim the lock
+   and push the stalled player's turn forward. */
 let timeoutCheckInFlight = false;
 setInterval(async ()=>{
   if(timeoutCheckInFlight || !roomCode || !state || state.gameOver || state.phase==='lobby') return;
   if(turnTimerSecondsLeft() > 0) return;
   if(isTurnProtectedFromTimeout()) return;
+  if(hasRecentActivity()) return;
   timeoutCheckInFlight = true;
   try{
     const won = await claimTimeoutLock(state.turnStartedAt);
@@ -5840,10 +5870,19 @@ function render(){
     el.onclick = ()=>{ if(!el.disabled) playCardFromHand(parseInt(el.getAttribute('data-play-hand-idx'))); };
   });
   document.querySelectorAll('[data-trade-id]').forEach(el=>{
-    el.onclick = ()=>{ state.tradeSelection = el.getAttribute('data-trade-id'); render(); };
+    // Picking a stock to look at is real engagement — someone comparing a
+    // few tickers before deciding is exactly the "actively playing" case
+    // the turn-timeout grace window (see hasRecentActivity()) exists to
+    // protect, so this counts as activity even though it's not a completed
+    // trade yet. Gated to isMyTurn() like every other touchActivity() call
+    // site — the board stays visible/clickable to everyone (tradeSelection
+    // is per-browser, LOCAL_ONLY_KEYS), so an idle player poking around the
+    // market during someone ELSE's turn must not reset that other player's
+    // clock.
+    el.onclick = ()=>{ if(isMyTurn()) touchActivity(); state.tradeSelection = el.getAttribute('data-trade-id'); render(); };
   });
   document.querySelectorAll('[data-chart-id]').forEach(el=>{
-    el.onclick = (ev)=>{ ev.stopPropagation(); state.expandedChart = el.getAttribute('data-chart-id'); render(); };
+    el.onclick = (ev)=>{ ev.stopPropagation(); if(isMyTurn()) touchActivity(); state.expandedChart = el.getAttribute('data-chart-id'); render(); };
   });
   if(byId('closeChartBtn')) byId('closeChartBtn').onclick = ()=>{ state.expandedChart = null; render(); };
   if(byId('ackBtn')) byId('ackBtn').onclick = ()=>{
