@@ -282,6 +282,13 @@
   }
   .count-opt.selected{border-color:var(--amber);color:var(--amber);}
   .hint{font-size:11px;color:var(--muted);margin-top:10px;line-height:1.5;}
+  /* Overrides the generic .setup-field input rule above (padding/border/
+     background meant for text inputs looks broken on a native range slider)
+     and re-themes the slider to match the amber accent used everywhere else. */
+  .setup-field input[type=range]{
+    padding:0;border:none;background:transparent;accent-color:var(--amber);
+    height:22px;cursor:pointer;
+  }
 
   /* ---------- rulebook ---------- */
   .rb-modal{max-width:860px;max-height:85vh;overflow-y:auto;}
@@ -858,6 +865,7 @@ function repairCollections(s){
   // old save reloads.
   if(s.lastActivityAt===undefined) s.lastActivityAt = Date.now();
   if(s.vipCardPool===undefined) s.vipCardPool = []; // a game already in progress never retroactively gains these
+  if(s.botDifficulty===undefined) s.botDifficulty = 'normal'; // predates difficulty settings — Normal is the fair default for an old save
   if(s.stocks){
     Object.keys(s.stocks).forEach(id=>{
       if(s.stocks[id].tradeMarkers===undefined) s.stocks[id].tradeMarkers = [];
@@ -3865,6 +3873,69 @@ const BOT_MAX_TRADE_STEPS = 20;
 let botTradeStepsThisTurn = 0;
 let botTradeStepsTurnMarker = null;
 
+/* ============================= BOT DIFFICULTY ============================= */
+/* One game-wide setting (state.botDifficulty) shared by every bot seat in
+   that game — tunes the same decision logic in botTakeOneTradeAction/
+   botActOnOwnTips/botTierActionChance rather than branching into separate
+   code paths per level, so every difficulty benefits from the same bug
+   fixes and just plays looser or tighter around the same core strategy.
+   "Hard" is deliberately set to match the numbers this AI already used
+   before difficulty existed, so anyone who doesn't touch the setting still
+   gets a bot that plays exactly as disciplined as before by picking Hard;
+   "Normal" (the default in the setup screen) is a bit looser, and "Easy"
+   loses real games. "Impossible" is tighter than Hard was ever tuned to be
+   — smaller cash buffers, faster profit-taking, more willing to enter — a
+   genuinely hard opponent, not just a relabeled Hard. */
+const BOT_DIFFICULTY_PROFILES = {
+  easy: {
+    label: 'Easy',
+    skipChance: 0.35,      // chance each trade-phase step it just passes instead of acting — ends its turn's trading early, on average
+    tipConfidenceMult: 0.4,   // trusts its own Insider Info tips much less than a sharp trader would
+    cashBuffer: 0.5,          // keeps a big cash cushion in reserve, so trades come out small
+    marginSafetyThreshold: 0.03, // only proactively covers a short when almost completely out of cash
+    profitCoverThreshold: -0.4,  // waits for a short to swing way down before locking in the cover
+    profitSellThreshold: 0.6,    // waits for a long to get very rich before taking profit — gives back gains
+    shortEntryThreshold: 0.7,    // only shorts something wildly overextended
+    buyEntryThreshold: 0.05,     // only buys something screaming cheap — passes on plenty of decent entries
+  },
+  normal: {
+    label: 'Normal',
+    skipChance: 0.12,
+    tipConfidenceMult: 0.75,
+    cashBuffer: 0.32,
+    marginSafetyThreshold: 0.06,
+    profitCoverThreshold: -0.3,
+    profitSellThreshold: 0.52,
+    shortEntryThreshold: 0.62,
+    buyEntryThreshold: 0.12,
+  },
+  hard: {
+    label: 'Hard',
+    skipChance: 0,
+    tipConfidenceMult: 1.0,
+    cashBuffer: 0.25,
+    marginSafetyThreshold: 0.08,
+    profitCoverThreshold: -0.25,
+    profitSellThreshold: 0.45,
+    shortEntryThreshold: 0.55,
+    buyEntryThreshold: 0.2,
+  },
+  impossible: {
+    label: 'Impossible',
+    skipChance: 0,
+    tipConfidenceMult: 1.0,
+    cashBuffer: 0.08,          // deploys almost all of its free cash every time
+    marginSafetyThreshold: 0.14, // shores up margin safety much earlier, well before it's actually at risk
+    profitCoverThreshold: -0.15, // covers shorts fast, the moment they're clearly profitable
+    profitSellThreshold: 0.35,   // takes profit fast rather than risking a reversal
+    shortEntryThreshold: 0.4,    // willing to short things that are only moderately overextended
+    buyEntryThreshold: 0.3,      // buys into mild dips too, not just screaming-cheap ones
+  },
+};
+function botDifficultyProfile(){
+  return BOT_DIFFICULTY_PROFILES[(state && state.botDifficulty) || 'normal'];
+}
+
 /* -1..1 — how far a stock sits from its own track's center, negative means
    cheap relative to its own range, positive means rich. Comparable across
    stocks even though they now have very different dollar centers. */
@@ -3933,13 +4004,18 @@ function botCheapestStockDiversified(bot){
    up). A bot can't see whether ITS OWN tip is the fake one any more than a
    human can — same hidden information, just a learned prior on the source. */
 function botTierActionChance(tier){
-  switch(tier){
-    case 'csuite': return 1.0;
-    case 'expert': return 0.85;
-    case 'friend': return 0.65;
-    case 'napkin': return 0.35;
-    default: return 0.6;
-  }
+  const base = (()=>{
+    switch(tier){
+      case 'csuite': return 1.0;
+      case 'expert': return 0.85;
+      case 'friend': return 0.65;
+      case 'napkin': return 0.35;
+      default: return 0.6;
+    }
+  })();
+  // Scaled by difficulty — an Easy bot has the same source-tier priors as
+  // any other, it's just much less willing to actually act on them.
+  return Math.min(1, base * botDifficultyProfile().tipConfidenceMult);
 }
 /* Checks the bot's own active Insider Info predictions and, if confident
    enough in the source, trades toward the predicted price right now —
@@ -3949,6 +4025,7 @@ function botTierActionChance(tier){
    checkInsiderTradingRisk/checkInsiderActedOn — a bot that acts on a tip
    is just as exposed as a human would be. */
 function botActOnOwnTips(bot){
+  const profile = botDifficultyProfile();
   const tips = (state.scheduled||[]).filter(item=>
     item.ownerIndex===state.current && item.kind==='sched_price' &&
     item.stock && !state.stocks[item.stock].worthless
@@ -3958,7 +4035,7 @@ function botActOnOwnTips(bot){
     const cur = price(tip.stock);
     if(tip.snappedPrice > cur*1.05 && (bot.shorts[tip.stock]||0)<=0 && capRemaining()>0 && capRemainingForStock(tip.stock)>0){
       const qty = Math.min(2, capRemaining(), capRemainingForStock(tip.stock));
-      const buffer = freeCash(bot)*0.2;
+      const buffer = freeCash(bot)*profile.cashBuffer;
       const priorFilled = state.turnFills.up[tip.stock]||0;
       const walk = walkOrderDetailed(tip.stock, qty, +1, priorFilled);
       if(qty>0 && (walk.total+walk.fee) <= (freeCash(bot)-buffer)){
@@ -3967,7 +4044,7 @@ function botActOnOwnTips(bot){
       }
     } else if(tip.snappedPrice < cur*0.95 && bot.shares[tip.stock]<=0 && capRemaining()>0 && capRemainingForStock(tip.stock)>0){
       const qty = Math.min(2, capRemaining(), capRemainingForStock(tip.stock));
-      const buffer = freeCash(bot)*0.25;
+      const buffer = freeCash(bot)*profile.cashBuffer;
       if(qty>0 && price(tip.stock)*qty <= (freeCash(bot)-buffer)){
         openShort(tip.stock, qty, true);
         return true;
@@ -4133,16 +4210,24 @@ function botTryPlayHeldCard(){
    is what keeps that ceiling from ever actually being needed in practice. */
 function botTakeOneTradeAction(){
   const bot = state.players[state.current];
+  const profile = botDifficultyProfile();
 
   // 1. Trade on the bot's own Insider Info while it's still live — the
   // single highest-conviction move available when it applies.
   if(botActOnOwnTips(bot)) return true;
 
+  // Weaker difficulties sometimes just don't make the "smart" play this
+  // step — since returning false here (with nothing else left to try) is
+  // what ends the bot's trading for the rest of THIS turn (see
+  // runBotStep), a skip roll is what actually makes Easy/Normal visibly
+  // less aggressive turn to turn, not just individually worse trades.
+  if(Math.random() < profile.skipChance) return false;
+
   // 2. Proactive margin safety: if free cash has gotten dangerously thin
   // relative to net worth, cover a meaningful chunk of the worst short now
   // — most of the position, not a token amount — rather than waiting for
   // an actual forced margin call next turn.
-  if(netWorth(bot)>0 && freeCash(bot) < netWorth(bot)*0.08){
+  if(netWorth(bot)>0 && freeCash(bot) < netWorth(bot)*profile.marginSafetyThreshold){
     let worst=null, worstLiab=-1;
     STOCK_IDS.forEach(id=>{
       const liab = (bot.shorts[id]||0)*price(id);
@@ -4156,20 +4241,20 @@ function botTakeOneTradeAction(){
   }
 
   // 3. Cover a short that's swung back down — lock in the WHOLE profit.
-  const coverable = STOCK_IDS.find(id=> (bot.shorts[id]||0)>0 && botRelativeIdx(id) < -0.25 );
+  const coverable = STOCK_IDS.find(id=> (bot.shorts[id]||0)>0 && botRelativeIdx(id) < profile.profitCoverThreshold );
   if(coverable){ coverShort(coverable, bot.shorts[coverable], true); return true; }
 
   // 4. Sell a long holding that's gotten rich — take the WHOLE win.
-  const richHeld = STOCK_IDS.find(id=> bot.shares[id]>0 && botRelativeIdx(id) > 0.45 );
+  const richHeld = STOCK_IDS.find(id=> bot.shares[id]>0 && botRelativeIdx(id) > profile.profitSellThreshold );
   if(richHeld){ sellShares(richHeld, bot.shares[richHeld], true); return true; }
 
   // 5. Open a short on something clearly overextended, as long as it isn't
   // also a stock the bot is long in (no point betting both ways at once) —
   // sized to use as much of the turn's cap and cash as it can safely afford.
   if(capRemaining()>0){
-    const rich = STOCK_IDS.find(id=> !state.stocks[id].worthless && bot.shares[id]<=0 && botRelativeIdx(id) > 0.55 );
+    const rich = STOCK_IDS.find(id=> !state.stocks[id].worthless && bot.shares[id]<=0 && botRelativeIdx(id) > profile.shortEntryThreshold );
     if(rich && capRemainingForStock(rich)>0){
-      const buffer = freeCash(bot)*0.25;
+      const buffer = freeCash(bot)*profile.cashBuffer;
       const budget = Math.max(0, freeCash(bot)-buffer);
       const affordable = Math.max(0, Math.floor(budget / Math.max(1,price(rich))));
       const qty = Math.min(capRemaining(), capRemainingForStock(rich), affordable);
@@ -4188,8 +4273,8 @@ function botTakeOneTradeAction(){
   // alone doesn't fit.
   if(capRemaining()>0){
     const cheap = botCheapestStockDiversified(bot);
-    if(cheap && capRemainingForStock(cheap)>0 && botRelativeIdx(cheap) < 0.2){
-      const buffer = freeCash(bot)*0.25; // keep ~25% of free cash in reserve
+    if(cheap && capRemainingForStock(cheap)>0 && botRelativeIdx(cheap) < profile.buyEntryThreshold){
+      const buffer = freeCash(bot)*profile.cashBuffer; // reserve scales with difficulty
       const priorFilled = state.turnFills.up[cheap]||0;
       // capRemaining()/capRemainingForStock() are Infinity in $100M mode (no
       // per-turn cap at all) — always clamp against a cash-affordability
@@ -4381,12 +4466,21 @@ document.addEventListener('visibilitychange', ()=>{
 /* Sets up a fresh 1-player-vs-bot game directly, skipping the lobby
    entirely (there's nothing to wait on — only one human seat exists). */
 const GAME_LENGTH_OPTIONS = {
-  net250:  { mode:'networth', target:250000,     label:'$250,000' },
-  net500:  { mode:'networth', target:500000,     label:'$500,000' },
+  net100k: { mode:'networth', target:100000,     label:'$100,000' },
+  net250k: { mode:'networth', target:250000,     label:'$250,000' },
+  net500k: { mode:'networth', target:500000,     label:'$500,000' },
   net1m:   { mode:'networth', target:1000000,    label:'$1,000,000' },
+  net2m:   { mode:'networth', target:2000000,    label:'$2,000,000' },
+  net5m:   { mode:'networth', target:5000000,    label:'$5,000,000' },
   net10m:  { mode:'networth', target:10000000,   label:'$10,000,000' },
   timer30: { mode:'timer', minutes:30, label:'30 Min Timer' },
+  timer60: { mode:'timer', minutes:60, label:'60 Min Timer' },
 };
+// Net-worth options in slider order — the setup screen presents these as a
+// single 7-stop slider rather than a row of buttons, since a row of 7
+// buttons doesn't fit/scan well the way 3-4 did.
+const NETWORTH_LENGTH_KEYS = ['net100k','net250k','net500k','net1m','net2m','net5m','net10m'];
+const TIMER_LENGTH_KEYS = ['timer30','timer60'];
 
 /* ============================= SPEEDRUN (SOLO VS BOTS) ============================= */
 /* Any game with exactly one non-bot player is treated as a speedrun — the
@@ -4414,7 +4508,10 @@ function formatElapsed(ms){
 function speedrunLocalKey(){
   const glKey = state.gameLengthKey || (state.winCondition && state.winCondition.mode==='timer' ? 'timer' : 'custom');
   const botCount = state.players.filter(p=>p.bot).length;
-  return `uptrend_besttime_${glKey}_${botCount}bots`;
+  const difficulty = state.botDifficulty || 'normal';
+  // Difficulty is part of the key too — an Easy-bot win shouldn't be able to
+  // steal a best time set against Hard or Impossible bots.
+  return `uptrend_besttime_${glKey}_${botCount}bots_${difficulty}`;
 }
 function loadBestSpeedrunTime(){
   try{ const raw = localStorage.getItem(speedrunLocalKey()); return raw ? parseInt(raw,10) : null; }catch(e){ return null; }
@@ -4440,8 +4537,8 @@ function maybeRecordSpeedrunResult(){
    — PLAYER_COLORS has exactly 4 entries, so 1 human + up to 3 bots is the
    natural cap without running out of distinct player colors. */
 function startBotGame(){
-  const glKey = window._setupGameLength || 'net500';
-  const gameLength = GAME_LENGTH_OPTIONS[glKey] || GAME_LENGTH_OPTIONS.net500;
+  const glKey = window._setupGameLength || 'net500k';
+  const gameLength = GAME_LENGTH_OPTIONS[glKey] || GAME_LENGTH_OPTIONS.net500k;
   const botCount = Math.max(1, Math.min(3, window._setupBotCount || 1));
   const names = ['You'];
   for(let i=1;i<=botCount;i++) names.push(botCount===1 ? 'Bot' : `Bot ${i}`);
@@ -4449,6 +4546,7 @@ function startBotGame(){
   for(let i=1;i<=botCount;i++) state.players[i].bot = true;
   state.createdAt = Date.now();
   state.gameLengthKey = glKey;
+  state.botDifficulty = window._setupBotDifficulty || 'normal';
   myPlayerIndex = 0;
   saveLocalRoom(roomCode, 0, 'You');
   lastKnownSnapshot = {};
@@ -4728,6 +4826,13 @@ function renderRulebookScreen(onClose){
 
 function renderCreateGameScreen(){
   const shareUrl = `${location.origin}${location.pathname}?room=${roomCode}`;
+  const lengthKey = window._setupGameLength || 'net500k';
+  const isTimerMode = GAME_LENGTH_OPTIONS[lengthKey] && GAME_LENGTH_OPTIONS[lengthKey].mode==='timer';
+  // The slider still needs SOME position to sit at even while a timer option
+  // is the actual current selection — falls back to the middle of the range
+  // ($500,000) rather than showing a blank/invalid state.
+  const sliderKey = isTimerMode ? 'net500k' : lengthKey;
+  const sliderIdx = Math.max(0, NETWORTH_LENGTH_KEYS.indexOf(sliderKey));
   app.innerHTML = `
     <div class="overlay">
       <div class="modal">
@@ -4740,13 +4845,20 @@ function renderCreateGameScreen(){
         <div class="setup-field"><label>Number of players</label>
           <div class="player-count-row" id="countRow"></div>
         </div>
-        <div class="setup-field"><label>Game length</label>
-          <div class="player-count-row" id="lengthRow"></div>
+        <div class="setup-field">
+          <label>Net worth target: <b id="netWorthSliderLabel" style="color:${isTimerMode?'var(--muted)':'var(--amber)'};"></b></label>
+          <input type="range" id="netWorthSlider" min="0" max="${NETWORTH_LENGTH_KEYS.length-1}" step="1" value="${sliderIdx}" style="width:100%;${isTimerMode?'opacity:0.45;':''}">
+        </div>
+        <div class="setup-field" style="margin-top:4px;"><label>— or race a timer instead —</label>
+          <div class="player-count-row" id="timerRow"></div>
         </div>
         <button class="btn full" id="createBtn">Create Game</button>
         <div class="hint">No game is running yet in this room. Pick a player count and create one — everyone else who opens this room will be able to join and claim a seat.</div>
         <div class="setup-field" style="margin-top:14px;"><label>— or play solo against bots (speedrun the clock) —</label>
           <div class="player-count-row" id="botCountRow"></div>
+        </div>
+        <div class="setup-field"><label>Bot difficulty</label>
+          <div class="player-count-row" id="botDifficultyRow"></div>
         </div>
         <button class="btn secondary full" id="vsBotBtn">${vsBotButtonLabel()}</button>
         <button class="btn secondary full" id="changeRoomBtn" style="margin-top:8px;">Use a Different Room</button>
@@ -4761,15 +4873,28 @@ function renderCreateGameScreen(){
     d.onclick = ()=>{ window._setupCount = n; renderCreateGameScreen(); };
     countRow.appendChild(d);
   });
-  let lengthKey = window._setupGameLength || 'net500';
-  const lengthRow = document.getElementById('lengthRow');
-  Object.keys(GAME_LENGTH_OPTIONS).forEach(key=>{
+
+  // Net worth slider — 7 discrete stops (see NETWORTH_LENGTH_KEYS). Updates
+  // just the label while dragging (cheap), and only commits the selection
+  // (with a full re-render) once the user releases it — re-rendering the
+  // whole screen on every 'input' tick while dragging would be janky and
+  // would also fight the drag itself by resetting the slider mid-gesture.
+  const slider = document.getElementById('netWorthSlider');
+  const sliderLabel = document.getElementById('netWorthSliderLabel');
+  const labelFor = idx => GAME_LENGTH_OPTIONS[NETWORTH_LENGTH_KEYS[idx]].label + (isTimerMode ? ' (timer mode selected below)' : '');
+  sliderLabel.textContent = labelFor(sliderIdx);
+  slider.oninput = ()=>{ sliderLabel.textContent = labelFor(parseInt(slider.value,10)); };
+  slider.onchange = ()=>{ window._setupGameLength = NETWORTH_LENGTH_KEYS[parseInt(slider.value,10)]; renderCreateGameScreen(); };
+
+  const timerRow = document.getElementById('timerRow');
+  TIMER_LENGTH_KEYS.forEach(key=>{
     const d = document.createElement('div');
     d.className = 'count-opt'+(key===lengthKey?' selected':'');
     d.textContent = GAME_LENGTH_OPTIONS[key].label;
     d.onclick = ()=>{ window._setupGameLength = key; renderCreateGameScreen(); };
-    lengthRow.appendChild(d);
+    timerRow.appendChild(d);
   });
+
   let botCount = window._setupBotCount || 1;
   const botCountRow = document.getElementById('botCountRow');
   [1,2,3].forEach(n=>{
@@ -4779,6 +4904,17 @@ function renderCreateGameScreen(){
     d.onclick = ()=>{ window._setupBotCount = n; renderCreateGameScreen(); };
     botCountRow.appendChild(d);
   });
+
+  let botDifficulty = window._setupBotDifficulty || 'normal';
+  const botDifficultyRow = document.getElementById('botDifficultyRow');
+  Object.keys(BOT_DIFFICULTY_PROFILES).forEach(key=>{
+    const d = document.createElement('div');
+    d.className = 'count-opt'+(key===botDifficulty?' selected':'');
+    d.textContent = BOT_DIFFICULTY_PROFILES[key].label;
+    d.onclick = ()=>{ window._setupBotDifficulty = key; renderCreateGameScreen(); };
+    botDifficultyRow.appendChild(d);
+  });
+
   document.getElementById('createBtn').onclick = ()=>{ createLobby(count); };
   document.getElementById('vsBotBtn').onclick = startBotGame;
   document.getElementById('changeRoomBtn').onclick = leaveRoom;
@@ -4790,12 +4926,17 @@ function vsBotButtonLabel(){
 }
 
 function createLobby(count){
-  const glKey = window._setupGameLength || 'net500';
-  const gameLength = GAME_LENGTH_OPTIONS[glKey] || GAME_LENGTH_OPTIONS.net500;
+  const glKey = window._setupGameLength || 'net500k';
+  const gameLength = GAME_LENGTH_OPTIONS[glKey] || GAME_LENGTH_OPTIONS.net500k;
   // Empty seats use '' (not null!) — Firebase Realtime Database silently
   // strips null entries out of arrays/objects on write, which was quietly
   // collapsing a 2-seat lobby down to 1 the moment it hit the database.
-  state = { phase:'lobby', lobbySeats: Array(count).fill(''), lobbyBots: Array(count).fill(false), gameLength, version:0, createdAt: Date.now(), ...localDefaults() };
+  state = {
+    phase:'lobby', lobbySeats: Array(count).fill(''), lobbyBots: Array(count).fill(false), gameLength,
+    gameLengthKey: glKey, // carried through to startGameFromLobby() — needed so a lobby-started solo-vs-bots game still tracks its speedrun best time against the right target instead of falling into a generic bucket
+    botDifficulty: window._setupBotDifficulty || 'normal', // set once here so any bots added later via "Add Bot" in the lobby already know what difficulty to play at
+    version:0, createdAt: Date.now(), ...localDefaults(),
+  };
   lastKnownSnapshot = {}; // this is a whole new structure — nothing to diff against yet
   persistFull(); render();
 }
@@ -4833,12 +4974,16 @@ function startGameFromLobby(){
   if(state.lobbySeats.every((s,i)=>state.lobbyBots[i])) return; // need at least one human seat
   const names = state.lobbySeats.slice();
   const bots = state.lobbyBots.slice();
-  const gameLength = state.gameLength || GAME_LENGTH_OPTIONS.net500;
+  const gameLength = state.gameLength || GAME_LENGTH_OPTIONS.net500k;
+  const gameLengthKey = state.gameLengthKey || null;
+  const botDifficulty = state.botDifficulty || 'normal';
   const locals = localDefaults();
   const createdAt = state.createdAt || Date.now();
   state = freshState(names, gameLength);
   state.players.forEach((pl,i)=>{ if(bots[i]) pl.bot = true; });
   state.createdAt = createdAt;
+  state.gameLengthKey = gameLengthKey;
+  state.botDifficulty = botDifficulty;
   Object.assign(state, locals);
   lastKnownSnapshot = {}; // structure changed completely — full replace, not a diff
   lastSeenJailTurns = null; // fresh game — don't compare against the last one's jail state
@@ -4877,7 +5022,7 @@ function renderLobbyScreen(){
           <span class="spx mono" style="font-size:18px;letter-spacing:1px;">${roomCode}</span>
         </div>
         <div class="sub">${seats.filter(s=>s).length}/${seats.length} seats claimed. Everyone needs to claim a seat (or fill it with a bot) before the game can start.</div>
-        <div class="hint" style="margin-bottom:10px;">Game length: <b>${(state.gameLength||GAME_LENGTH_OPTIONS.net500).label}</b></div>
+        <div class="hint" style="margin-bottom:10px;">Game length: <b>${(state.gameLength||GAME_LENGTH_OPTIONS.net500k).label}</b>${bots.some(Boolean) ? ` — Bot difficulty: <b>${BOT_DIFFICULTY_PROFILES[state.botDifficulty||'normal'].label}</b>` : ''}</div>
         ${seats.map((name,i)=>{
           if(name && bots[i]){
             return `<div class="selected-ticker-box" style="margin-bottom:8px;">
