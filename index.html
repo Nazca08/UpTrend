@@ -1873,8 +1873,19 @@ const BIG_ECONOMY_POSITION_CAP = 80; // net10m: max shares held long, or shorted
 function isBigEconomyMode(){
   return !!(state && state.winCondition && state.winCondition.mode==='networth' && state.winCondition.target>=10000000);
 }
-function turnCapLimit(){ return isBigEconomyMode() ? BIG_ECONOMY_TURN_CAP : TURN_CAP; }
-function perStockTurnCapLimit(){ return isBigEconomyMode() ? BIG_ECONOMY_TURN_CAP : PER_STOCK_TURN_CAP; }
+/* Whoever's turn it currently is gets the base cap — except a bot on Hard
+   or Impossible, which trades with a genuinely bigger per-turn allowance
+   than a human ever gets (see BOT_DIFFICULTY_PROFILES.capMultiplier). This
+   is a deliberate, real edge (not just "smarter" decisions within the same
+   budget) — the kind of raw advantage "Impossible" difficulty is expected
+   to have in most games, and the most direct way to make a bot able to
+   out-trade a skilled human turn over turn instead of just matching them. */
+function botCapMultiplier(){
+  const p = state && state.players && state.players[state.current];
+  return (p && p.bot) ? botDifficultyProfile().capMultiplier : 1;
+}
+function turnCapLimit(){ return Math.round((isBigEconomyMode() ? BIG_ECONOMY_TURN_CAP : TURN_CAP) * botCapMultiplier()); }
+function perStockTurnCapLimit(){ return Math.round((isBigEconomyMode() ? BIG_ECONOMY_TURN_CAP : PER_STOCK_TURN_CAP) * botCapMultiplier()); }
 function capRemaining(){ return turnCapLimit() - state.turnUsage.total; }
 function capRemainingForStock(id){ return perStockTurnCapLimit() - (state.turnUsage.perStock[id]||0); }
 // Total-position cap — only enforced in the big-economy mode, and only for
@@ -3876,16 +3887,24 @@ let botTradeStepsTurnMarker = null;
 /* ============================= BOT DIFFICULTY ============================= */
 /* One game-wide setting (state.botDifficulty) shared by every bot seat in
    that game — tunes the same decision logic in botTakeOneTradeAction/
-   botActOnOwnTips/botTierActionChance rather than branching into separate
-   code paths per level, so every difficulty benefits from the same bug
-   fixes and just plays looser or tighter around the same core strategy.
-   "Hard" is deliberately set to match the numbers this AI already used
-   before difficulty existed, so anyone who doesn't touch the setting still
-   gets a bot that plays exactly as disciplined as before by picking Hard;
-   "Normal" (the default in the setup screen) is a bit looser, and "Easy"
-   loses real games. "Impossible" is tighter than Hard was ever tuned to be
-   — smaller cash buffers, faster profit-taking, more willing to enter — a
-   genuinely hard opponent, not just a relabeled Hard. */
+   botActOnOwnTips/botTierActionChance/turnCapLimit/botCheapestStockDiversified
+   rather than branching into separate code paths per level, so every
+   difficulty benefits from the same bug fixes and just plays looser or
+   tighter (and, at the top end, with a bigger raw budget) around the same
+   core strategy.
+
+   First pass at this only tuned decision thresholds and left Hard exactly
+   matching the bot's original (pre-difficulty) numbers — that turned out
+   not to be enough: tighter heuristics alone don't reliably beat a human
+   who's actually paying attention, since the bot is still working with the
+   same per-turn trade cap and position-concentration limits a human has.
+   Hard and Impossible now also get capMultiplier (more shares per turn than
+   a human is allowed) and positionWeightMultiplier (allowed to concentrate
+   more into a single high-conviction position) — a real structural edge,
+   not just sharper decision-making, which is the more standard way
+   "Impossible" difficulty works in most games. Easy/Normal stay at the
+   human's own cap/concentration limits (1x) so they never have an
+   advantage, only a disadvantage. */
 const BOT_DIFFICULTY_PROFILES = {
   easy: {
     label: 'Easy',
@@ -3897,6 +3916,8 @@ const BOT_DIFFICULTY_PROFILES = {
     profitSellThreshold: 0.6,    // waits for a long to get very rich before taking profit — gives back gains
     shortEntryThreshold: 0.7,    // only shorts something wildly overextended
     buyEntryThreshold: 0.05,     // only buys something screaming cheap — passes on plenty of decent entries
+    capMultiplier: 0.6,          // trades noticeably less volume per turn than a human even can
+    positionWeightMultiplier: 0.7, // forced to diversify even more than a human is
   },
   normal: {
     label: 'Normal',
@@ -3908,28 +3929,34 @@ const BOT_DIFFICULTY_PROFILES = {
     profitSellThreshold: 0.52,
     shortEntryThreshold: 0.62,
     buyEntryThreshold: 0.12,
+    capMultiplier: 1.0,          // same per-turn budget a human plays with
+    positionWeightMultiplier: 1.0,
   },
   hard: {
     label: 'Hard',
     skipChance: 0,
     tipConfidenceMult: 1.0,
-    cashBuffer: 0.25,
-    marginSafetyThreshold: 0.08,
-    profitCoverThreshold: -0.25,
-    profitSellThreshold: 0.45,
-    shortEntryThreshold: 0.55,
-    buyEntryThreshold: 0.2,
+    cashBuffer: 0.18,            // tighter than the old pre-difficulty baseline (was 0.25)
+    marginSafetyThreshold: 0.10,
+    profitCoverThreshold: -0.18, // locks in a profitable short faster than before
+    profitSellThreshold: 0.35,   // takes profit faster than before
+    shortEntryThreshold: 0.45,   // willing to short more moderately-overextended stocks
+    buyEntryThreshold: 0.28,     // buys into more than just screaming-cheap dips
+    capMultiplier: 1.5,          // 50% more shares per turn than a human gets
+    positionWeightMultiplier: 1.3,
   },
   impossible: {
     label: 'Impossible',
     skipChance: 0,
     tipConfidenceMult: 1.0,
-    cashBuffer: 0.08,          // deploys almost all of its free cash every time
-    marginSafetyThreshold: 0.14, // shores up margin safety much earlier, well before it's actually at risk
-    profitCoverThreshold: -0.15, // covers shorts fast, the moment they're clearly profitable
-    profitSellThreshold: 0.35,   // takes profit fast rather than risking a reversal
-    shortEntryThreshold: 0.4,    // willing to short things that are only moderately overextended
-    buyEntryThreshold: 0.3,      // buys into mild dips too, not just screaming-cheap ones
+    cashBuffer: 0.03,            // deploys nearly all its free cash every time
+    marginSafetyThreshold: 0.16, // shores up margin safety very early — aggressive, not reckless
+    profitCoverThreshold: -0.08, // covers a short the moment it's barely profitable
+    profitSellThreshold: 0.2,    // takes profit almost immediately and redeploys
+    shortEntryThreshold: 0.3,    // willing to short things that are only mildly overextended
+    buyEntryThreshold: 0.4,      // buys into most of the range, not just clear dips
+    capMultiplier: 2.5,          // 2.5x a human's per-turn share budget — a real structural edge, not just sharper calls
+    positionWeightMultiplier: 1.8,
   },
 };
 function botDifficultyProfile(){
@@ -3989,10 +4016,14 @@ const BOT_MAX_POSITION_WEIGHT = 0.35; // don't let one stock exceed ~35% of net 
    do SOMETHING rather than freeze up. */
 function botCheapestStockDiversified(bot){
   let best=null, bestScore=Infinity;
+  // A bot playing at Hard/Impossible is allowed to concentrate more into a
+  // single high-conviction position than a human's own comfort zone would
+  // suggest — see BOT_DIFFICULTY_PROFILES.positionWeightMultiplier.
+  const maxWeight = BOT_MAX_POSITION_WEIGHT * botDifficultyProfile().positionWeightMultiplier;
   STOCK_IDS.forEach(id=>{
     if(state.stocks[id].worthless) return;
     if((bot.shorts[id]||0)>0) return; // already shorting it — don't also go long
-    if(botPositionWeight(bot,id) > BOT_MAX_POSITION_WEIGHT) return;
+    if(botPositionWeight(bot,id) > maxWeight) return;
     const score = botRelativeIdx(id);
     if(score<bestScore){ bestScore=score; best=id; }
   });
