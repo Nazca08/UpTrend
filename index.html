@@ -170,7 +170,48 @@
   .resume-card-label{font-size:12px;font-weight:600;color:var(--amber);text-transform:uppercase;letter-spacing:0.5px;}
   .resume-card-sub{font-size:12px;color:var(--muted);margin-top:1px;}
 
+  .holdings-table-wrap{width:100%;overflow-x:auto;}
+  .jail-tag{display:inline-block;background:var(--down);color:#fff;font-size:9px;font-weight:700;letter-spacing:0.5px;padding:1px 6px;border-radius:4px;text-transform:uppercase;margin-left:6px;vertical-align:middle;}
+  .jail-banner{position:relative;border:3px solid var(--down);border-radius:10px;padding:14px;margin-bottom:10px;
+    background:repeating-linear-gradient(135deg, rgba(255,92,92,0.10) 0 10px, rgba(255,92,92,0.02) 10px 20px), var(--panel-2);overflow:hidden;}
+  .jail-stamp{display:inline-block;border:3px solid var(--down);color:var(--down);font-family:'Space Grotesk',sans-serif;
+    font-weight:700;font-size:19px;letter-spacing:2px;text-transform:uppercase;padding:5px 12px;border-radius:6px;
+    transform:rotate(-6deg);margin-bottom:10px;animation:stampIn 0.4s ease-out;}
+  @keyframes stampIn{from{transform:rotate(-6deg) scale(1.8);opacity:0;}to{transform:rotate(-6deg) scale(1);opacity:1;}}
+  .jail-banner .jb-detail{font-size:13px;color:var(--text);}
+  .jail-banner .jb-turns{font-size:12px;color:var(--muted);margin-top:4px;}
+  .jail-flash-stamp{position:fixed;top:50%;left:50%;z-index:900;pointer-events:none;
+    font-family:'Space Grotesk',sans-serif;font-weight:800;font-size:48px;color:var(--down);
+    border:7px solid var(--down);border-radius:14px;padding:16px 36px;text-align:center;
+    text-transform:uppercase;letter-spacing:4px;text-shadow:0 0 20px rgba(255,92,92,0.6);
+    background:rgba(10,13,18,0.9);transform:translate(-50%,-50%) rotate(-10deg) scale(0.4);opacity:0;
+    animation:jailFlashAnim 1.8s ease-out forwards;}
+  @keyframes jailFlashAnim{
+    0%{transform:translate(-50%,-50%) rotate(-10deg) scale(0.4);opacity:0;}
+    15%{transform:translate(-50%,-50%) rotate(-8deg) scale(1.08);opacity:1;}
+    25%{transform:translate(-50%,-50%) rotate(-8deg) scale(1);opacity:1;}
+    80%{transform:translate(-50%,-50%) rotate(-8deg) scale(1);opacity:1;}
+    100%{transform:translate(-50%,-50%) rotate(-8deg) scale(1);opacity:0;}
+  }
+  .modal.modal-wide{max-width:720px;max-height:88vh;overflow-y:auto;}
+  .standing-row{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:10px;background:var(--panel-2);margin-bottom:6px;}
+  .standing-row .rank{font-family:'Space Grotesk';font-weight:700;font-size:15px;width:28px;text-align:center;flex-shrink:0;}
+  .standing-row .sname{flex:1;font-weight:600;}
+  .standing-row .snw{font-family:'IBM Plex Mono';font-size:13px;text-align:right;}
+  .standing-row .scash{color:var(--muted);font-size:11px;text-align:right;}
+  .summary-modal h4{margin:20px 0 8px;font-size:12px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);}
+  .summary-modal h4:first-of-type{margin-top:0;}
+  .award-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+  @media (max-width:520px){.award-grid{grid-template-columns:1fr;}}
+  .award-card{background:var(--panel-2);border:1px solid var(--line);border-radius:10px;padding:10px 12px;}
+  .award-card .a-label{font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted);margin-bottom:3px;}
+  .award-card .a-value{font-weight:600;font-size:13px;}
+  .player-summary-card{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:8px;border-left-width:3px;border-left-style:solid;}
+  .player-summary-card .ps-name{font-weight:700;margin-bottom:4px;}
+  .player-summary-card .ps-stat{font-size:12px;color:var(--muted);display:flex;justify-content:space-between;padding:2px 0;}
+  .player-summary-card .ps-stat b{color:var(--text);font-weight:500;font-family:'IBM Plex Mono';}
   .holdings-table{width:100%;border-collapse:collapse;font-size:12px;font-family:'IBM Plex Mono';}
+  .holdings-table th,.holdings-table td{white-space:nowrap;padding-right:10px;}
   .holdings-table th{text-align:left;color:var(--muted);font-weight:500;padding:4px 0;border-bottom:1px solid var(--line);}
   .holdings-table td{padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.03);}
 
@@ -517,12 +558,13 @@ function clearLocalRoom(){ try{ localStorage.removeItem(LS_KEY); }catch(e){} }
 
 // Fields that live only in THIS browser tab and are never written to Firebase
 // or overwritten by a remote update — pure UI state, not real game state.
-const LOCAL_ONLY_KEYS = ['tradeSelection','turnUndoStack','confirmEndTurn','confirmRestart','expandedChart','showLog','showNetWorthGraph','cardMinimized'];
+const LOCAL_ONLY_KEYS = ['tradeSelection','turnUndoStack','confirmEndTurn','confirmRestart','expandedChart','showLog','showNetWorthGraph','cardMinimized','summaryDismissed'];
 
 function localDefaults(){
   return {
     tradeSelection: null, turnUndoStack: [], confirmEndTurn: false,
     confirmRestart: false, expandedChart: null, showLog: false, showNetWorthGraph: false, cardMinimized: false,
+    summaryDismissed: false,
   };
 }
 
@@ -551,7 +593,61 @@ function guardedTradeClick(fn){
   };
 }
 
-/* --- 1 & 2: live connection status + auto-resync the instant we reconnect --- */
+/* --- Jail alert: a short siren + a full-screen "BUSTED" stamp the instant
+   someone gets caught insider trading, so it's impossible to miss instead
+   of just a quiet log line. Detected by watching for new "caught insider
+   trading" log entries each render (see checkForNewJailEvents below) rather
+   than hooking checkInsiderTradingRisk directly, so it fires consistently
+   for every connected browser as the state syncs to them, not just the one
+   that happened to be driving the turn when it occurred. */
+function playJailAlarm(){
+  try{
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if(!Ctx) return;
+    const ctx = new Ctx();
+    if(ctx.state==='suspended') ctx.resume().catch(()=>{});
+    const now = ctx.currentTime;
+    // Two quick descending "siren" whoops.
+    [0, 0.32].forEach(offset=>{
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(880, now+offset);
+      osc.frequency.exponentialRampToValueAtTime(330, now+offset+0.28);
+      gain.gain.setValueAtTime(0.0001, now+offset);
+      gain.gain.exponentialRampToValueAtTime(0.18, now+offset+0.03);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now+offset+0.3);
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.start(now+offset); osc.stop(now+offset+0.32);
+    });
+    setTimeout(()=>{ try{ ctx.close(); }catch(e){} }, 900);
+  }catch(e){ /* audio isn't critical — fail silently */ }
+}
+function showJailFlashStamp(name){
+  const el = document.createElement('div');
+  el.className = 'jail-flash-stamp';
+  el.textContent = `🚔 ${name} Busted!`;
+  document.body.appendChild(el); // appended outside #app so render()'s innerHTML rebuild can't cut its animation short
+  setTimeout(()=>{ el.remove(); }, 1900);
+}
+let jailAlertLogLen = -1; // -1 means "not yet baselined" — avoids alerting on old history when a game is first loaded
+function checkForNewJailEvents(){
+  if(!state || !state.log){ jailAlertLogLen = -1; return; }
+  if(jailAlertLogLen===-1 || state.log.length < jailAlertLogLen){ jailAlertLogLen = state.log.length; return; }
+  if(state.log.length===jailAlertLogLen) return;
+  for(let i=jailAlertLogLen;i<state.log.length;i++){
+    const entry = state.log[i];
+    if(entry && entry.text && entry.text.includes('caught insider trading')){
+      const nameMatch = entry.text.match(/^(.*?) was caught insider trading/);
+      playJailAlarm();
+      showJailFlashStamp(nameMatch ? nameMatch[1] : 'Player');
+      break; // one alert per render pass is plenty even if somehow more than one landed at once
+    }
+  }
+  jailAlertLogLen = state.log.length;
+}
+
+
 let isConnected = true;
 let everConnected = false;
 onValue(ref(db, '.info/connected'), (snap)=>{
@@ -690,12 +786,19 @@ function repairCollections(s){
       if(pl.marginShield===undefined) pl.marginShield = false;
       if(pl.publicOffering && pl.publicOffering.usedStocks===undefined) pl.publicOffering.usedStocks = [];
       if(pl.jailTurnsLeft===undefined) pl.jailTurnsLeft = 0;
-      if(pl.bannedStocks===undefined) pl.bannedStocks = [];
+      if(pl.bannedStocks===undefined || Array.isArray(pl.bannedStocks)) pl.bannedStocks = {}; // old format was a permanent array — migrate to empty (no more permanent bans)
       if(pl.hand===undefined) pl.hand = [];
       if(pl.baseSalary===undefined) pl.baseSalary = SALARY_PER_TURN;
+      if(pl.salaryCollected===undefined) pl.salaryCollected = 0;
       if(pl.firedRoundsLeft===undefined) pl.firedRoundsLeft = 0;
       if(pl.overtimeTurnsLeft===undefined) pl.overtimeTurnsLeft = 0;
       if(pl.portfolioManagers===undefined) pl.portfolioManagers = [];
+      if(pl.dividendsCollected===undefined) pl.dividendsCollected = Object.fromEntries(STOCK_IDS.map(id=>[id,0]));
+      if(pl.spDividendsCollected===undefined) pl.spDividendsCollected = 0;
+      if(pl.spxDividendsCollected===undefined) pl.spxDividendsCollected = 0;
+      if(pl.realizedGain===undefined) pl.realizedGain = Object.fromEntries(STOCK_IDS.map(id=>[id,0]));
+      if(pl.spRealizedGain===undefined) pl.spRealizedGain = 0;
+      if(pl.spxRealizedGain===undefined) pl.spxRealizedGain = 0;
     });
   }
 }
@@ -718,7 +821,7 @@ let unsubscribeGame = null; // detach handle for the current room's live listene
 function subscribeToRoom(code){
   if(unsubscribeGame){ unsubscribeGame(); unsubscribeGame = null; }
   roomCode = code;
-  state = null; myPlayerIndex = null; lastKnownSnapshot = {};
+  state = null; myPlayerIndex = null; lastKnownSnapshot = {}; jailAlertLogLen = -1;
   unsubscribeGame = onValue(gameRef(), (snap)=>{
     const remote = snap.val();
     if(!remote){
@@ -801,7 +904,7 @@ function renderSyncFailedBanner(){
 
 async function wipeGame(){
   state = null; myPlayerIndex = null;
-  lastKnownSnapshot = {};
+  lastKnownSnapshot = {}; jailAlertLogLen = -1;
   if(!roomCode){ render(); return; }
   try{ await set(gameRef(), null); }catch(e){ console.error('UpTrend: failed to clear game', e); }
   render();
@@ -811,7 +914,7 @@ async function wipeGame(){
    (Create Game / Join Game), forgetting the saved seat for this room. */
 function leaveRoom(){
   if(unsubscribeGame){ unsubscribeGame(); unsubscribeGame = null; }
-  roomCode = null; state = null; myPlayerIndex = null; lastKnownSnapshot = {};
+  roomCode = null; state = null; myPlayerIndex = null; lastKnownSnapshot = {}; jailAlertLogLen = -1;
   clearLocalRoom();
   render();
 }
@@ -925,17 +1028,20 @@ function freshState(players, gameLength){
       shorts: Object.fromEntries(STOCK_IDS.map(id=>[id,0])),
       costBasis: Object.fromEntries(STOCK_IDS.map(id=>[id,0])), // $ currently invested in open long positions
       shortBasis: Object.fromEntries(STOCK_IDS.map(id=>[id,0])), // $ received for open short positions
-      spShares:0, spCostBasis:0, // Mini SP8 holdings
-      spxShares:0, spxCostBasis:0, // SP8 (the big one) holdings
+      dividendsCollected: Object.fromEntries(STOCK_IDS.map(id=>[id,0])), // all-time $ collected in dividends from this stock (zone payouts, Golden Goose, Dividend Day) — never reset, survives selling/rebuying
+      realizedGain: Object.fromEntries(STOCK_IDS.map(id=>[id,0])), // all-time $ profit/loss actually banked closing positions in this stock (sells + covers) — unlike costBasis, never reset by closing out
+      spShares:0, spCostBasis:0, spDividendsCollected:0, spRealizedGain:0, // Mini SP8 holdings
+      spxShares:0, spxCostBasis:0, spxDividendsCollected:0, spxRealizedGain:0, // SP8 (the big one) holdings
       eliminated:false,
       holdStreak: Object.fromEntries(STOCK_IDS.map(id=>[id,0])), // consecutive own-turns held with shares>0, for Loyalty Bonus
       goldenGeese: [], // stock ids granting a permanent personal +10% dividend (Golden Goose card)
       marginShield: false, // one-time margin-call forgiveness (Margin Call Forgiveness card)
       publicOffering: null, // {active, usedStocks} — this-turn-only fee/price-impact waiver on up to 3 stocks
       jailTurnsLeft: 0, // caught insider trading — this many of the player's own turns are fully skipped
-      bannedStocks: [], // stock ids this player can never buy or short again, after being caught trading on a tip in them
+      bannedStocks: {}, // stock id -> turns-left barred from buying/shorting it, after being caught trading on a tip in it (see INSIDER_BAN_TURNS)
       hand: [], // held cards — drawn but not yet resolved, playable at any point during this player's own trade phase
       baseSalary: SALARY_PER_TURN, // permanently raised by Promotion cards
+      salaryCollected: 0, // all-time $ collected in salary (regular + overtime), never reset
       firedRoundsLeft: 0, // salary is $0 while this is >0 (Fired card) — overrides overtime
       overtimeTurnsLeft: 0, // salary is 1.5x baseSalary while this is >0, unless fired (Overtime card)
       portfolioManagers: [], // active Portfolio Manager windows: {turnsLeft, lots:[{stock,side,qty,costPerShare}], accumulatedBoost}
@@ -1165,21 +1271,34 @@ function addCostBasis(p, key, amount){
 }
 function reduceCostBasisOnSell(p, key, qty){
   const held = key==='SP' ? p.spShares : key==='SPX' ? p.spxShares : p.shares[key];
-  if(held<=0) return;
+  if(held<=0) return 0;
   const total = key==='SP' ? (p.spCostBasis||0) : key==='SPX' ? (p.spxCostBasis||0) : (p.costBasis[key]||0);
   const avg = total/held;
   const reduceBy = avg*qty;
   if(key==='SP') p.spCostBasis = Math.max(0, total - reduceBy);
   else if(key==='SPX') p.spxCostBasis = Math.max(0, total - reduceBy);
   else p.costBasis[key] = Math.max(0, total - reduceBy);
+  return reduceBy;
 }
 function addShortBasis(p, id, amount){ p.shortBasis[id] = (p.shortBasis[id]||0) + amount; }
 function reduceShortBasisOnCover(p, id, qty){
   const held = p.shorts[id]||0;
-  if(held<=0) return;
+  if(held<=0) return 0;
   const total = p.shortBasis[id]||0;
   const avg = total/held;
-  p.shortBasis[id] = Math.max(0, total - avg*qty);
+  const reduceBy = avg*qty;
+  p.shortBasis[id] = Math.max(0, total - reduceBy);
+  return reduceBy;
+}
+/* Banks realized profit/loss (all-time, per stock) the moment a position
+   actually closes — routes to the dedicated index-fund fields the same way
+   addCostBasis does. This is what makes "best/worst performing stock"
+   accurate at game-end even for stocks a player already fully sold out of,
+   which costBasis/shortBasis alone can't tell us since they zero out. */
+function addRealizedGain(p, key, amount){
+  if(key==='SP') p.spRealizedGain = (p.spRealizedGain||0) + amount;
+  else if(key==='SPX') p.spxRealizedGain = (p.spxRealizedGain||0) + amount;
+  else p.realizedGain[key] = (p.realizedGain[key]||0) + amount;
 }
 function longGainLoss(p, key){
   const held = key==='SP' ? p.spShares : key==='SPX' ? p.spxShares : p.shares[key];
@@ -1194,15 +1313,67 @@ function shortGainLoss(p, id){
   return basis - buyBackCost;
 }
 
+/* All-time $ collected in dividends for a given holding key — routes to
+   the dedicated index-fund fields the same way the cost-basis helpers
+   above do, since SP/SPX aren't part of STOCK_IDS. Never reset by selling
+   or rebuying (see dividendsCollected's definition on the player object). */
+function dividendsForKey(p, key){
+  if(key==='SP') return p.spDividendsCollected||0;
+  if(key==='SPX') return p.spxDividendsCollected||0;
+  return (p.dividendsCollected && p.dividendsCollected[key]) || 0;
+}
+/* All-time $ actually banked closing positions in this stock — the
+   complement to the still-open unrealized gain/loss. Same SP/SPX routing
+   as dividendsForKey. */
+function realizedGainForKey(p, key){
+  if(key==='SP') return p.spRealizedGain||0;
+  if(key==='SPX') return p.spxRealizedGain||0;
+  return (p.realizedGain && p.realizedGain[key]) || 0;
+}
+/* Total Gain = unrealized gain/loss on the current open position + every
+   dollar ever realized closing out past positions in this same stock +
+   every dollar of dividends ever collected from it — the true lifetime
+   performance of that stock for this player, not just what's on the board
+   right now. */
+function totalGain(p, key, gainLoss){
+  return gainLoss + realizedGainForKey(p, key) + dividendsForKey(p, key);
+}
+
+/* Projected dividends: what this player would collect right now if their
+   turn started this instant — the same zone-dividend + Golden Goose math
+   tickShortFeesAndDividends actually pays out on a real turn, just computed
+   without mutating any state. Recalculates live as prices and holdings
+   change, so it's an estimate for "next time it's your turn," not a fixed
+   number — a stock can drift in or out of its dividend zone before then. */
+function projectedDividends(p){
+  let total = 0;
+  STOCK_IDS.forEach(id=>{
+    const heldLong = p.shares[id]||0;
+    if(heldLong>0 && inDividendZone(id)){
+      const rate = dividendZoneRateAt(id, state.stocks[id].idx);
+      total += Math.round(heldLong*price(id)*rate);
+    }
+  });
+  (p.goldenGeese||[]).forEach(id=>{
+    const heldLong = p.shares[id]||0;
+    if(heldLong>0 && !state.stocks[id].worthless) total += Math.round(heldLong*price(id)*0.10);
+  });
+  return total;
+}
+
 const TURN_CAP = 12; // total buy+short shares allowed per turn (across all stocks)
 function capRemaining(){ return TURN_CAP - state.turnUsage.total; }
 function capRemainingForStock(id){ return 4 - (state.turnUsage.perStock[id]||0); }
+
+/* True while `id` is still under an insider-trading ban for this player —
+   bannedStocks is a stock id -> turns-left map, ticked down in endTurn. */
+function isBanned(p, id){ return !!(p.bannedStocks && p.bannedStocks[id]>0); }
 
 function canBuyOne(id){
   if(!id || state.gameOver) return false;
   if(id!=='SP' && id!=='SPX' && state.stocks[id].worthless) return false;
   const p = state.players[state.current];
-  if((p.bannedStocks||[]).includes(id)) return false;
+  if(isBanned(p, id)) return false;
   if(capRemaining()<=0 || capRemainingForStock(id)<=0) return false;
   if(id==='SP') return priceOf(id) <= freeCash(p); // flat price, no walk, no fee
   const priorFilled = state.turnFills.up[id]||0;
@@ -1219,7 +1390,7 @@ function canShortOne(id){
   if(!id || id==='SP' || id==='SPX' || state.gameOver) return false;
   if(state.stocks[id].worthless) return false;
   const p = state.players[state.current];
-  if((p.bannedStocks||[]).includes(id)) return false;
+  if(isBanned(p, id)) return false;
   if(capRemaining()<=0 || capRemainingForStock(id)<=0) return false;
   return price(id) <= freeCash(p);
 }
@@ -1291,8 +1462,11 @@ function isBankrupt(p){
    completely untouched; only this one player resets. */
 function resetBankruptPlayer(p){
   STOCK_IDS.forEach(id=>{
+    if(p.costBasis[id]>0) addRealizedGain(p, id, -p.costBasis[id]);
     p.shares[id]=0; p.shorts[id]=0; p.costBasis[id]=0; p.shortBasis[id]=0; p.holdStreak[id]=0;
   });
+  if(p.spCostBasis>0) addRealizedGain(p, 'SP', -p.spCostBasis);
+  if(p.spxCostBasis>0) addRealizedGain(p, 'SPX', -p.spxCostBasis);
   p.spShares = 0; p.spCostBasis = 0;
   p.spxShares = 0; p.spxCostBasis = 0;
   p.cash = BANKRUPTCY_RESET_CASH;
@@ -1418,11 +1592,13 @@ function checkWorthless(){
     state.players.forEach(pl=>{
       if(pl.shares[id]>0){
         logEvent(`${pl.name}'s ${pl.shares[id]} shares of ${id} were wiped out — worthless.`, true);
+        addRealizedGain(pl, id, -(pl.costBasis[id]||0)); // full loss — $0 proceeds, cost basis gone
         pl.shares[id] = 0;
         pl.costBasis[id] = 0;
       }
       if((pl.shorts[id]||0)>0){
         logEvent(`${pl.name}'s short on ${id} was auto-covered for free — max profit as it went to $0.`, true);
+        addRealizedGain(pl, id, pl.shortBasis[id]||0); // free cover — full basis banked as profit, $0 cost
         pl.shorts[id] = 0;
         pl.shortBasis[id] = 0;
       }
@@ -1824,6 +2000,7 @@ function tickShortFeesAndDividends(ownerIndex){
   } else {
     const salary = p.overtimeTurnsLeft>0 ? Math.round(p.baseSalary*1.5) : p.baseSalary;
     p.cash += salary;
+    p.salaryCollected = (p.salaryCollected||0) + salary;
     logEvent(`${p.name} collected their $${salary.toLocaleString()} salary${p.overtimeTurnsLeft>0?' (overtime)':''}.`);
     if(p.overtimeTurnsLeft>0){
       p.overtimeTurnsLeft -= 1;
@@ -1850,7 +2027,7 @@ function tickShortFeesAndDividends(ownerIndex){
       const rate = dividendZoneRateAt(id, state.stocks[id].idx);
       if(heldLong>0){
         const pay = Math.round(heldLong*pr*rate);
-        if(pay>0){ p.cash += pay; totalDiv += pay; }
+        if(pay>0){ p.cash += pay; totalDiv += pay; p.dividendsCollected[id] = (p.dividendsCollected[id]||0) + pay; }
       }
       if(heldShort>0){
         const penalty = takeClamped(Math.round(heldShort*pr*rate*0.33));
@@ -1866,7 +2043,7 @@ function tickShortFeesAndDividends(ownerIndex){
     const heldLong = p.shares[id]||0;
     if(heldLong>0 && !state.stocks[id].worthless){
       const pay = Math.round(heldLong*price(id)*0.10);
-      if(pay>0){ p.cash += pay; totalDiv += pay; }
+      if(pay>0){ p.cash += pay; totalDiv += pay; p.dividendsCollected[id] = (p.dividendsCollected[id]||0) + pay; }
     }
   });
 
@@ -2096,9 +2273,13 @@ function resolveAuto(card){
       const ids = SECTORS[card.sector].stocks;
       state.players.forEach(pl=>{
         const isDrawer = pl===p;
-        let shares = 0; ids.forEach(id=>shares+=pl.shares[id]);
         const rate = isDrawer?100:50;
-        const pay = shares*rate;
+        let pay = 0;
+        ids.forEach(id=>{
+          const cut = pl.shares[id]*rate;
+          if(cut>0) pl.dividendsCollected[id] = (pl.dividendsCollected[id]||0) + cut;
+          pay += cut;
+        });
         pl.cash += pay;
       });
       logEvent(`Dividend Day — ${SECTORS[card.sector].label||card.sector}: ${p.name} collects $100/share, others $50/share.`, true);
@@ -2460,6 +2641,7 @@ function checkInsiderActedOn(playerIndex, stockId){
    fine smaller than it should be. Which stock it was stays out of the
    public log; the player themselves obviously still sees it, since it's
    their own portfolio the seizure just hit. */
+const INSIDER_BAN_TURNS = 3; // how many of the player's own turns the seized stock is off-limits for
 function checkInsiderTradingRisk(ownerIndex){
   const p = state.players[ownerIndex];
   const activeTips = state.scheduled.filter(item=>item.ownerIndex===ownerIndex && item.riskRate>0 && item.actedOn);
@@ -2467,12 +2649,14 @@ function checkInsiderTradingRisk(ownerIndex){
     if(Math.random() >= item.riskRate) continue;
     const fine = Math.round(netWorth(p) * item.fineRate);
     p.cash -= fine;
+    if(p.shares[item.stock]>0) addRealizedGain(p, item.stock, -(p.costBasis[item.stock]||0)); // seized — $0 proceeds, cost basis gone
+    if(p.shorts[item.stock]>0) addRealizedGain(p, item.stock, p.shortBasis[item.stock]||0); // short voided — the proceeds banked when it opened stay banked
     p.shares[item.stock] = 0; p.costBasis[item.stock] = 0; p.holdStreak[item.stock] = 0;
     p.shorts[item.stock] = 0; p.shortBasis[item.stock] = 0;
-    if(!p.bannedStocks) p.bannedStocks = [];
-    if(!p.bannedStocks.includes(item.stock)) p.bannedStocks.push(item.stock);
+    if(!p.bannedStocks || Array.isArray(p.bannedStocks)) p.bannedStocks = {};
+    p.bannedStocks[item.stock] = INSIDER_BAN_TURNS;
     p.jailTurnsLeft = item.jailTurns;
-    logEvent(`${p.name} was caught insider trading — fined $${fine.toLocaleString()}, had the position seized, and is now permanently barred from trading that stock. Serving ${item.jailTurns} turn${item.jailTurns===1?'':'s'} in jail.`, true);
+    logEvent(`${p.name} was caught insider trading — fined $${fine.toLocaleString()}, had the position seized, and is barred from trading that stock for ${INSIDER_BAN_TURNS} turns. Serving ${item.jailTurns} turn${item.jailTurns===1?'':'s'} in jail.`, true);
     return true;
   }
   return false;
@@ -2514,7 +2698,7 @@ function buyShares(id, qtyRequested, force){
   if((!force && !isMyTurn()) || !id || state.gameOver) return;
   if(id!=='SP' && id!=='SPX' && state.stocks[id].worthless) return;
   const p = state.players[state.current];
-  if((p.bannedStocks||[]).includes(id)){ logEvent(`${p.name} is permanently barred from trading ${id} after being caught insider trading.`); render(); return; }
+  if(isBanned(p, id)){ logEvent(`${p.name} is barred from trading ${id} for ${p.bannedStocks[id]} more turn${p.bannedStocks[id]===1?'':'s'} after being caught insider trading.`); render(); return; }
   const qty = Math.min(qtyRequested||0, capRemaining(), capRemainingForStock(id));
   if(qty<=0){ logEvent(`No cap left this turn to buy ${tickerLabel(id)}.`); render(); return; }
   const offer = p.publicOffering;
@@ -2560,7 +2744,8 @@ function sellShares(id, qtyRequested, force){
   const proceeds = walk.total - walk.fee;
   pushUndoSnapshot();
   p.cash += proceeds;
-  reduceCostBasisOnSell(p, id, qty);
+  const costOfSold = reduceCostBasisOnSell(p, id, qty);
+  addRealizedGain(p, id, proceeds - costOfSold);
   if(id==='SP'){ p.spShares -= qty; } else if(id==='SPX'){ p.spxShares -= qty; } else { p.shares[id] -= qty; }
   const obj = objFor(id);
   const priorIdx = obj.idx;
@@ -2578,7 +2763,7 @@ function openShort(id, qtyRequested, force){
   if((!force && !isMyTurn()) || !id || id==='SP' || id==='SPX' || state.gameOver) return; // neither index fund can be shorted
   if(state.stocks[id].worthless) return;
   const p = state.players[state.current];
-  if((p.bannedStocks||[]).includes(id)){ logEvent(`${p.name} is permanently barred from trading ${id} after being caught insider trading.`); render(); return; }
+  if(isBanned(p, id)){ logEvent(`${p.name} is barred from trading ${id} for ${p.bannedStocks[id]} more turn${p.bannedStocks[id]===1?'':'s'} after being caught insider trading.`); render(); return; }
   const qty = Math.min(qtyRequested||0, capRemaining(), capRemainingForStock(id));
   if(qty<=0){ logEvent(`No cap left this turn to short ${id}.`); render(); return; }
   const requiredMargin = qty*price(id);
@@ -2614,7 +2799,8 @@ function coverShort(id, qtyRequested, force){
   if(totalCost > p.cash){ logEvent(`${p.name} doesn't have enough cash to cover ${qty} ${id}.`); render(); return; }
   pushUndoSnapshot();
   p.cash -= totalCost;
-  reduceShortBasisOnCover(p, id, qty);
+  const basisReleased = reduceShortBasisOnCover(p, id, qty);
+  addRealizedGain(p, id, basisReleased - totalCost);
   p.shorts[id] -= qty;
   const obj = state.stocks[id];
   obj.prevIdx = obj.idx; obj.idx = walk.finalIdx;
@@ -2631,6 +2817,15 @@ function endTurn(){
   if(leaving.jailTurnsLeft > 0){
     leaving.jailTurnsLeft -= 1;
     if(leaving.jailTurnsLeft===0) logEvent(`${leaving.name} is released from jail.`, true);
+  }
+  if(leaving.bannedStocks && !Array.isArray(leaving.bannedStocks)){
+    Object.keys(leaving.bannedStocks).forEach(id=>{
+      leaving.bannedStocks[id] -= 1;
+      if(leaving.bannedStocks[id]<=0){
+        delete leaving.bannedStocks[id];
+        logEvent(`${leaving.name} is no longer barred from trading ${id}.`, true);
+      }
+    });
   }
   leaving.publicOffering = null; // this-turn-only perk — clear it as the turn ends
   recordNetWorthHistory();
@@ -2659,11 +2854,13 @@ function paySP8Dividend(){
     if(pl.spShares>0){
       const pay = Math.round(pl.spShares*spPrice()*0.07);
       pl.cash += pay;
+      pl.spDividendsCollected = (pl.spDividendsCollected||0) + pay;
       logEvent(`${pl.name} collected a $${pay} Mini SP8 dividend (7% of holding value).`, true);
     }
     if(pl.spxShares>0){
       const pay = Math.round(pl.spxShares*spxPrice()*0.07);
       pl.cash += pay;
+      pl.spxDividendsCollected = (pl.spxDividendsCollected||0) + pay;
       logEvent(`${pl.name} collected a $${pay} SP8 dividend (7% of holding value).`, true);
     }
   });
@@ -3472,9 +3669,11 @@ function renderSidebar(){
   html += `<div class="panel"><h3>Players</h3>`;
   state.players.forEach((pl,i)=>{
     const locked = lockedCash(pl);
+    const projDiv = projectedDividends(pl);
     html += `<div class="player-card ${i===state.current?'active':''}" style="border-left-color:${pl.color};${pl.eliminated?'opacity:0.5;':''}">
-      <div class="p-top"><span class="p-name" style="color:${pl.color};">${pl.name}${pl.bot?' 🤖':''}${i===state.current?' • turn':''}${pl.eliminated?' <span class="worthless-badge">Eliminated</span>':''}</span><span class="p-cash">$${pl.cash}${locked>0?` <span style="color:var(--muted);font-weight:400;">($${locked} locked)</span>`:''}</span></div>
+      <div class="p-top"><span class="p-name" style="color:${pl.color};">${pl.name}${pl.bot?' 🤖':''}${i===state.current?' • turn':''}${pl.eliminated?' <span class="worthless-badge">Eliminated</span>':''}${pl.jailTurnsLeft>0?` <span class="jail-tag">🚔 Jailed (${pl.jailTurnsLeft})</span>`:''}</span><span class="p-cash">$${pl.cash}${locked>0?` <span style="color:var(--muted);font-weight:400;">($${locked} locked)</span>`:''}</span></div>
       <div class="p-net">Net worth: $${netWorth(pl)}</div>
+      ${projDiv>0?`<div class="p-net" style="color:var(--up);">Projected dividends: $${projDiv}</div>`:''}
     </div>`;
   });
   html += `</div>`;
@@ -3535,12 +3734,17 @@ function renderSidebar(){
     html += `<div style="font-size:14px;color:var(--muted);">Waiting for <b style="color:${p.color};">${p.name}</b> to play${myPlayerIndex===-1?' (you\'re spectating)':''}...</div>`;
   } else if(state.gameOver){
     html += `<div style="font-size:14px;">Game over — <b style="color:${state.winner.color};">${state.winner.name}</b> wins with $${netWorth(state.winner)} net worth!</div>
+      ${state.summaryDismissed ? `<button class="btn secondary full" style="margin-top:10px;" id="viewSummaryBtn">View Summary</button>` : ''}
       <button class="btn full" style="margin-top:10px;" id="newGameBtn">New Game</button>`;
   } else if(p.eliminated){
     html += `<div class="choice-error" style="margin-bottom:10px;">${p.name} is eliminated — net worth went negative with no way to recover. Their turns are skipped from here on.</div>
       <button class="btn full" id="eliminatedContinueBtn">Continue</button>`;
   } else if(p.jailTurnsLeft>0){
-    html += `<div class="choice-error" style="margin-bottom:10px;">${p.name} is serving jail time for insider trading — no cards, no dividends, no salary this turn. ${p.jailTurnsLeft} turn${p.jailTurnsLeft===1?'':'s'} left.</div>
+    html += `<div class="jail-banner">
+        <div class="jail-stamp">🚔 Jailed</div>
+        <div class="jb-detail">${p.name} is serving jail time for insider trading — no cards, no dividends, no salary this turn.</div>
+        <div class="jb-turns">${p.jailTurnsLeft} turn${p.jailTurnsLeft===1?'':'s'} left</div>
+      </div>
       <button class="btn full" id="jailContinueBtn">Continue</button>`;
   } else if(state.phase==='draw' && p.cash<0){
     const sel = state.tradeSelection;
@@ -3623,31 +3827,36 @@ function renderSidebar(){
     html += `<div class="panel"><h3>Your Holdings</h3><div class="hint" style="margin:0;">You're spectating — no holdings of your own to show.</div></div>`;
   } else {
     const glCell = (gl)=> `<td style="color:${gl>=0?'var(--up)':'var(--down)'};">${gl>=0?'+':'-'}$${Math.abs(Math.round(gl))}</td>`;
+    const divCell = (div)=> `<td>$${Math.round(div)}</td>`;
     const holdingRows = [];
     STOCK_IDS.forEach(id=>{
       if(me.shares[id]>0){
         const sectorLabel = SECTORS[STOCKS[id].sector].label || STOCKS[id].sector;
         const value = me.shares[id]*price(id);
         const basis = Math.round((me.costBasis[id]||0) / me.shares[id]);
-        holdingRows.push({ value, html: `<tr><td>${id} (${sectorLabel})</td><td>${me.shares[id]}</td><td>$${basis}</td><td>$${value}</td>${glCell(longGainLoss(me,id))}</tr>` });
+        const gl = longGainLoss(me,id), div = dividendsForKey(me,id);
+        holdingRows.push({ value, html: `<tr><td>${id} (${sectorLabel})</td><td>${me.shares[id]}</td><td>$${basis}</td><td>$${value}</td>${glCell(gl)}${divCell(div)}${glCell(totalGain(me,id,gl))}</tr>` });
       }
     });
     if(me.spShares>0){
       const value = me.spShares*spPrice();
       const basis = Math.round((me.spCostBasis||0) / me.spShares);
-      holdingRows.push({ value, html: `<tr><td>Mini SP8</td><td>${me.spShares}</td><td>$${basis}</td><td>$${value}</td>${glCell(longGainLoss(me,'SP'))}</tr>` });
+      const gl = longGainLoss(me,'SP'), div = dividendsForKey(me,'SP');
+      holdingRows.push({ value, html: `<tr><td>Mini SP8</td><td>${me.spShares}</td><td>$${basis}</td><td>$${value}</td>${glCell(gl)}${divCell(div)}${glCell(totalGain(me,'SP',gl))}</tr>` });
     }
     if(me.spxShares>0){
       const value = me.spxShares*spxPrice();
       const basis = Math.round((me.spxCostBasis||0) / me.spxShares);
-      holdingRows.push({ value, html: `<tr><td>SP8</td><td>${me.spxShares}</td><td>$${basis}</td><td>$${value}</td>${glCell(longGainLoss(me,'SPX'))}</tr>` });
+      const gl = longGainLoss(me,'SPX'), div = dividendsForKey(me,'SPX');
+      holdingRows.push({ value, html: `<tr><td>SP8</td><td>${me.spxShares}</td><td>$${basis}</td><td>$${value}</td>${glCell(gl)}${divCell(div)}${glCell(totalGain(me,'SPX',gl))}</tr>` });
     }
     STOCK_IDS.forEach(id=>{
       if((me.shorts[id]||0)>0){
         const sectorLabel = SECTORS[STOCKS[id].sector].label || STOCKS[id].sector;
         const value = -(me.shorts[id]*price(id));
         const basis = Math.round((me.shortBasis[id]||0) / me.shorts[id]); // average proceeds received per share, when the short was opened
-        holdingRows.push({ value, html: `<tr><td>${id} (${sectorLabel}, short)</td><td>${me.shorts[id]}</td><td>$${basis}</td><td style="color:var(--down);">-$${Math.abs(value)}</td>${glCell(shortGainLoss(me,id))}</tr>` });
+        const gl = shortGainLoss(me,id), div = dividendsForKey(me,id);
+        holdingRows.push({ value, html: `<tr><td>${id} (${sectorLabel}, short)</td><td>${me.shorts[id]}</td><td>$${basis}</td><td style="color:var(--down);">-$${Math.abs(value)}</td>${glCell(gl)}${divCell(div)}${glCell(totalGain(me,id,gl))}</tr>` });
       }
     });
     holdingRows.sort((a,b)=>b.value-a.value);
@@ -3656,10 +3865,12 @@ function renderSidebar(){
     if(holdingRows.length===0){
       html += `<div class="hint" style="margin:0;">No open positions yet.</div>`;
     } else {
-      html += `<table class="holdings-table"><tr><th>Ticker</th><th>Shares</th><th>Avg Cost</th><th>Value</th><th>Gain/Loss</th></tr>`;
+      html += `<div class="holdings-table-wrap"><table class="holdings-table"><tr><th>Ticker</th><th>Shares</th><th>Avg Cost</th><th>Value</th><th>Gain/Loss</th><th>Total Div.</th><th>Total Gain</th></tr>`;
       holdingRows.forEach(r=>{ html += r.html; });
-      html += `</table>`;
+      html += `</table></div>`;
     }
+    const projDiv = projectedDividends(me);
+    html += `<div class="hint" style="margin:8px 0 0;">Projected dividends next turn: <b style="color:${projDiv>0?'var(--up)':'var(--text)'};">$${projDiv}</b></div>`;
     // active card-granted perks — small badges so they're not forgotten about
     const perkBadges = [];
     if((me.goldenGeese||[]).length){
@@ -3675,7 +3886,8 @@ function renderSidebar(){
       if(leach.thiefIndex===myPlayerIndex) perkBadges.push(`🩸 Leaching ${state.players[leach.victimIndex].name} (${leach.turnsLeft} left)`);
       if(leach.victimIndex===myPlayerIndex) perkBadges.push(`🩸 Being leached by ${state.players[leach.thiefIndex].name} (${leach.turnsLeft} left)`);
     });
-    if((me.bannedStocks||[]).length) perkBadges.push(`🚫 Barred from trading: ${me.bannedStocks.join(', ')}`);
+    const bannedEntries = Object.entries(me.bannedStocks||{}).filter(([,turns])=>turns>0);
+    if(bannedEntries.length) perkBadges.push(`🚫 Barred: ${bannedEntries.map(([id,turns])=>`${id} (${turns} left)`).join(', ')}`);
     if(me.firedRoundsLeft>0) perkBadges.push(`💼 Fired — no salary for ${me.firedRoundsLeft} more round${me.firedRoundsLeft===1?'':'s'}`);
     else if(me.overtimeTurnsLeft>0) perkBadges.push(`💰 Overtime — 1.5x salary for ${me.overtimeTurnsLeft} more turn${me.overtimeTurnsLeft===1?'':'s'}`);
     if(me.baseSalary!==SALARY_PER_TURN) perkBadges.push(`📈 Salary: $${me.baseSalary.toLocaleString()}/turn`);
@@ -3747,6 +3959,90 @@ function renderNetWorthChartSvg(){
     <line x1="${padL}" y1="${padT}" x2="${padL}" y2="${padT+plotH}" stroke="#232A38" stroke-width="1"/>
     ${linesSvg}
   </svg>`;
+}
+
+/* Assembles everything the end-of-game summary shows, computed fresh from
+   final state rather than tracked incrementally — standings by final net
+   worth, each player's best-performing stock (by true lifetime P&L: the
+   still-open position's unrealized gain/loss + everything ever realized
+   closing past positions in it + every dividend ever collected from it —
+   see totalGain), their all-time dividend haul, and the highest net worth
+   they reached at any point in the game (from the per-turn history). */
+const SUMMARY_KEYS = () => [...STOCK_IDS, 'SP', 'SPX'];
+function buildGameSummary(){
+  const standings = state.players.slice().sort((a,b)=>netWorth(b)-netWorth(a));
+  const keys = SUMMARY_KEYS();
+  const playerStats = state.players.map((p,i)=>{
+    let bestKey=null, bestVal=-Infinity, worstKey=null, worstVal=Infinity, totalDiv=0;
+    keys.forEach(key=>{
+      let curGL = 0;
+      if(key==='SP'){ if(p.spShares>0) curGL = longGainLoss(p,'SP'); }
+      else if(key==='SPX'){ if(p.spxShares>0) curGL = longGainLoss(p,'SPX'); }
+      else {
+        if(p.shares[key]>0) curGL += longGainLoss(p,key);
+        if((p.shorts[key]||0)>0) curGL += shortGainLoss(p,key);
+      }
+      const tg = totalGain(p, key, curGL);
+      const everTouched = tg!==0 || (key==='SP'?p.spShares>0:key==='SPX'?p.spxShares>0:(p.shares[key]>0||(p.shorts[key]||0)>0));
+      if(everTouched && tg>bestVal){ bestVal=tg; bestKey=key; }
+      if(everTouched && tg<worstVal){ worstVal=tg; worstKey=key; }
+      totalDiv += dividendsForKey(p, key);
+    });
+    let peak = netWorth(p);
+    (state.netWorthHistory||[]).forEach(h=>{ if(h.values && h.values[i]>peak) peak = h.values[i]; });
+    return { player:p, bestKey, bestVal: bestKey?bestVal:0, worstKey, worstVal: worstKey?worstVal:0, totalDividends: totalDiv, peakNetWorth: peak };
+  });
+  const dividendRoyalty = playerStats.reduce((b,s)=> (!b||s.totalDividends>b.totalDividends)?s:b, null);
+  const bestTrade = playerStats.reduce((b,s)=> (!b||s.bestVal>b.bestVal)?s:b, null);
+  return { standings, playerStats, dividendRoyalty, bestTrade };
+}
+
+function renderGameSummaryModal(){
+  if(!state.gameOver || state.summaryDismissed) return '';
+  const s = buildGameSummary();
+  const medal = i=> i===0?'🥇':i===1?'🥈':i===2?'🥉':`${i+1}.`;
+  const fmt = n => `${n<0?'-':''}$${Math.abs(Math.round(n)).toLocaleString()}`;
+  let html = `<div class="overlay" id="summaryOverlay">
+    <div class="modal modal-wide summary-modal">
+      <h2>🏁 Game Over</h2>
+      <div class="sub">${state.winner?`<b style="color:${state.winner.color};">${state.winner.name}</b> wins with ${fmt(netWorth(state.winner))} net worth.`:'The game has ended.'}</div>
+      <h4>Final Standings</h4>`;
+  s.standings.forEach((p,i)=>{
+    html += `<div class="standing-row">
+      <div class="rank">${medal(i)}</div>
+      <div class="sname" style="color:${p.color};">${p.name}${p.bot?' 🤖':''}${p.eliminated?' <span class="worthless-badge">Eliminated</span>':''}</div>
+      <div><div class="snw">${fmt(netWorth(p))}</div><div class="scash">${fmt(p.cash)} cash</div></div>
+    </div>`;
+  });
+
+  const awardCards = [];
+  if(s.dividendRoyalty && s.dividendRoyalty.totalDividends>0){
+    awardCards.push(`<div class="award-card"><div class="a-label">💰 Dividend Royalty</div><div class="a-value" style="color:${s.dividendRoyalty.player.color};">${s.dividendRoyalty.player.name} — ${fmt(s.dividendRoyalty.totalDividends)}</div></div>`);
+  }
+  if(s.bestTrade && s.bestTrade.bestKey){
+    awardCards.push(`<div class="award-card"><div class="a-label">📈 Best Single Stock</div><div class="a-value" style="color:${s.bestTrade.player.color};">${s.bestTrade.player.name} on ${tickerLabel(s.bestTrade.bestKey)} (${fmt(s.bestTrade.bestVal)})</div></div>`);
+  }
+  if(awardCards.length){
+    html += `<h4>Awards</h4><div class="award-grid">${awardCards.join('')}</div>`;
+  }
+
+  html += `<h4>Player Breakdown</h4>`;
+  s.playerStats.forEach(ps=>{
+    const p = ps.player;
+    html += `<div class="player-summary-card" style="border-left-color:${p.color};">
+      <div class="ps-name" style="color:${p.color};">${p.name}${p.bot?' 🤖':''}</div>
+      <div class="ps-stat"><span>Best performing stock</span><b>${ps.bestKey?`${tickerLabel(ps.bestKey)} (${fmt(ps.bestVal)})`:'—'}</b></div>
+      <div class="ps-stat"><span>Worst performing stock</span><b>${ps.worstKey?`${tickerLabel(ps.worstKey)} (${fmt(ps.worstVal)})`:'—'}</b></div>
+      <div class="ps-stat"><span>Total dividends collected</span><b>${fmt(ps.totalDividends)}</b></div>
+      <div class="ps-stat"><span>Total salary collected</span><b>${fmt(p.salaryCollected||0)}</b></div>
+      <div class="ps-stat"><span>Peak net worth reached</span><b>${fmt(ps.peakNetWorth)}</b></div>
+    </div>`;
+  });
+
+  html += `<button class="btn full" style="margin-top:12px;" id="summaryNewGameBtn">New Game</button>
+    <button class="btn secondary full" style="margin-top:8px;" id="summaryCloseBtn">Close</button>
+  </div></div>`;
+  return html;
 }
 
 function renderNetWorthModal(){
@@ -3960,6 +4256,7 @@ function wireChoiceHandlers(card){
 function render(){
   if(!state || state.phase==='lobby' || myPlayerIndex===null){ renderSetup(); return; }
   repairCollections(state); // belt-and-suspenders: guarantee these exist no matter how state got here
+  checkForNewJailEvents();
   const p = state.players[state.current];
   // render() fully rebuilds the DOM via innerHTML below — on many mobile
   // browsers, replacing all that content resets (or otherwise disturbs)
@@ -4016,6 +4313,7 @@ function render(){
     ${renderCardModal()}
     ${renderLogModal()}
     ${renderNetWorthModal()}
+    ${renderGameSummaryModal()}
     ${renderEndTurnConfirm()}
     ${renderResumeCardBanner()}
     ${renderSpectatorCardBanner()}
@@ -4032,6 +4330,9 @@ function render(){
   if(byId('eliminatedContinueBtn')) byId('eliminatedContinueBtn').onclick = ()=>{ if(isMyTurn()) endTurn(); };
   if(byId('jailContinueBtn')) byId('jailContinueBtn').onclick = ()=>{ if(isMyTurn()) endTurn(); };
   if(byId('newGameBtn')) byId('newGameBtn').onclick = wipeGame;
+  if(byId('summaryNewGameBtn')) byId('summaryNewGameBtn').onclick = wipeGame;
+  if(byId('summaryCloseBtn')) byId('summaryCloseBtn').onclick = ()=>{ state.summaryDismissed = true; render(); };
+  if(byId('viewSummaryBtn')) byId('viewSummaryBtn').onclick = ()=>{ state.summaryDismissed = false; render(); };
   if(byId('buyBtn')) byId('buyBtn').onclick = guardedTradeClick(()=>buyShares(state.tradeSelection, 1));
   if(byId('buyInsiderBtn')) byId('buyInsiderBtn').onclick = ()=>buyInsiderInfo();
   if(byId('sellBtn')) byId('sellBtn').onclick = guardedTradeClick(()=>sellShares(state.tradeSelection, 1));
