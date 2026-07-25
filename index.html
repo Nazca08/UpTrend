@@ -34,7 +34,7 @@
   .mono{font-family:'IBM Plex Mono',monospace;}
 
   /* ---------- layout ---------- */
-  #app{max-width:1400px;margin:0 auto;padding:16px;}
+  #app{max-width:1800px;margin:0 auto;padding:16px;}
   .topbar{
     display:flex;align-items:center;justify-content:space-between;
     padding:14px 20px;background:linear-gradient(180deg,#141924,#0F131B);
@@ -49,8 +49,8 @@
   .meta .label{font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);}
   .meta .value{font-size:16px;font-weight:600;}
 
-  .layout{display:grid;grid-template-columns:1fr 340px;gap:14px;align-items:start;}
-  @media (max-width:980px){.layout{grid-template-columns:1fr;}}
+  .layout{display:grid;grid-template-columns:1fr 580px;gap:14px;align-items:start;}
+  @media (max-width:1180px){.layout{grid-template-columns:1fr;}}
 
   .board{display:flex;flex-direction:column;gap:12px;}
   .sector-panel{
@@ -171,6 +171,8 @@
   .resume-card-sub{font-size:12px;color:var(--muted);margin-top:1px;}
 
   .holdings-table-wrap{width:100%;overflow-x:auto;}
+  .tkr-dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:5px;vertical-align:middle;}
+  .short-tag{display:inline-block;background:var(--down);color:#fff;font-size:8px;font-weight:700;padding:0 4px;border-radius:3px;margin-left:4px;vertical-align:middle;letter-spacing:0.3px;}
   .jail-tag{display:inline-block;background:var(--down);color:#fff;font-size:9px;font-weight:700;letter-spacing:0.5px;padding:1px 6px;border-radius:4px;text-transform:uppercase;margin-left:6px;vertical-align:middle;}
   .jail-banner{position:relative;border:3px solid var(--down);border-radius:10px;padding:14px;margin-bottom:10px;
     background:repeating-linear-gradient(135deg, rgba(255,92,92,0.10) 0 10px, rgba(255,92,92,0.02) 10px 20px), var(--panel-2);overflow:hidden;}
@@ -556,15 +558,47 @@ function loadLocalRoom(){
 }
 function clearLocalRoom(){ try{ localStorage.removeItem(LS_KEY); }catch(e){} }
 
+/* All-time leaderboard, tracked per browser via localStorage (no backend
+   of its own to aggregate across devices) — keyed by player name, so
+   playing under the same name on this device builds up a record over
+   time: games played, wins, and the best net worth ever reached. Bots are
+   never recorded — this is meant to track human players' history. */
+const LEADERBOARD_LS_KEY = 'uptrend_leaderboard_v1';
+function loadLeaderboardData(){
+  try{ const raw = localStorage.getItem(LEADERBOARD_LS_KEY); return raw ? JSON.parse(raw) : {}; }catch(e){ return {}; }
+}
+function saveLeaderboardData(data){
+  try{ localStorage.setItem(LEADERBOARD_LS_KEY, JSON.stringify(data)); }catch(e){}
+}
+/* Called exactly once per finished game (see leaderboardRecorded guard in
+   render()) — folds every non-bot player's result into their running
+   all-time record. */
+function recordGameToLeaderboard(){
+  if(!state || !state.players) return;
+  const data = loadLeaderboardData();
+  state.players.forEach(p=>{
+    if(p.bot) return;
+    const nw = Math.round(netWorth(p));
+    const entry = data[p.name] || { gamesPlayed:0, wins:0, bestNetWorth:0, totalNetWorthSum:0, lastPlayedAt:0 };
+    entry.gamesPlayed += 1;
+    if(state.winner && state.winner.name===p.name) entry.wins += 1;
+    entry.bestNetWorth = Math.max(entry.bestNetWorth, nw);
+    entry.totalNetWorthSum = (entry.totalNetWorthSum||0) + nw;
+    entry.lastPlayedAt = Date.now();
+    data[p.name] = entry;
+  });
+  saveLeaderboardData(data);
+}
+
 // Fields that live only in THIS browser tab and are never written to Firebase
 // or overwritten by a remote update — pure UI state, not real game state.
-const LOCAL_ONLY_KEYS = ['tradeSelection','turnUndoStack','confirmEndTurn','confirmRestart','expandedChart','showLog','showNetWorthGraph','cardMinimized','summaryDismissed'];
+const LOCAL_ONLY_KEYS = ['tradeSelection','turnUndoStack','confirmEndTurn','confirmRestart','expandedChart','showLog','showNetWorthGraph','cardMinimized','summaryDismissed','showLeaderboard'];
 
 function localDefaults(){
   return {
     tradeSelection: null, turnUndoStack: [], confirmEndTurn: false,
     confirmRestart: false, expandedChart: null, showLog: false, showNetWorthGraph: false, cardMinimized: false,
-    summaryDismissed: false,
+    summaryDismissed: false, showLeaderboard: false,
   };
 }
 
@@ -645,6 +679,20 @@ function checkForNewJailEvents(){
     }
   }
   jailAlertLogLen = state.log.length;
+}
+
+/* Records the finished game into the local leaderboard exactly once —
+   without this guard, every re-render after gameOver flips true (which
+   happens a lot: periodic sync, other players' actions, etc.) would double-
+   or triple-count the same game. Reset alongside jailAlertLogLen whenever a
+   new game starts. */
+let leaderboardRecorded = false;
+function checkForGameEnd(){
+  if(!state){ leaderboardRecorded = false; return; }
+  if(!state.gameOver){ leaderboardRecorded = false; return; }
+  if(leaderboardRecorded) return;
+  leaderboardRecorded = true;
+  recordGameToLeaderboard();
 }
 
 
@@ -772,17 +820,27 @@ function repairCollections(s){
   if(s.pendingChoice===undefined) s.pendingChoice = null;
   if(s.choiceError===undefined) s.choiceError = null;
   if(s.winner===undefined) s.winner = null;
+  if(s.turnNumber===undefined) s.turnNumber = 1;
   if(s.stocks){
     Object.keys(s.stocks).forEach(id=>{
       if(s.stocks[id].tradeMarkers===undefined) s.stocks[id].tradeMarkers = [];
+      if(s.stocks[id].tradeLog===undefined) s.stocks[id].tradeLog = [];
     });
   }
   if(s.sp && s.sp.tradeMarkers===undefined) s.sp.tradeMarkers = [];
+  if(s.sp && s.sp.tradeLog===undefined) s.sp.tradeLog = [];
   if(s.spx && s.spx.tradeMarkers===undefined) s.spx.tradeMarkers = [];
+  if(s.spx && s.spx.tradeLog===undefined) s.spx.tradeLog = [];
   if(s.players){
     s.players.forEach(pl=>{
       if(pl.goldenGeese===undefined) pl.goldenGeese = [];
       if(pl.holdStreak===undefined) pl.holdStreak = Object.fromEntries(STOCK_IDS.map(id=>[id,0]));
+      if(pl.longestHoldStreak===undefined) pl.longestHoldStreak = 0;
+      if(pl.longestHoldStreakStock===undefined) pl.longestHoldStreakStock = null;
+      if(pl.timesJailed===undefined) pl.timesJailed = 0;
+      if(pl.marginCallCount===undefined) pl.marginCallCount = 0;
+      if(pl.biggestTradeAmount===undefined) pl.biggestTradeAmount = 0;
+      if(pl.biggestTradeStock===undefined) pl.biggestTradeStock = null;
       if(pl.marginShield===undefined) pl.marginShield = false;
       if(pl.publicOffering && pl.publicOffering.usedStocks===undefined) pl.publicOffering.usedStocks = [];
       if(pl.jailTurnsLeft===undefined) pl.jailTurnsLeft = 0;
@@ -821,7 +879,7 @@ let unsubscribeGame = null; // detach handle for the current room's live listene
 function subscribeToRoom(code){
   if(unsubscribeGame){ unsubscribeGame(); unsubscribeGame = null; }
   roomCode = code;
-  state = null; myPlayerIndex = null; lastKnownSnapshot = {}; jailAlertLogLen = -1;
+  state = null; myPlayerIndex = null; lastKnownSnapshot = {}; jailAlertLogLen = -1; leaderboardRecorded = false;
   unsubscribeGame = onValue(gameRef(), (snap)=>{
     const remote = snap.val();
     if(!remote){
@@ -904,7 +962,7 @@ function renderSyncFailedBanner(){
 
 async function wipeGame(){
   state = null; myPlayerIndex = null;
-  lastKnownSnapshot = {}; jailAlertLogLen = -1;
+  lastKnownSnapshot = {}; jailAlertLogLen = -1; leaderboardRecorded = false;
   if(!roomCode){ render(); return; }
   try{ await set(gameRef(), null); }catch(e){ console.error('UpTrend: failed to clear game', e); }
   render();
@@ -914,7 +972,7 @@ async function wipeGame(){
    (Create Game / Join Game), forgetting the saved seat for this room. */
 function leaveRoom(){
   if(unsubscribeGame){ unsubscribeGame(); unsubscribeGame = null; }
-  roomCode = null; state = null; myPlayerIndex = null; lastKnownSnapshot = {}; jailAlertLogLen = -1;
+  roomCode = null; state = null; myPlayerIndex = null; lastKnownSnapshot = {}; jailAlertLogLen = -1; leaderboardRecorded = false;
   clearLocalRoom();
   render();
 }
@@ -1009,16 +1067,16 @@ function freshState(players, gameLength){
   STOCK_IDS.forEach(id=>{
     const cfg = STOCK_PRICE_CONFIG[id];
     const track = generateTrack(cfg.top, cfg.bottom, cfg.center, STOCK_DOTS_PER_SIDE);
-    stocks[id] = { idx: STOCK_CENTER_IDX, track, frozen:false, worthless:false, prevIdx: STOCK_CENTER_IDX, history:[track[STOCK_CENTER_IDX]], tradeMarkers:[] };
+    stocks[id] = { idx: STOCK_CENTER_IDX, track, frozen:false, worthless:false, prevIdx: STOCK_CENTER_IDX, history:[track[STOCK_CENTER_IDX]], tradeMarkers:[], tradeLog:[] };
   });
   // 'sp' is the original index fund, now labeled "Mini SP8" everywhere in
   // the UI. 'spx' is the new "SP8" — same shape, same starting position
   // (bottom of its range), just 10x the price — for whenever cash has
   // piled up too high for anything else to meaningfully absorb it.
   const spTrack = generateTrack(2000, 500, CENTER_PRICE, SP_DOTS_PER_SIDE);
-  const sp = { idx: 0, track: spTrack, prevIdx: 0, history:[spTrack[0]], tradeMarkers:[] };
+  const sp = { idx: 0, track: spTrack, prevIdx: 0, history:[spTrack[0]], tradeMarkers:[], tradeLog:[] };
   const spxTrack = generateTrack(20000, 5000, CENTER_PRICE*10, SP_DOTS_PER_SIDE);
-  const spx = { idx: 0, track: spxTrack, prevIdx: 0, history:[spxTrack[0]], tradeMarkers:[] };
+  const spx = { idx: 0, track: spxTrack, prevIdx: 0, history:[spxTrack[0]], tradeMarkers:[], tradeLog:[] };
   return {
     stocks, sp, spx,
     players: players.map((name,i)=>({
@@ -1034,6 +1092,12 @@ function freshState(players, gameLength){
       spxShares:0, spxCostBasis:0, spxDividendsCollected:0, spxRealizedGain:0, // SP8 (the big one) holdings
       eliminated:false,
       holdStreak: Object.fromEntries(STOCK_IDS.map(id=>[id,0])), // consecutive own-turns held with shares>0, for Loyalty Bonus
+      longestHoldStreak: 0, // the highest holdStreak ever reached on any one stock, all-time — for the Diamond Hands award
+      longestHoldStreakStock: null, // which stock that streak was on
+      timesJailed: 0, // how many times this player has been caught insider trading, all-time
+      marginCallCount: 0, // how many times a margin call has force-liquidated this player, all-time
+      biggestTradeAmount: 0, // largest single buy/sell/short/cover $ amount, all-time — for the Whale award
+      biggestTradeStock: null, // which stock that trade was on
       goldenGeese: [], // stock ids granting a permanent personal +10% dividend (Golden Goose card)
       marginShield: false, // one-time margin-call forgiveness (Margin Call Forgiveness card)
       publicOffering: null, // {active, usedStocks} — this-turn-only fee/price-impact waiver on up to 3 stocks
@@ -1048,6 +1112,7 @@ function freshState(players, gameLength){
     })),
     current: 0,
     turnStartedAt: Date.now(), // for the 45-second turn timer
+    turnNumber: 1, // increments every endTurn — used to timestamp trade-log entries ("Turn 5: ...")
     deck: shuffle(buildDeck()),
     discard: [],
     scheduled: [], // {turnsLeft, resolve}
@@ -1300,6 +1365,11 @@ function addRealizedGain(p, key, amount){
   else if(key==='SPX') p.spxRealizedGain = (p.spxRealizedGain||0) + amount;
   else p.realizedGain[key] = (p.realizedGain[key]||0) + amount;
 }
+/* Tracks the single largest dollar amount ever moved in one buy/sell/short/
+   cover action, all-time — for the Whale award in the end-of-game summary. */
+function trackBiggestTrade(p, key, amount){
+  if(amount > (p.biggestTradeAmount||0)){ p.biggestTradeAmount = amount; p.biggestTradeStock = key; }
+}
 function longGainLoss(p, key){
   const held = key==='SP' ? p.spShares : key==='SPX' ? p.spxShares : p.shares[key];
   const val = held * priceOf(key);
@@ -1494,6 +1564,7 @@ function checkMarginCalls(){
       return;
     }
     let guard = 0;
+    let forcedThisCall = false;
     while(locked > p.cash && guard < STOCK_IDS.length+1){
       guard++;
       let target = null, maxLiab = -1;
@@ -1506,9 +1577,11 @@ function checkMarginCalls(){
       const cost = qty*price(target);
       p.cash -= cost;
       p.shorts[target] = 0;
+      forcedThisCall = true;
       logEvent(`Margin call: ${p.name}'s ${target} short was auto-covered at $${price(target)}.`, true);
       locked = lockedCash(p);
     }
+    if(forcedThisCall) p.marginCallCount = (p.marginCallCount||0) + 1;
   });
 }
 
@@ -2075,6 +2148,7 @@ function tickHoldStreaks(ownerIndex){
   const p = state.players[ownerIndex];
   STOCK_IDS.forEach(id=>{
     p.holdStreak[id] = (p.shares[id]||0)>0 ? (p.holdStreak[id]||0)+1 : 0;
+    if(p.holdStreak[id] > p.longestHoldStreak){ p.longestHoldStreak = p.holdStreak[id]; p.longestHoldStreakStock = id; }
   });
 }
 
@@ -2613,6 +2687,19 @@ function recordTradeMarker(id, color, side, qty){
   if(obj.tradeMarkers.length > MAX_TRADE_MARKERS) obj.tradeMarkers = obj.tradeMarkers.slice(-MAX_TRADE_MARKERS);
 }
 
+/* A readable trade-by-trade history per stock ("Turn 5: Alice bought 4 QBIT
+   @ $62"), shown in the expanded chart view — separate from tradeMarkers
+   above, which only feeds the chart's volume bars and doesn't carry enough
+   detail (player name, exact action, per-share price, turn number) for a
+   human-readable log. */
+const MAX_TRADE_LOG = 40;
+function recordTradeLogEntry(id, p, action, qty, pricePerShare){
+  const obj = objFor(id);
+  if(!obj.tradeLog) obj.tradeLog = [];
+  obj.tradeLog.push({ turn: state.turnNumber||1, name: p.name, color: p.color, action, qty, price: Math.round(pricePerShare) });
+  if(obj.tradeLog.length > MAX_TRADE_LOG) obj.tradeLog = obj.tradeLog.slice(-MAX_TRADE_LOG);
+}
+
 /* Fires after every buy/sell/short/cover — if the trading player has an
    active tip on THIS specific stock that they haven't already crossed the
    line on, checks whether this trade just crossed it: buying or shorting
@@ -2656,6 +2743,7 @@ function checkInsiderTradingRisk(ownerIndex){
     if(!p.bannedStocks || Array.isArray(p.bannedStocks)) p.bannedStocks = {};
     p.bannedStocks[item.stock] = INSIDER_BAN_TURNS;
     p.jailTurnsLeft = item.jailTurns;
+    p.timesJailed = (p.timesJailed||0) + 1;
     logEvent(`${p.name} was caught insider trading — fined $${fine.toLocaleString()}, had the position seized, and is barred from trading that stock for ${INSIDER_BAN_TURNS} turns. Serving ${item.jailTurns} turn${item.jailTurns===1?'':'s'} in jail.`, true);
     return true;
   }
@@ -2726,6 +2814,8 @@ function buyShares(id, qtyRequested, force){
   }
   checkInsiderActedOn(state.current, id);
   if(id!=='SP' && id!=='SPX') trackPortfolioManagerOpen(p, id, 'long', qty, totalCost/qty);
+  trackBiggestTrade(p, id, totalCost);
+  recordTradeLogEntry(id, p, 'buy', qty, totalCost/qty);
   const feeNote = walk.fee>0 ? ` (incl. $${walk.fee} fee)` : (id==='SP' ? ' (no price impact)' : offerEligible ? ' (Public Offering — no fee, no price impact)' : '');
   logEvent(`${p.name} bought ${qty} ${tickerLabel(id)} for $${totalCost}${feeNote} — now $${obj.track[obj.idx]}.`);
   checkMarginCalls(); checkGameOver(); recordTradeMarker(id, p.color, 'up', qty); schedulePersist(); render();
@@ -2754,6 +2844,8 @@ function sellShares(id, qtyRequested, force){
   if(id!=='SP') state.turnFills.down[id] = priorFilled + qty;
   checkInsiderActedOn(state.current, id);
   if(id!=='SP' && id!=='SPX') trackPortfolioManagerClose(p, id, 'long', qty, proceeds/qty);
+  trackBiggestTrade(p, id, proceeds);
+  recordTradeLogEntry(id, p, 'sell', qty, proceeds/qty);
   const feeNote = walk.fee>0 ? ` (after $${walk.fee} fee)` : (id==='SP' ? ' (no price impact)' : '');
   logEvent(`${p.name} sold ${qty} ${tickerLabel(id)} for $${proceeds}${feeNote} — now $${obj.track[obj.idx]}.`);
   checkMarginCalls(); checkGameOver(); recordTradeMarker(id, p.color, 'down', qty); schedulePersist(); render();
@@ -2782,6 +2874,8 @@ function openShort(id, qtyRequested, force){
   state.turnFills.down[id] = priorFilled + qty;
   checkInsiderActedOn(state.current, id);
   trackPortfolioManagerOpen(p, id, 'short', qty, proceeds/qty);
+  trackBiggestTrade(p, id, proceeds);
+  recordTradeLogEntry(id, p, 'short', qty, proceeds/qty);
   const feeNote = walk.fee>0 ? ` (after $${walk.fee} fee)` : '';
   logEvent(`${p.name} opened a short on ${qty} ${id} for $${proceeds}${feeNote} — collateral locked, now $${obj.track[obj.idx]}.`, true);
   checkMarginCalls(); checkGameOver(); recordTradeMarker(id, p.color, 'down', qty); schedulePersist(); render();
@@ -2807,6 +2901,8 @@ function coverShort(id, qtyRequested, force){
   state.turnFills.up[id] = priorFilled + qty;
   checkInsiderActedOn(state.current, id);
   trackPortfolioManagerClose(p, id, 'short', qty, totalCost/qty);
+  trackBiggestTrade(p, id, totalCost);
+  recordTradeLogEntry(id, p, 'cover', qty, totalCost/qty);
   const feeNote = walk.fee>0 ? ` (incl. $${walk.fee} fee)` : '';
   logEvent(`${p.name} covered ${qty} ${id} for $${totalCost}${feeNote} — now $${obj.track[obj.idx]}.`);
   checkMarginCalls(); checkGameOver(); recordTradeMarker(id, p.color, 'up', qty); schedulePersist(); render();
@@ -2834,6 +2930,7 @@ function endTurn(){
   do { next = (next+1)%state.players.length; } while(state.players[next].eliminated && next!==state.current);
   state.current = next;
   state.turnStartedAt = Date.now();
+  state.turnNumber = (state.turnNumber||1) + 1;
   state.phase = 'draw';
   state.turnStage = 'start';
   state.tradeSelection = null;
@@ -3166,7 +3263,7 @@ function startBotGame(){
 }
 
 function renderEndTurnConfirm(){
-  if(!state.confirmEndTurn) return '';
+  if(!state.confirmEndTurn || state.gameOver) return '';
   const left = capRemaining();
   const isStart = state.turnStage==='start';
   return `<div class="overlay">
@@ -3182,7 +3279,7 @@ function renderEndTurnConfirm(){
 }
 
 function renderRestartConfirm(){
-  if(!state || !state.confirmRestart) return '';
+  if(!state || !state.confirmRestart || state.gameOver) return '';
   return `<div class="overlay">
     <div class="modal">
       <h2>Restart the game?</h2>
@@ -3567,6 +3664,15 @@ function renderExpandedChartModal(){
         </span>`).join('')}</div>`
     : '';
 
+  const TRADE_VERBS = { buy:'bought', sell:'sold', short:'shorted', cover:'covered' };
+  const tradeLogHtml = (obj.tradeLog && obj.tradeLog.length)
+    ? `<h3 style="margin:18px 0 8px;font-size:14px;">Trade History</h3>
+       <div class="log">${obj.tradeLog.slice().reverse().map(t=>
+         `<div class="log-entry" style="border-left-color:${t.color};">
+            <span style="color:var(--muted);">Turn ${t.turn}</span> — <b style="color:${t.color};">${t.name}</b> ${TRADE_VERBS[t.action]||t.action} ${t.qty} @ $${t.price}
+          </div>`).join('')}</div>`
+    : '';
+
   return `<div class="overlay" id="chartOverlay">
     <div class="modal" style="max-width:700px;">
       <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;">
@@ -3576,6 +3682,7 @@ function renderExpandedChartModal(){
       <div class="sub">Full price history${(obj.tradeMarkers||[]).length ? ' — bars from the bottom are buy/cover volume, bars from the top are sell/short volume' : ''}${zone ? ` — shaded band is the dividend zone (rate ranges ${(zone.rates[0]*100).toFixed(1).replace(/\.0$/,'')}%–${(zone.rates[zone.rates.length-1]*100).toFixed(1).replace(/\.0$/,'')}%, highest at the very top)` : ''}</div>
       <div style="margin:14px 0;overflow-x:auto;">${renderExpandedChart(obj.history, top, bottom, color, obj.tradeMarkers, zoneBottomPrice)}</div>
       ${legendHtml}
+      ${tradeLogHtml}
       <button class="btn full" id="closeChartBtn" style="margin-top:16px;">Close</button>
     </div>
   </div>`;
@@ -3673,7 +3780,7 @@ function renderSidebar(){
     html += `<div class="player-card ${i===state.current?'active':''}" style="border-left-color:${pl.color};${pl.eliminated?'opacity:0.5;':''}">
       <div class="p-top"><span class="p-name" style="color:${pl.color};">${pl.name}${pl.bot?' 🤖':''}${i===state.current?' • turn':''}${pl.eliminated?' <span class="worthless-badge">Eliminated</span>':''}${pl.jailTurnsLeft>0?` <span class="jail-tag">🚔 Jailed (${pl.jailTurnsLeft})</span>`:''}</span><span class="p-cash">$${pl.cash}${locked>0?` <span style="color:var(--muted);font-weight:400;">($${locked} locked)</span>`:''}</span></div>
       <div class="p-net">Net worth: $${netWorth(pl)}</div>
-      ${projDiv>0?`<div class="p-net" style="color:var(--up);">Projected dividends: $${projDiv}</div>`:''}
+      <div class="p-net" style="${projDiv>0?'color:var(--up);':''}">Projected dividends: $${projDiv}</div>
     </div>`;
   });
   html += `</div>`;
@@ -3828,6 +3935,7 @@ function renderSidebar(){
   } else {
     const glCell = (gl)=> `<td style="color:${gl>=0?'var(--up)':'var(--down)'};">${gl>=0?'+':'-'}$${Math.abs(Math.round(gl))}</td>`;
     const divCell = (div)=> `<td>$${Math.round(div)}</td>`;
+    const tkrCell = (id, sectorLabel, short)=> `<td><span class="tkr-dot" style="background:${SECTORS[STOCKS[id].sector].color};" title="${sectorLabel}"></span>${id}${short?'<span class="short-tag">SHORT</span>':''}</td>`;
     const holdingRows = [];
     STOCK_IDS.forEach(id=>{
       if(me.shares[id]>0){
@@ -3835,7 +3943,7 @@ function renderSidebar(){
         const value = me.shares[id]*price(id);
         const basis = Math.round((me.costBasis[id]||0) / me.shares[id]);
         const gl = longGainLoss(me,id), div = dividendsForKey(me,id);
-        holdingRows.push({ value, html: `<tr><td>${id} (${sectorLabel})</td><td>${me.shares[id]}</td><td>$${basis}</td><td>$${value}</td>${glCell(gl)}${divCell(div)}${glCell(totalGain(me,id,gl))}</tr>` });
+        holdingRows.push({ value, html: `<tr>${tkrCell(id, sectorLabel, false)}<td>${me.shares[id]}</td><td>$${basis}</td><td>$${value}</td>${glCell(gl)}${divCell(div)}${glCell(totalGain(me,id,gl))}</tr>` });
       }
     });
     if(me.spShares>0){
@@ -3856,7 +3964,7 @@ function renderSidebar(){
         const value = -(me.shorts[id]*price(id));
         const basis = Math.round((me.shortBasis[id]||0) / me.shorts[id]); // average proceeds received per share, when the short was opened
         const gl = shortGainLoss(me,id), div = dividendsForKey(me,id);
-        holdingRows.push({ value, html: `<tr><td>${id} (${sectorLabel}, short)</td><td>${me.shorts[id]}</td><td>$${basis}</td><td style="color:var(--down);">-$${Math.abs(value)}</td>${glCell(gl)}${divCell(div)}${glCell(totalGain(me,id,gl))}</tr>` });
+        holdingRows.push({ value, html: `<tr>${tkrCell(id, sectorLabel, true)}<td>${me.shorts[id]}</td><td>$${basis}</td><td style="color:var(--down);">-$${Math.abs(value)}</td>${glCell(gl)}${divCell(div)}${glCell(totalGain(me,id,gl))}</tr>` });
       }
     });
     holdingRows.sort((a,b)=>b.value-a.value);
@@ -3865,7 +3973,7 @@ function renderSidebar(){
     if(holdingRows.length===0){
       html += `<div class="hint" style="margin:0;">No open positions yet.</div>`;
     } else {
-      html += `<div class="holdings-table-wrap"><table class="holdings-table"><tr><th>Ticker</th><th>Shares</th><th>Avg Cost</th><th>Value</th><th>Gain/Loss</th><th>Total Div.</th><th>Total Gain</th></tr>`;
+      html += `<div class="holdings-table-wrap"><table class="holdings-table"><tr><th>Ticker</th><th>Shares</th><th>Cost</th><th>Value</th><th>G/L</th><th>Div.</th><th>Total</th></tr>`;
       holdingRows.forEach(r=>{ html += r.html; });
       html += `</table></div>`;
     }
@@ -3994,7 +4102,18 @@ function buildGameSummary(){
   });
   const dividendRoyalty = playerStats.reduce((b,s)=> (!b||s.totalDividends>b.totalDividends)?s:b, null);
   const bestTrade = playerStats.reduce((b,s)=> (!b||s.bestVal>b.bestVal)?s:b, null);
-  return { standings, playerStats, dividendRoyalty, bestTrade };
+  const diamondHands = state.players.reduce((b,p)=> (!b||p.longestHoldStreak>b.longestHoldStreak)?p:b, null);
+  const whale = state.players.reduce((b,p)=> (!b||p.biggestTradeAmount>b.biggestTradeAmount)?p:b, null);
+  const repeatOffender = state.players.reduce((b,p)=> (!b||p.timesJailed>b.timesJailed)?p:b, null);
+  // Untouchable only means something if there's a contrast — some players
+  // took margin calls and at least one didn't. If everyone's clean (early
+  // game, or margin calls just never came up) or nobody's clean, it's not
+  // a meaningful callout either way.
+  const cleanPlayers = state.players.filter(p=>(p.marginCallCount||0)===0);
+  const untouchable = (cleanPlayers.length>0 && cleanPlayers.length<state.players.length)
+    ? cleanPlayers.reduce((b,p)=> (!b||netWorth(p)>netWorth(b))?p:b, null)
+    : null;
+  return { standings, playerStats, dividendRoyalty, bestTrade, diamondHands, whale, repeatOffender, untouchable };
 }
 
 function renderGameSummaryModal(){
@@ -4022,13 +4141,27 @@ function renderGameSummaryModal(){
   if(s.bestTrade && s.bestTrade.bestKey){
     awardCards.push(`<div class="award-card"><div class="a-label">📈 Best Single Stock</div><div class="a-value" style="color:${s.bestTrade.player.color};">${s.bestTrade.player.name} on ${tickerLabel(s.bestTrade.bestKey)} (${fmt(s.bestTrade.bestVal)})</div></div>`);
   }
+  if(s.diamondHands && s.diamondHands.longestHoldStreak>0){
+    awardCards.push(`<div class="award-card"><div class="a-label">💎 Diamond Hands</div><div class="a-value" style="color:${s.diamondHands.color};">${s.diamondHands.name} — held ${tickerLabel(s.diamondHands.longestHoldStreakStock)} ${s.diamondHands.longestHoldStreak} turn${s.diamondHands.longestHoldStreak===1?'':'s'} straight</div></div>`);
+  }
+  if(s.whale && s.whale.biggestTradeAmount>0){
+    awardCards.push(`<div class="award-card"><div class="a-label">🐋 Whale</div><div class="a-value" style="color:${s.whale.color};">${s.whale.name} — ${fmt(s.whale.biggestTradeAmount)} on ${tickerLabel(s.whale.biggestTradeStock)} in one trade</div></div>`);
+  }
+  if(s.repeatOffender && s.repeatOffender.timesJailed>0){
+    awardCards.push(`<div class="award-card"><div class="a-label">🚔 Repeat Offender</div><div class="a-value" style="color:${s.repeatOffender.color};">${s.repeatOffender.name} — caught ${s.repeatOffender.timesJailed} time${s.repeatOffender.timesJailed===1?'':'s'}</div></div>`);
+  }
+  if(s.untouchable){
+    awardCards.push(`<div class="award-card"><div class="a-label">🛡️ Untouchable</div><div class="a-value" style="color:${s.untouchable.color};">${s.untouchable.name} — never took a margin call</div></div>`);
+  }
   if(awardCards.length){
     html += `<h4>Awards</h4><div class="award-grid">${awardCards.join('')}</div>`;
   }
 
   html += `<h4>Player Breakdown</h4>`;
+  const lbData = loadLeaderboardData();
   s.playerStats.forEach(ps=>{
     const p = ps.player;
+    const lb = !p.bot ? lbData[p.name] : null;
     html += `<div class="player-summary-card" style="border-left-color:${p.color};">
       <div class="ps-name" style="color:${p.color};">${p.name}${p.bot?' 🤖':''}</div>
       <div class="ps-stat"><span>Best performing stock</span><b>${ps.bestKey?`${tickerLabel(ps.bestKey)} (${fmt(ps.bestVal)})`:'—'}</b></div>
@@ -4036,6 +4169,7 @@ function renderGameSummaryModal(){
       <div class="ps-stat"><span>Total dividends collected</span><b>${fmt(ps.totalDividends)}</b></div>
       <div class="ps-stat"><span>Total salary collected</span><b>${fmt(p.salaryCollected||0)}</b></div>
       <div class="ps-stat"><span>Peak net worth reached</span><b>${fmt(ps.peakNetWorth)}</b></div>
+      ${lb ? `<div class="ps-stat"><span>All-time record (this device)</span><b>${lb.wins}W / ${lb.gamesPlayed}G — best ${fmt(lb.bestNetWorth)}</b></div>` : ''}
     </div>`;
   });
 
@@ -4043,6 +4177,37 @@ function renderGameSummaryModal(){
     <button class="btn secondary full" style="margin-top:8px;" id="summaryCloseBtn">Close</button>
   </div></div>`;
   return html;
+}
+
+/* All-time leaderboard modal — every name ever recorded on this browser
+   (see recordGameToLeaderboard), sorted by wins first, then best net worth
+   as a tiebreaker. Purely local: there's no backend to aggregate across
+   devices, so this is "this browser's history," not a global ranking. */
+function renderLeaderboardModal(){
+  if(!state.showLeaderboard) return '';
+  const data = loadLeaderboardData();
+  const rows = Object.keys(data).map(name=>({ name, ...data[name] }))
+    .sort((a,b)=> b.wins-a.wins || b.bestNetWorth-a.bestNetWorth);
+  const fmt = n => `$${Math.round(n).toLocaleString()}`;
+  return `<div class="overlay" id="leaderboardOverlay">
+    <div class="modal modal-wide">
+      <h2>🏆 All-Time Leaderboard</h2>
+      <div class="sub">Tracked on this browser only — games played under each name, across every session.</div>
+      ${rows.length===0 ? `<div class="hint" style="margin:0;">No finished games recorded yet on this browser.</div>` : `
+      <div class="holdings-table-wrap"><table class="holdings-table">
+        <tr><th>Player</th><th>Games</th><th>Wins</th><th>Win %</th><th>Best Net Worth</th><th>Avg Net Worth</th></tr>
+        ${rows.map(r=>`<tr>
+          <td>${r.name}</td>
+          <td>${r.gamesPlayed}</td>
+          <td>${r.wins}</td>
+          <td>${r.gamesPlayed>0 ? Math.round((r.wins/r.gamesPlayed)*100) : 0}%</td>
+          <td>${fmt(r.bestNetWorth)}</td>
+          <td>${fmt(r.gamesPlayed>0 ? r.totalNetWorthSum/r.gamesPlayed : 0)}</td>
+        </tr>`).join('')}
+      </table></div>`}
+      <button class="btn full" style="margin-top:16px;" id="closeLeaderboardBtn">Close</button>
+    </div>
+  </div>`;
 }
 
 function renderNetWorthModal(){
@@ -4257,6 +4422,7 @@ function render(){
   if(!state || state.phase==='lobby' || myPlayerIndex===null){ renderSetup(); return; }
   repairCollections(state); // belt-and-suspenders: guarantee these exist no matter how state got here
   checkForNewJailEvents();
+  checkForGameEnd();
   const p = state.players[state.current];
   // render() fully rebuilds the DOM via innerHTML below — on many mobile
   // browsers, replacing all that content resets (or otherwise disturbs)
@@ -4302,6 +4468,7 @@ function render(){
         <div class="item"><div class="label">Time Left</div><div class="value mono" id="turnTimerValue" style="${turnTimerSecondsLeft()<=0?'color:var(--down);':''}">${formatTurnTimer(turnTimerSecondsLeft())}</div></div>
         <div class="item"><div class="label">${state.winCondition && state.winCondition.mode==='timer' ? 'Game Ends In' : 'Goal'}</div><div class="value mono" id="gameLengthValue" style="${gameTimeLeftSecs()<=0 && state.winCondition && state.winCondition.mode==='timer' ? 'color:var(--down);' : ''}">${state.winCondition && state.winCondition.mode==='timer' ? formatGameTimeLeft() : '$'+((state.winCondition&&state.winCondition.target)||500000).toLocaleString()}</div></div>
         <div class="item"><div class="label">Deck</div><div class="value mono">${state.deck.length} left</div></div>
+        <button class="btn secondary" id="leaderboardBtn" style="padding:8px 12px;font-size:12px;">🏆 Leaderboard</button>
         <button class="btn secondary" id="syncNowBtn" style="padding:8px 12px;font-size:12px;">Sync Now</button>
         <button class="btn secondary" id="restartBtn" style="padding:8px 12px;font-size:12px;">Restart</button>
       </div>
@@ -4313,13 +4480,14 @@ function render(){
     ${renderCardModal()}
     ${renderLogModal()}
     ${renderNetWorthModal()}
-    ${renderGameSummaryModal()}
+    ${renderLeaderboardModal()}
     ${renderEndTurnConfirm()}
     ${renderResumeCardBanner()}
     ${renderSpectatorCardBanner()}
     ${renderRestartConfirm()}
     ${renderExpandedChartModal()}
     ${renderSyncFailedBanner()}
+    ${renderGameSummaryModal()}
   `;
 
   // wire buttons
@@ -4333,6 +4501,8 @@ function render(){
   if(byId('summaryNewGameBtn')) byId('summaryNewGameBtn').onclick = wipeGame;
   if(byId('summaryCloseBtn')) byId('summaryCloseBtn').onclick = ()=>{ state.summaryDismissed = true; render(); };
   if(byId('viewSummaryBtn')) byId('viewSummaryBtn').onclick = ()=>{ state.summaryDismissed = false; render(); };
+  if(byId('leaderboardBtn')) byId('leaderboardBtn').onclick = ()=>{ state.showLeaderboard = true; render(); };
+  if(byId('closeLeaderboardBtn')) byId('closeLeaderboardBtn').onclick = ()=>{ state.showLeaderboard = false; render(); };
   if(byId('buyBtn')) byId('buyBtn').onclick = guardedTradeClick(()=>buyShares(state.tradeSelection, 1));
   if(byId('buyInsiderBtn')) byId('buyInsiderBtn').onclick = ()=>buyInsiderInfo();
   if(byId('sellBtn')) byId('sellBtn').onclick = guardedTradeClick(()=>sellShares(state.tradeSelection, 1));
