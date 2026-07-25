@@ -25,10 +25,13 @@
     --spx:#C77DFF;
   }
   *{box-sizing:border-box;}
+  html{overflow-x:hidden;} /* belt-and-suspenders: guarantees no horizontal scrollbar ever, regardless of which inner element might otherwise be a few px too wide */
   body{
     margin:0; background:var(--bg); color:var(--text);
     font-family:'Inter',sans-serif;
     -webkit-font-smoothing:antialiased;
+    overflow-x:hidden;
+    width:100%;
   }
   h1,h2,h3,.display{font-family:'Space Grotesk',sans-serif;}
   .mono{font-family:'IBM Plex Mono',monospace;}
@@ -165,7 +168,7 @@
     position:fixed;left:50%;bottom:22px;transform:translateX(-50%);
     background:#151A24;border:1px solid var(--amber);border-radius:12px;
     padding:12px 16px;display:flex;align-items:center;gap:16px;z-index:60;
-    box-shadow:0 8px 24px rgba(0,0,0,0.5);
+    box-shadow:0 8px 24px rgba(0,0,0,0.5);max-width:calc(100vw - 32px);flex-wrap:wrap;
   }
   .resume-card-label{font-size:12px;font-weight:600;color:var(--amber);text-transform:uppercase;letter-spacing:0.5px;}
   .resume-card-sub{font-size:12px;color:var(--muted);margin-top:1px;}
@@ -187,6 +190,7 @@
     border:7px solid var(--down);border-radius:14px;padding:16px 36px;text-align:center;
     text-transform:uppercase;letter-spacing:4px;text-shadow:0 0 20px rgba(255,92,92,0.6);
     background:rgba(10,13,18,0.9);transform:translate(-50%,-50%) rotate(-10deg) scale(0.4);opacity:0;
+    max-width:calc(100vw - 40px);overflow-wrap:break-word;
     animation:jailFlashAnim 1.8s ease-out forwards;}
   @keyframes jailFlashAnim{
     0%{transform:translate(-50%,-50%) rotate(-10deg) scale(0.4);opacity:0;}
@@ -850,23 +854,31 @@ function schedulePersist(){
    persist() since Firebase's update() rejects undefined values outright. */
 function repairCollections(s){
   if(!s || s.phase==='lobby') return;
-  if(s.discard===undefined) s.discard = [];
-  if(s.scheduled===undefined) s.scheduled = [];
-  if(s.recurringEffects===undefined) s.recurringEffects = [];
-  if(s.dividendLeaches===undefined) s.dividendLeaches = [];
+  // Array.isArray (not just `===undefined`) on purpose: Firebase can hand
+  // back `null` for a path that's been fully cleared (an empty array often
+  // round-trips through Firebase as "no data" rather than literally `[]`),
+  // and in rarer cases a sparse-keyed array can come back as a plain
+  // object instead of a true array. Either one would make the very next
+  // line — an unconditional .forEach/.map on it — throw, which breaks
+  // rendering completely for every connected client from that point on.
+  // This is deliberately the first, most defensive line of this function.
+  if(!Array.isArray(s.discard)) s.discard = [];
+  if(!Array.isArray(s.scheduled)) s.scheduled = [];
+  if(!Array.isArray(s.recurringEffects)) s.recurringEffects = [];
+  if(!Array.isArray(s.dividendLeaches)) s.dividendLeaches = [];
   s.dividendLeaches.forEach(l=>{
     if(l.permanent===undefined) l.permanent = false;
     if(!Number.isFinite(l.turnsLeft) && !l.permanent){ l.permanent = true; l.turnsLeft = null; } // repairs any leach already poisoned with Infinity before this fix
     if(l.permanent) l.turnsLeft = null; // canonical form — never a number for permanent entries
   });
-  if(s.insiderBlockers===undefined) s.insiderBlockers = [];
-  if(s.netWorthHistory===undefined) s.netWorthHistory = [{ values: s.players ? s.players.map(p=>netWorth(p)) : [] }];
-  if(s.log===undefined) s.log = [];
-  if(s.turnUsage===undefined) s.turnUsage = { total:0, perStock:{} };
-  if(s.turnUsage.perStock===undefined) s.turnUsage.perStock = {};
-  if(s.turnFills===undefined) s.turnFills = { up:{}, down:{} };
-  if(s.turnFills.up===undefined) s.turnFills.up = {};
-  if(s.turnFills.down===undefined) s.turnFills.down = {};
+  if(!Array.isArray(s.insiderBlockers)) s.insiderBlockers = [];
+  if(!Array.isArray(s.netWorthHistory) || s.netWorthHistory.length===0) s.netWorthHistory = [{ values: s.players ? s.players.map(p=>netWorth(p)) : [] }];
+  if(!Array.isArray(s.log)) s.log = [];
+  if(s.turnUsage===undefined || s.turnUsage===null) s.turnUsage = { total:0, perStock:{} };
+  if(!s.turnUsage.perStock || typeof s.turnUsage.perStock!=='object') s.turnUsage.perStock = {};
+  if(s.turnFills===undefined || s.turnFills===null) s.turnFills = { up:{}, down:{} };
+  if(!s.turnFills.up || typeof s.turnFills.up!=='object') s.turnFills.up = {};
+  if(!s.turnFills.down || typeof s.turnFills.down!=='object') s.turnFills.down = {};
   if(s.pendingCard===undefined) s.pendingCard = null;
   if(s.pendingChoice===undefined) s.pendingChoice = null;
   if(s.choiceError===undefined) s.choiceError = null;
@@ -876,17 +888,17 @@ function repairCollections(s){
   if(s.pausedAt===undefined) s.pausedAt = null;
   if(s.stocks){
     Object.keys(s.stocks).forEach(id=>{
-      if(s.stocks[id].tradeMarkers===undefined) s.stocks[id].tradeMarkers = [];
-      if(s.stocks[id].tradeLog===undefined) s.stocks[id].tradeLog = [];
+      if(!Array.isArray(s.stocks[id].tradeMarkers)) s.stocks[id].tradeMarkers = [];
+      if(!Array.isArray(s.stocks[id].tradeLog)) s.stocks[id].tradeLog = [];
     });
   }
-  if(s.sp && s.sp.tradeMarkers===undefined) s.sp.tradeMarkers = [];
-  if(s.sp && s.sp.tradeLog===undefined) s.sp.tradeLog = [];
-  if(s.spx && s.spx.tradeMarkers===undefined) s.spx.tradeMarkers = [];
-  if(s.spx && s.spx.tradeLog===undefined) s.spx.tradeLog = [];
+  if(s.sp && !Array.isArray(s.sp.tradeMarkers)) s.sp.tradeMarkers = [];
+  if(s.sp && !Array.isArray(s.sp.tradeLog)) s.sp.tradeLog = [];
+  if(s.spx && !Array.isArray(s.spx.tradeMarkers)) s.spx.tradeMarkers = [];
+  if(s.spx && !Array.isArray(s.spx.tradeLog)) s.spx.tradeLog = [];
   if(s.players){
     s.players.forEach(pl=>{
-      if(pl.goldenGeese===undefined) pl.goldenGeese = [];
+      if(!Array.isArray(pl.goldenGeese)) pl.goldenGeese = [];
       if(pl.holdStreak===undefined) pl.holdStreak = Object.fromEntries(STOCK_IDS.map(id=>[id,0]));
       if(pl.longestHoldStreak===undefined) pl.longestHoldStreak = 0;
       if(pl.longestHoldStreakStock===undefined) pl.longestHoldStreakStock = null;
@@ -895,20 +907,20 @@ function repairCollections(s){
       if(pl.biggestTradeAmount===undefined) pl.biggestTradeAmount = 0;
       if(pl.biggestTradeStock===undefined) pl.biggestTradeStock = null;
       if(pl.marginShield===undefined) pl.marginShield = false;
-      if(pl.publicOffering && pl.publicOffering.usedStocks===undefined) pl.publicOffering.usedStocks = [];
+      if(pl.publicOffering && !Array.isArray(pl.publicOffering.usedStocks)) pl.publicOffering.usedStocks = [];
       if(pl.jailTurnsLeft===undefined) pl.jailTurnsLeft = 0;
-      if(pl.bannedStocks===undefined || Array.isArray(pl.bannedStocks)) pl.bannedStocks = {}; // old format was a permanent array — migrate to empty (no more permanent bans)
-      if(pl.hand===undefined) pl.hand = [];
+      if(pl.bannedStocks===undefined || pl.bannedStocks===null || Array.isArray(pl.bannedStocks)) pl.bannedStocks = {}; // old format was a permanent array — migrate to empty (no more permanent bans)
+      if(!Array.isArray(pl.hand)) pl.hand = [];
       if(pl.promotionBonus===undefined) pl.promotionBonus = Math.max(0, (pl.baseSalary||0) - 4000); // migrate any accumulated Promotion raises from the old flat-salary system
       if(pl.married===undefined) pl.married = false;
       if(pl.salaryCollected===undefined) pl.salaryCollected = 0;
       if(pl.firedRoundsLeft===undefined) pl.firedRoundsLeft = 0;
       if(pl.overtimeTurnsLeft===undefined) pl.overtimeTurnsLeft = 0;
-      if(pl.portfolioManagers===undefined) pl.portfolioManagers = [];
-      if(pl.dividendsCollected===undefined) pl.dividendsCollected = Object.fromEntries(STOCK_IDS.map(id=>[id,0]));
+      if(!Array.isArray(pl.portfolioManagers)) pl.portfolioManagers = [];
+      if(!pl.dividendsCollected || typeof pl.dividendsCollected!=='object') pl.dividendsCollected = Object.fromEntries(STOCK_IDS.map(id=>[id,0]));
       if(pl.spDividendsCollected===undefined) pl.spDividendsCollected = 0;
       if(pl.spxDividendsCollected===undefined) pl.spxDividendsCollected = 0;
-      if(pl.realizedGain===undefined) pl.realizedGain = Object.fromEntries(STOCK_IDS.map(id=>[id,0]));
+      if(!pl.realizedGain || typeof pl.realizedGain!=='object') pl.realizedGain = Object.fromEntries(STOCK_IDS.map(id=>[id,0]));
       if(pl.spRealizedGain===undefined) pl.spRealizedGain = 0;
       if(pl.spxRealizedGain===undefined) pl.spxRealizedGain = 0;
     });
@@ -917,12 +929,15 @@ function repairCollections(s){
 
 function mergeRemote(remote){
   applyingRemote = true;
-  const locals = state ? {} : localDefaults();
-  if(state) LOCAL_ONLY_KEYS.forEach(k=>{ locals[k] = state[k]; });
-  state = { ...remote, ...locals };
-  repairCollections(state);
-  lastKnownSnapshot = snapshotFields(extractSynced(state)); // our diff baseline is now up to date too
-  applyingRemote = false;
+  try{
+    const locals = state ? {} : localDefaults();
+    if(state) LOCAL_ONLY_KEYS.forEach(k=>{ locals[k] = state[k]; });
+    state = { ...remote, ...locals };
+    repairCollections(state);
+    lastKnownSnapshot = snapshotFields(extractSynced(state)); // our diff baseline is now up to date too
+  } finally {
+    applyingRemote = false; // always reset, even if something above threw — a stuck `true` here would silently block every future persist() with no visible symptom
+  }
 }
 
 let unsubscribeGame = null; // detach handle for the current room's live listener
@@ -4936,6 +4951,39 @@ function wireChoiceHandlers(card){
 }
 
 function render(){
+  try{
+    renderGameScreen();
+  }catch(e){
+    console.error('UpTrend: render() threw — showing recovery screen instead of a silently frozen page', e);
+    renderCrashRecovery(e);
+  }
+}
+
+/* Last-resort fallback if render() itself throws for any reason. Without
+   this, an uncaught exception anywhere in the render pipeline left the
+   page exactly as it looked at the last successful render — including
+   fully clickable-looking buttons that are actually wired to nothing,
+   since every click just re-triggers the same broken render() and fails
+   silently again. This makes the failure visible and offers a way out
+   (reload) instead of a mysteriously unresponsive screen. The person's
+   game state itself is untouched — this is a display-layer failure, not
+   data loss — so a reload picks the game back up normally. */
+function renderCrashRecovery(e){
+  try{
+    app.innerHTML = `<div class="overlay"><div class="modal">
+      <h2>⚠️ Something went wrong</h2>
+      <div class="sub">The screen hit an unexpected error and stopped updating. Your game itself is fine — this is just a display hiccup — reloading will pick it right back up.</div>
+      <div class="hint mono" style="white-space:pre-wrap;word-break:break-all;margin-bottom:14px;">${((e&&e.message)?e.message:String(e)).replace(/</g,'&lt;')}</div>
+      <button class="btn full" id="crashReloadBtn">Reload</button>
+    </div></div>`;
+    const btn = document.getElementById('crashReloadBtn');
+    if(btn) btn.onclick = ()=>location.reload();
+  }catch(e2){
+    console.error('UpTrend: even the crash recovery screen failed', e2);
+  }
+}
+
+function renderGameScreen(){
   if(!state || state.phase==='lobby' || myPlayerIndex===null){ renderSetup(); return; }
   repairCollections(state); // belt-and-suspenders: guarantee these exist no matter how state got here
   checkForNewJailEvents();
