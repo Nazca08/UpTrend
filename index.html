@@ -36,7 +36,7 @@
   /* ---------- layout ---------- */
   #app{max-width:1800px;margin:0 auto;padding:16px;}
   .topbar{
-    display:flex;align-items:center;justify-content:space-between;
+    display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;row-gap:12px;
     padding:14px 20px;background:linear-gradient(180deg,#141924,#0F131B);
     border:1px solid var(--line);border-radius:14px;margin-bottom:14px;
   }
@@ -44,7 +44,7 @@
   .title .logo-mark{flex-shrink:0;}
   .title .word-up{color:#FFFFFF;}
   .title .word-trend{color:var(--up);}
-  .topbar .meta{display:flex;gap:22px;align-items:center;}
+  .topbar .meta{display:flex;flex-wrap:wrap;gap:14px 18px;align-items:center;justify-content:flex-end;}
   .meta .item{text-align:right;}
   .meta .label{font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);}
   .meta .value{font-size:16px;font-weight:600;}
@@ -511,12 +511,14 @@ function buildDeck(){
   // Public Offering — 2
   add(2, { type:'public_offering', text:'Public Offering: this turn, buy up to 4 shares each of up to 3 different stocks with no group fee and no price impact (buys only).' });
 
-  // Dividend Leach — 4 total: 2 temporary (2-10 turns), 2 permanent.
-  // Always targets whoever's currently in 1st place by net worth — unless
-  // the drawer themselves is in 1st, in which case it targets 2nd place
-  // instead (you can't leach yourself).
-  add(2, { type:'dividend_leach', text:'Dividend Leach: skims 10% of the current leader\u2019s dividend earnings (2nd place instead, if you\u2019re the leader) for 2-10 of their turns.' });
-  add(2, { type:'dividend_leach', holdable:true, permanent:true, text:'Dividend Leach (Permanent): hold this and play it whenever you want \u2014 permanently skims 10% of the current leader\u2019s dividend earnings (2nd place instead, if you\u2019re the leader).' });
+  // Dividend Leach — 4 total: 2 permanent (auto-resolve immediately when
+  // drawn — no reason to hold something permanent), 2 temporary (1-8
+  // turns, holdable so you can time it). Always targets whoever's
+  // currently in 1st place by net worth — unless the drawer themselves is
+  // in 1st, in which case it targets 2nd place instead (you can't leach
+  // yourself).
+  add(2, { type:'dividend_leach', permanent:true, text:'Dividend Leach (Permanent): permanently skims 10% of the current leader\u2019s dividend earnings (2nd place instead, if you\u2019re the leader).' });
+  add(2, { type:'dividend_leach', holdable:true, text:'Dividend Leach: hold this and play it whenever you want \u2014 skims 10% of the current leader\u2019s dividend earnings (2nd place instead, if you\u2019re the leader) for 1-8 of their turns.' });
 
   // Margin Call Forgiveness — 2
   add(4, { type:'margin_forgiveness', text:'Margin Call Forgiveness: shields you from your next forced margin-call liquidation.' });
@@ -852,7 +854,11 @@ function repairCollections(s){
   if(s.scheduled===undefined) s.scheduled = [];
   if(s.recurringEffects===undefined) s.recurringEffects = [];
   if(s.dividendLeaches===undefined) s.dividendLeaches = [];
-  s.dividendLeaches.forEach(l=>{ if(l.permanent===undefined) l.permanent = false; });
+  s.dividendLeaches.forEach(l=>{
+    if(l.permanent===undefined) l.permanent = false;
+    if(!Number.isFinite(l.turnsLeft) && !l.permanent){ l.permanent = true; l.turnsLeft = null; } // repairs any leach already poisoned with Infinity before this fix
+    if(l.permanent) l.turnsLeft = null; // canonical form — never a number for permanent entries
+  });
   if(s.insiderBlockers===undefined) s.insiderBlockers = [];
   if(s.netWorthHistory===undefined) s.netWorthHistory = [{ values: s.players ? s.players.map(p=>netWorth(p)) : [] }];
   if(s.log===undefined) s.log = [];
@@ -2595,7 +2601,11 @@ function resolveAuto(card){
       const victimIndex = pickLeachTarget(state.current);
       if(victimIndex===null){ logEvent(`${p.name} has no one to leach — Dividend Leach fizzles.`); break; }
       const permanent = !!card.permanent;
-      const turns = permanent ? Infinity : (2 + Math.floor(Math.random()*9)); // 2-10 inclusive
+      // null, not Infinity, for permanent — Infinity isn't valid JSON/Firebase
+      // data, and turnsLeft is never read or decremented for permanent
+      // entries anyway (see the tick/expiry logic, which checks `permanent`
+      // first), so null carries the same meaning without breaking sync.
+      const turns = permanent ? null : (1 + Math.floor(Math.random()*8)); // 1-8 inclusive
       if(!state.dividendLeaches) state.dividendLeaches = [];
       state.dividendLeaches.push({ thiefIndex: state.current, victimIndex, turnsLeft: turns, permanent });
       const durationText = permanent ? 'permanently' : `for their next ${turns} turn${turns===1?'':'s'}`;
@@ -3700,10 +3710,33 @@ function createLobby(count){
   persistFull(); render();
 }
 
-function claimSeat(idx){
+/* Claims a lobby seat. Writes directly to this seat's own Firebase path via
+   a transaction, rather than going through the normal update()-based
+   persist() for this specific field — persist() is last-write-wins, which
+   on its own can't stop two people from claiming the exact same seat
+   within the same sync window (whoever's write lands last would silently
+   overwrite the other's claim). A transaction scoped to just this seat
+   means only one of them can ever actually commit; the loser sees who won
+   immediately instead of a stale empty seat until the next full sync. */
+async function claimSeat(idx){
   const input = document.getElementById('claimName'+idx);
   const name = (input && input.value.trim()) || `Player ${idx+1}`;
   if(!state || state.phase!=='lobby' || state.lobbySeats[idx]) return;
+  const seatRef = ref(db, `${gamePath()}/lobbySeats/${idx}`);
+  let result;
+  try{
+    result = await runTransaction(seatRef, (current)=> current ? undefined : name);
+  }catch(e){
+    console.error('UpTrend: seat claim failed', e);
+    render();
+    return;
+  }
+  if(!result.committed){
+    const winnerName = result.snapshot.val();
+    if(winnerName) state.lobbySeats[idx] = winnerName;
+    render();
+    return;
+  }
   state.lobbySeats[idx] = name;
   myPlayerIndex = idx;
   saveLocalRoom(roomCode, idx, name);
@@ -3750,10 +3783,31 @@ function renderLobbyScreen(){
   const allFilled = seats.every(s=>!!s) && seats.length>=2;
   const allBots = seats.every((s,i)=>bots[i]);
   const iHaveASeat = myPlayerIndex!==null && seats[myPlayerIndex] && !bots[myPlayerIndex];
+
+  // Preserve any in-progress name typing across a re-render — this screen
+  // rebuilds its whole DOM on every remote update (someone else claiming a
+  // seat, adding a bot, etc.), which would otherwise snap a DIFFERENT
+  // player's not-yet-submitted name field back to the "Player N" default
+  // the instant anyone else does anything — including mid-keystroke.
+  const priorInputValues = {};
+  let focusedIdx = null, focusedSelStart = null, focusedSelEnd = null;
+  seats.forEach((name,i)=>{
+    if(name) return;
+    const el = document.getElementById('claimName'+i);
+    if(el){
+      priorInputValues[i] = el.value;
+      if(document.activeElement===el){ focusedIdx = i; focusedSelStart = el.selectionStart; focusedSelEnd = el.selectionEnd; }
+    }
+  });
+
   app.innerHTML = `
     <div class="overlay">
       <div class="modal">
         <h2><span style="color:#FFFFFF;">Up</span><span style="color:var(--up);">Trend</span> — Lobby</h2>
+        <div class="selected-ticker-box" style="margin-bottom:12px;">
+          <span class="stx">Room Code</span>
+          <span class="spx mono" style="font-size:18px;letter-spacing:1px;">${roomCode}</span>
+        </div>
         <div class="sub">${seats.filter(s=>s).length}/${seats.length} seats claimed. Everyone needs to claim a seat (or fill it with a bot) before the game can start.</div>
         <div class="hint" style="margin-bottom:10px;">Game length: <b>${(state.gameLength||{label:'$'+GAME_LENGTH_PRESETS[GAME_LENGTH_DEFAULT_IDX].toLocaleString()}).label}</b></div>
         ${seats.map((name,i)=>{
@@ -3780,6 +3834,16 @@ function renderLobbyScreen(){
         <button class="btn secondary full" id="resetLobbyBtn" style="margin-top:8px;">Cancel — Reset Lobby</button>
       </div>
     </div>`;
+
+  Object.keys(priorInputValues).forEach(i=>{
+    const el = document.getElementById('claimName'+i);
+    if(el) el.value = priorInputValues[i];
+  });
+  if(focusedIdx!==null){
+    const el = document.getElementById('claimName'+focusedIdx);
+    if(el){ el.focus(); el.setSelectionRange(focusedSelStart, focusedSelEnd); }
+  }
+
   seats.forEach((name,i)=>{
     if(!name){
       const claimBtn = document.getElementById('claimBtn'+i);
@@ -4623,7 +4687,7 @@ function renderHowToPlayModal(){
         <div class="card-ref"><b>Goose Hunter</b> — permanently kills one Golden Goose belonging to whichever opponent has the most (their single most valuable one).</div>
         <div class="card-ref"><b>Rate Hike / Rate Cut</b> — every stock's dividend zone rate is boosted 50% or cut in half, for 6 turns.</div>
         <div class="card-ref"><b>Public Offering</b> — this turn only: buy up to 4 shares each of up to 3 different stocks with no group fee and no price impact.</div>
-        <div class="card-ref"><b>Dividend Leach</b> — skims 10% of the current leader's dividend earnings (2nd place instead, if you're the leader) — either for 2-10 turns, or permanently, depending on which copy you drew.</div>
+        <div class="card-ref"><b>Dividend Leach</b> — skims 10% of the current leader's dividend earnings (2nd place instead, if you're the leader). Two copies are permanent (auto-resolve immediately when drawn); two are holdable and last 1-8 turns.</div>
         <div class="card-ref"><b>Margin Call Forgiveness</b> — shields you from your very next forced margin-call liquidation.</div>
         <div class="card-ref"><b>Portfolio Manager</b> — for several of your turns, everything you buy or short gets a 20% boost on any gain, banked and paid out in cash when the window closes.</div>
 
