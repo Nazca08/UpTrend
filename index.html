@@ -486,6 +486,12 @@ function buildDeck(){
   // Golden Goose — 4 (permanent effect, so still relatively scarce)
   add(4, { type:'golden_goose', text:'Golden Goose: a random stock permanently pays YOU an extra 10% dividend on your holdings, every one of your turns, for the rest of the game.' });
 
+  // Goose Hunter — 3. Counterplay to Golden Goose: permanently kills one
+  // opponent's goose. Targets whoever has the most (ties broken by net
+  // worth), and specifically their single most valuable one (by current
+  // $ value of the extra 10%) — not a random pick among their geese.
+  add(3, { type:'goose_hunter', text:'Goose Hunter: kills one Golden Goose belonging to whichever opponent has the most \u2014 their single most valuable one \u2014 permanently ending that dividend bonus.' });
+
   // Rate Hike / Rate Cut — 2 each
   add(2, { type:'rate_hike', text:'Rate Hike: every stock\u2019s dividend zone rate is boosted 50% for the next 6 turns.' });
   add(2, { type:'rate_cut',  text:'Rate Cut: every stock\u2019s dividend zone rate is cut in half for the next 6 turns.' });
@@ -493,9 +499,12 @@ function buildDeck(){
   // Public Offering — 2
   add(2, { type:'public_offering', text:'Public Offering: this turn, buy up to 4 shares each of up to 3 different stocks with no group fee and no price impact (buys only).' });
 
-  // Dividend Leach — 2
-  add(2, { type:'dividend_leach', text:'Dividend Leach: attach to a random opponent \u2014 skim 10% of their dividend earnings for a few of their turns.' });
-  add(2, { type:'dividend_leach', holdable:true, text:'Dividend Leach: hold this and play it whenever you want \u2014 you choose exactly which opponent to leach.' });
+  // Dividend Leach — 4 total: 2 temporary (2-10 turns), 2 permanent.
+  // Always targets whoever's currently in 1st place by net worth — unless
+  // the drawer themselves is in 1st, in which case it targets 2nd place
+  // instead (you can't leach yourself).
+  add(2, { type:'dividend_leach', text:'Dividend Leach: skims 10% of the current leader\u2019s dividend earnings (2nd place instead, if you\u2019re the leader) for 2-10 of their turns.' });
+  add(2, { type:'dividend_leach', holdable:true, permanent:true, text:'Dividend Leach (Permanent): hold this and play it whenever you want \u2014 permanently skims 10% of the current leader\u2019s dividend earnings (2nd place instead, if you\u2019re the leader).' });
 
   // Margin Call Forgiveness — 2
   add(4, { type:'margin_forgiveness', text:'Margin Call Forgiveness: shields you from your next forced margin-call liquidation.' });
@@ -504,7 +513,12 @@ function buildDeck(){
   add(4, { type:'buyout', text:'Buyout: a random stock has been bought out at a random price — every long position and short position in it is instantly settled at that price, then the stock reopens and trades normally.' });
 
   // Divorce — 4
-  add(4, { type:'divorce', text:'Divorce: your net worth is cut in half — cash and every holding you have gets erased by 50%.' });
+  add(4, { type:'divorce', text:'Divorce: if you\u2019re in first place, your net worth is cut in half — cash and every holding you have gets erased by 50%. Also ends your marriage, if you have one.' });
+
+  // Getting Married — 4. Grants an ongoing spouse's salary equal to 2x your
+  // own placing-based salary (see the Career section below) — dynamic, so
+  // it moves with your rank every turn. Only Divorce ends it.
+  add(4, { type:'marriage', text:'Getting Married: your spouse now earns a salary too \u2014 2x whatever your own placing-based salary is, every turn, moving with your rank as it changes. Lasts until Divorce.' });
 
   // Portfolio Manager — 2
   add(2, { type:'portfolio_manager', text:'Portfolio Manager: for a randomly determined number of your turns, everything you buy or short gets a 20% boost on any gain, paid out in cash when the window closes.' });
@@ -518,10 +532,14 @@ function buildDeck(){
   // is protected is never revealed to anyone but the player who played it.
   add(4, { type:'insider_blocker', holdable:true, text:'Insider Info Blocker: hold this and play it before a tip comes due \u2014 pick a stock, and no Insider Info can move its price while this is active. Nobody else will know which stock.' });
 
-  // Career — Promotion (permanent salary raise), Fired (rounds without salary), Overtime (turns at 1.5x salary)
-  add(4, { type:'promotion', text:'Promotion: your salary permanently goes up somewhere between $1,000 and $6,000 per turn.' });
-  add(4, { type:'fired', text:'Fired: no salary for a randomly determined number of rounds.' });
-  add(4, { type:'overtime', text:'Overtime: earn 1.5x salary for a randomly determined number of turns.' });
+  // Career — salary is now based on your placing (1st=$2,000/turn up to
+  // 4th=$8,000/turn — see placingSalaryForRank), not a flat rate. Promotion
+  // adds a permanent flat bonus on top, for you only. Overtime multiplies
+  // everything (including a spouse's salary, if married) by 1.5x. Fired
+  // zeroes out all of it, spouse included, while it's active.
+  add(4, { type:'promotion', text:'Promotion: your salary permanently goes up somewhere between $1,000 and $6,000 per turn. This bonus is yours alone — it doesn\u2019t carry over to a spouse\u2019s salary.' });
+  add(4, { type:'fired', text:'Fired: no salary for a randomly determined number of rounds \u2014 yours or your spouse\u2019s, if married.' });
+  add(4, { type:'overtime', text:'Overtime: earn 1.5x salary for a randomly determined number of turns \u2014 applies to your spouse\u2019s salary too, if married.' });
 
   return deck;
 }
@@ -822,6 +840,7 @@ function repairCollections(s){
   if(s.scheduled===undefined) s.scheduled = [];
   if(s.recurringEffects===undefined) s.recurringEffects = [];
   if(s.dividendLeaches===undefined) s.dividendLeaches = [];
+  s.dividendLeaches.forEach(l=>{ if(l.permanent===undefined) l.permanent = false; });
   if(s.insiderBlockers===undefined) s.insiderBlockers = [];
   if(s.netWorthHistory===undefined) s.netWorthHistory = [{ values: s.players ? s.players.map(p=>netWorth(p)) : [] }];
   if(s.log===undefined) s.log = [];
@@ -862,7 +881,8 @@ function repairCollections(s){
       if(pl.jailTurnsLeft===undefined) pl.jailTurnsLeft = 0;
       if(pl.bannedStocks===undefined || Array.isArray(pl.bannedStocks)) pl.bannedStocks = {}; // old format was a permanent array — migrate to empty (no more permanent bans)
       if(pl.hand===undefined) pl.hand = [];
-      if(pl.baseSalary===undefined) pl.baseSalary = SALARY_PER_TURN;
+      if(pl.promotionBonus===undefined) pl.promotionBonus = Math.max(0, (pl.baseSalary||0) - 4000); // migrate any accumulated Promotion raises from the old flat-salary system
+      if(pl.married===undefined) pl.married = false;
       if(pl.salaryCollected===undefined) pl.salaryCollected = 0;
       if(pl.firedRoundsLeft===undefined) pl.firedRoundsLeft = 0;
       if(pl.overtimeTurnsLeft===undefined) pl.overtimeTurnsLeft = 0;
@@ -1135,10 +1155,11 @@ function freshState(players, gameLength){
       jailTurnsLeft: 0, // caught insider trading — this many of the player's own turns are fully skipped
       bannedStocks: {}, // stock id -> turns-left barred from buying/shorting it, after being caught trading on a tip in it (see INSIDER_BAN_TURNS)
       hand: [], // held cards — drawn but not yet resolved, playable at any point during this player's own trade phase
-      baseSalary: SALARY_PER_TURN, // permanently raised by Promotion cards
-      salaryCollected: 0, // all-time $ collected in salary (regular + overtime), never reset
-      firedRoundsLeft: 0, // salary is $0 while this is >0 (Fired card) — overrides overtime
-      overtimeTurnsLeft: 0, // salary is 1.5x baseSalary while this is >0, unless fired (Overtime card)
+      promotionBonus: 0, // permanent flat $/turn raise from Promotion cards — added to your own placing-based salary only, never a spouse's
+      married: false, // Getting Married card — spouse earns 2x your placing-based salary every turn (not the promotion bonus), until Divorce ends it
+      salaryCollected: 0, // all-time $ collected in salary (own + spouse's, regular + overtime), never reset
+      firedRoundsLeft: 0, // salary is $0 while this is >0 (Fired card) — overrides overtime, own and spouse's salary alike
+      overtimeTurnsLeft: 0, // salary (own and spouse's) is 1.5x while this is >0, unless fired (Overtime card)
       portfolioManagers: [], // active Portfolio Manager windows: {turnsLeft, lots:[{stock,side,qty,costPerShare}], accumulatedBoost}
     })),
     current: 0,
@@ -1165,7 +1186,7 @@ function freshState(players, gameLength){
     expandedChart: null, // stock id or 'SP' currently shown in the big chart modal
     recurringEffects: [], // active Earnings Report drips: {stock, dir, bubblesPerTurn, turnsLeft, ownerIndex}
     dividendRateModifier: null, // {multiplier, turnsLeft} — Rate Hike/Rate Cut, applies to every stock's dividend zone
-    dividendLeaches: [], // active Dividend Leach cards: {thiefIndex, victimIndex, turnsLeft}
+    dividendLeaches: [], // active Dividend Leach cards: {thiefIndex, victimIndex, turnsLeft, permanent}
     netWorthHistory: [{ values: players.map(()=>START_CASH) }], // one point per turn taken, all players together — for the Net Worth Graph
     awaitingHoldDecision: false, // a holdable card was just drawn — waiting on Play Now vs Hold, before it's touched at all
     resolvingFromHand: false, // currently resolving a card that came from hand, not a fresh draw — changes what happens when it finishes
@@ -1389,6 +1410,39 @@ function netWorth(p){
   v += p.spxShares*spxPrice();
   return v;
 }
+
+/* Picks who a Dividend Leach card attaches to: whoever's currently in 1st
+   place by net worth among active (non-eliminated) players — or, if the
+   drawer themselves is in 1st (including tied for 1st), the next-highest
+   player instead, since you can't leach yourself. Returns null only if
+   there's nobody else left to target (e.g. the drawer is the sole active
+   player remaining). */
+function pickLeachTarget(drawerIndex){
+  const activeIdx = state.players.map((pl,i)=>i).filter(i=>!state.players[i].eliminated);
+  if(activeIdx.length<2) return null;
+  const sorted = activeIdx.slice().sort((a,b)=>netWorth(state.players[b])-netWorth(state.players[a]));
+  if(sorted[0]!==drawerIndex) return sorted[0];
+  const next = sorted.find(i=>i!==drawerIndex);
+  return next===undefined ? null : next;
+}
+
+/* 1-indexed placing among active (non-eliminated) players, by net worth —
+   1 = 1st place, 2 = 2nd, etc. Ties broken by original seat order (stable
+   sort), which is arbitrary but at least consistent from call to call. An
+   eliminated player has no meaningful rank; falls off the bottom rather
+   than erroring if ever queried anyway. */
+function playerRank(idx){
+  const sorted = state.players.map((pl,i)=>i).filter(i=>!state.players[i].eliminated)
+    .sort((a,b)=>netWorth(state.players[b])-netWorth(state.players[a]));
+  const pos = sorted.indexOf(idx);
+  return pos===-1 ? sorted.length+1 : pos+1;
+}
+/* Salary scales WITH placing, not against it — last place earns the most,
+   1st place earns the least. It's a catch-up mechanic: $2,000/turn for 1st,
+   up the ladder by $2,000 per rank (2nd=$4,000, 3rd=$6,000, 4th=$8,000,
+   and so on for larger player counts). */
+const PLACING_SALARY_STEP = 2000;
+function placingSalaryForRank(rank){ return rank * PLACING_SALARY_STEP; }
 
 /* Cost-basis bookkeeping so we can show unrealized gain/loss per holding.
    Longs: costBasis[id] is the total $ currently invested in open shares
@@ -2136,30 +2190,40 @@ function inDividendZone(id){
   return s.idx >= s.track.length - zone.dots;
 }
 
-/* Runs once at the start of each player's own turn: pays a flat salary,
-   every open short pays a flat 1% carrying fee on its current liability,
-   and any stock currently sitting in its dividend zone pays longs the
-   zone's full rate — while shorts in that same zone pay an extra 33% of
-   the zone's rate on top of their normal carrying fee, since being short
-   into a company that's paying out is a real cost, just less than what a
-   long holder actually earns. */
-const SALARY_PER_TURN = 4000;
+/* Runs once at the start of each player's own turn: pays salary, every
+   open short pays a flat 1% carrying fee on its current liability, and any
+   stock currently sitting in its dividend zone pays longs the zone's full
+   rate — while shorts in that same zone pay an extra 33% of the zone's
+   rate on top of their normal carrying fee, since being short into a
+   company that's paying out is a real cost, just less than what a long
+   holder actually earns. */
 function tickShortFeesAndDividends(ownerIndex){
   const p = state.players[ownerIndex];
   let totalFee = 0, totalDiv = 0;
 
   // Salary — a flat, unconditional payment straight from the bank, every
-  // one of your own turns, regardless of holdings or performance. Fired
-  // overrides everything else (no pay, no overtime, even if both are
-  // somehow active at once); otherwise Overtime pays 1.5x whatever your
-  // current base salary is (raised permanently by Promotion cards).
+  // one of your own turns, regardless of holdings or performance. It's
+  // based on your current PLACING, not a fixed rate — a catch-up
+  // mechanic, so it recalculates fresh every turn as ranks shift (see
+  // placingSalaryForRank). Fired overrides everything else (no pay for
+  // you OR a spouse, even with Overtime also active); otherwise Overtime
+  // multiplies everything by 1.5x. Promotion adds a permanent flat bonus,
+  // but only to your own cut — a spouse's salary is always exactly 2x
+  // your placing-based salary, promotion bonus excluded.
   if(p.firedRoundsLeft>0){
     logEvent(`${p.name} is out of work this turn — no salary.`);
   } else {
-    const salary = p.overtimeTurnsLeft>0 ? Math.round(p.baseSalary*1.5) : p.baseSalary;
+    const rank = playerRank(ownerIndex);
+    const placingSalary = placingSalaryForRank(rank);
+    const overtimeMult = p.overtimeTurnsLeft>0 ? 1.5 : 1;
+    const ownSalary = Math.round((placingSalary + (p.promotionBonus||0)) * overtimeMult);
+    const spouseSalary = p.married ? Math.round(placingSalary * 2 * overtimeMult) : 0;
+    const salary = ownSalary + spouseSalary;
     p.cash += salary;
     p.salaryCollected = (p.salaryCollected||0) + salary;
-    logEvent(`${p.name} collected their $${salary.toLocaleString()} salary${p.overtimeTurnsLeft>0?' (overtime)':''}.`);
+    const parts = [`$${ownSalary.toLocaleString()} salary (rank #${rank})`];
+    if(p.married) parts.push(`$${spouseSalary.toLocaleString()} spouse's salary`);
+    logEvent(`${p.name} collected ${parts.join(' + ')}${p.overtimeTurnsLeft>0?' (overtime)':''}.`);
     if(p.overtimeTurnsLeft>0){
       p.overtimeTurnsLeft -= 1;
       if(p.overtimeTurnsLeft===0) logEvent(`${p.name}'s overtime period has ended.`);
@@ -2221,8 +2285,8 @@ function tickShortFeesAndDividends(ownerIndex){
         logEvent(`${state.players[leach.thiefIndex].name}'s Dividend Leach skimmed $${cut} from ${p.name}.`, true);
       }
     });
-    state.dividendLeaches.forEach(leach=>{ if(leach.victimIndex===ownerIndex) leach.turnsLeft -= 1; });
-    state.dividendLeaches = state.dividendLeaches.filter(l=>l.turnsLeft>0);
+    state.dividendLeaches.forEach(leach=>{ if(leach.victimIndex===ownerIndex && !leach.permanent) leach.turnsLeft -= 1; });
+    state.dividendLeaches = state.dividendLeaches.filter(l=>l.permanent || l.turnsLeft>0);
   }
 }
 
@@ -2479,6 +2543,30 @@ function resolveAuto(card){
       logEvent(`${p.name} drew a Golden Goose on ${stock} — a permanent personal 10% dividend, for the rest of the game.`, true);
       break;
     }
+    case 'goose_hunter': {
+      const candidates = state.players.map((pl,i)=>i)
+        .filter(i=> i!==state.current && !state.players[i].eliminated && (state.players[i].goldenGeese||[]).length>0);
+      if(candidates.length===0){ logEvent(`${p.name} went hunting, but nobody has a Golden Goose to kill — Goose Hunter fizzles.`); break; }
+      // Target whoever has the most geese; ties broken by net worth.
+      const targetIndex = candidates.reduce((best,i)=>{
+        const count = state.players[i].goldenGeese.length, bestCount = state.players[best].goldenGeese.length;
+        if(count>bestCount) return i;
+        if(count===bestCount && netWorth(state.players[i])>netWorth(state.players[best])) return i;
+        return best;
+      }, candidates[0]);
+      const victim = state.players[targetIndex];
+      // Kill their single most valuable goose — by current $ value of the
+      // extra 10% (shares held × price), not just a random one of theirs.
+      let bestStock = victim.goldenGeese[0], bestValue = -1;
+      victim.goldenGeese.forEach(id=>{
+        const val = (victim.shares[id]||0) * price(id) * 0.10;
+        if(val>bestValue){ bestValue = val; bestStock = id; }
+      });
+      victim.goldenGeese.splice(victim.goldenGeese.indexOf(bestStock), 1);
+      card.text = `Goose Hunter: you killed ${victim.name}'s Golden Goose on ${bestStock} — that dividend bonus is gone for good.`;
+      logEvent(`${p.name} hunted down ${victim.name}'s Golden Goose on ${bestStock} — permanently removed.`, true);
+      break;
+    }
     case 'rate_hike':
       state.dividendRateModifier = { multiplier: 1.5, turnsLeft: 6 };
       logEvent(`Rate Hike! Every stock's dividend zone rate is boosted 50% for the next 6 turns.`, true);
@@ -2492,14 +2580,15 @@ function resolveAuto(card){
       logEvent(`${p.name} drew a Public Offering — up to 4 shares each on up to 3 different stocks this turn, no group fee, no price impact.`, true);
       break;
     case 'dividend_leach': {
-      const others = state.players.map((pl,i)=>i).filter(i=>i!==state.current && !state.players[i].eliminated);
-      if(others.length===0){ logEvent(`${p.name} has no one to leach — Dividend Leach fizzles.`); break; }
-      const victimIndex = others[Math.floor(Math.random()*others.length)];
-      const turns = 2 + Math.floor(Math.random()*4); // 2-5 inclusive
+      const victimIndex = pickLeachTarget(state.current);
+      if(victimIndex===null){ logEvent(`${p.name} has no one to leach — Dividend Leach fizzles.`); break; }
+      const permanent = !!card.permanent;
+      const turns = permanent ? Infinity : (2 + Math.floor(Math.random()*9)); // 2-10 inclusive
       if(!state.dividendLeaches) state.dividendLeaches = [];
-      state.dividendLeaches.push({ thiefIndex: state.current, victimIndex, turnsLeft: turns });
-      card.text = `Dividend Leach: you'll skim 10% of ${state.players[victimIndex].name}'s dividend earnings for their next ${turns} turn${turns===1?'':'s'}.`;
-      logEvent(`${p.name} attached a Dividend Leach to ${state.players[victimIndex].name} for ${turns} turn${turns===1?'':'s'}.`, true);
+      state.dividendLeaches.push({ thiefIndex: state.current, victimIndex, turnsLeft: turns, permanent });
+      const durationText = permanent ? 'permanently' : `for their next ${turns} turn${turns===1?'':'s'}`;
+      card.text = `Dividend Leach: you'll skim 10% of ${state.players[victimIndex].name}'s dividend earnings ${durationText}.`;
+      logEvent(`${p.name} attached a Dividend Leach to ${state.players[victimIndex].name}${permanent?' — permanently':` for ${turns} turn${turns===1?'':'s'}`}.`, true);
       break;
     }
     case 'margin_forgiveness':
@@ -2564,6 +2653,14 @@ function resolveAuto(card){
       break;
     }
     case 'divorce': {
+      // Only bites if you're the one out in front — ties for 1st still
+      // count (nobody escapes it just because someone else matches them).
+      const active = state.players.filter(pl=>!pl.eliminated);
+      const highestNetWorth = Math.max(...active.map(pl=>netWorth(pl)));
+      if(p.eliminated || netWorth(p) < highestNetWorth){
+        logEvent(`${p.name} isn't in first place — Divorce has no effect.`);
+        break;
+      }
       p.cash = Math.floor(p.cash/2);
       STOCK_IDS.forEach(id=>{
         if(p.shares[id]>0){
@@ -2579,7 +2676,18 @@ function resolveAuto(card){
       });
       if(p.spShares>0){ const nq=Math.floor(p.spShares/2); p.spCostBasis=(p.spCostBasis||0)*(nq/p.spShares); p.spShares=nq; }
       if(p.spxShares>0){ const nq=Math.floor(p.spxShares/2); p.spxCostBasis=(p.spxCostBasis||0)*(nq/p.spxShares); p.spxShares=nq; }
-      logEvent(`${p.name} went through a Divorce — cash and every holding got cut in half.`, true);
+      const wasMarried = p.married;
+      p.married = false;
+      logEvent(`${p.name} was in first place — Divorce hit, cash and every holding got cut in half.${wasMarried?' The marriage is over — no more spouse\'s salary.':''}`, true);
+      break;
+    }
+    case 'marriage': {
+      if(p.married){
+        logEvent(`${p.name} is already married — Getting Married has no effect.`);
+        break;
+      }
+      p.married = true;
+      logEvent(`${p.name} got married! Their spouse now earns a salary too — 2x ${p.name}'s placing-based salary, every turn.`, true);
       break;
     }
     case 'portfolio_manager': {
@@ -2615,9 +2723,9 @@ function resolveAuto(card){
     }
     case 'promotion': {
       const raise = Math.round((1000 + Math.random()*5000)/100)*100; // $1,000-$6,000, nearest $100
-      p.baseSalary += raise;
+      p.promotionBonus = (p.promotionBonus||0) + raise;
       card.text = `Promotion! Your salary permanently goes up $${raise.toLocaleString()}/turn.`;
-      logEvent(`${p.name} got a Promotion — salary up $${raise.toLocaleString()}/turn for good, now $${p.baseSalary.toLocaleString()}/turn.`, true);
+      logEvent(`${p.name} got a Promotion — salary up $${raise.toLocaleString()}/turn for good (own salary only, now +$${p.promotionBonus.toLocaleString()}/turn on top of placing).`, true);
       break;
     }
     case 'fired': {
@@ -2662,7 +2770,6 @@ function resolveAuto(card){
 }
 
 function needsChoice(card){
-  if(card.type==='dividend_leach' && card.holdable) return true; // the holdable variant lets you pick your target instead of it being random
   return ['sched_swing','split','choose_stock_move','choose_sector_move','whale','insider_blocker'].includes(card.type);
 }
 
@@ -2724,16 +2831,6 @@ function resolveChoice(card, choice){
       } else {
         logEvent(`${p.name} held off — no whale trade made.`);
       }
-      break;
-    }
-    case 'dividend_leach': {
-      const victimIndex = choice.victimIndex;
-      const valid = state.players.some((pl,i)=> i===victimIndex && i!==state.current && !pl.eliminated);
-      if(!valid){ state.choiceError = 'Pick a valid opponent to leach.'; return false; }
-      const turns = 2 + Math.floor(Math.random()*4); // 2-5 inclusive — duration still random, only the target is chosen
-      if(!state.dividendLeaches) state.dividendLeaches = [];
-      state.dividendLeaches.push({ thiefIndex: state.current, victimIndex, turnsLeft: turns });
-      logEvent(`${p.name} attached a Dividend Leach to ${state.players[victimIndex].name} for ${turns} turn${turns===1?'':'s'}.`, true);
       break;
     }
     case 'insider_blocker': {
@@ -3173,17 +3270,6 @@ function botResolveChoice(){
       const qty = 2;
       if(cheap && price(cheap)*qty <= freeCash(bot)){ choice = { stock:cheap, side:'buy', qty }; }
       else { choice = { side:'hold' }; }
-      break;
-    }
-    case 'dividend_leach': {
-      let target = null, bestNW = -Infinity;
-      state.players.forEach((pl,i)=>{
-        if(i===state.current || pl.eliminated) return;
-        const nw = netWorth(pl);
-        if(nw>bestNW){ bestNW = nw; target = i; }
-      });
-      if(target===null){ finishCardResolution(); return; }
-      choice = { victimIndex: target };
       break;
     }
     case 'insider_blocker': {
@@ -4207,14 +4293,16 @@ function renderSidebar(){
       perkBadges.push(`🏷️ Public Offering — ${left} stock${left===1?'':'s'} left this turn`);
     }
     (state.dividendLeaches||[]).forEach(leach=>{
-      if(leach.thiefIndex===myPlayerIndex) perkBadges.push(`🩸 Leaching ${state.players[leach.victimIndex].name} (${leach.turnsLeft} left)`);
-      if(leach.victimIndex===myPlayerIndex) perkBadges.push(`🩸 Being leached by ${state.players[leach.thiefIndex].name} (${leach.turnsLeft} left)`);
+      const durationLabel = leach.permanent ? 'permanent' : `${leach.turnsLeft} left`;
+      if(leach.thiefIndex===myPlayerIndex) perkBadges.push(`🩸 Leaching ${state.players[leach.victimIndex].name} (${durationLabel})`);
+      if(leach.victimIndex===myPlayerIndex) perkBadges.push(`🩸 Being leached by ${state.players[leach.thiefIndex].name} (${durationLabel})`);
     });
     const bannedEntries = Object.entries(me.bannedStocks||{}).filter(([,turns])=>turns>0);
     if(bannedEntries.length) perkBadges.push(`🚫 Barred: ${bannedEntries.map(([id,turns])=>`${id} (${turns} left)`).join(', ')}`);
     if(me.firedRoundsLeft>0) perkBadges.push(`💼 Fired — no salary for ${me.firedRoundsLeft} more round${me.firedRoundsLeft===1?'':'s'}`);
     else if(me.overtimeTurnsLeft>0) perkBadges.push(`💰 Overtime — 1.5x salary for ${me.overtimeTurnsLeft} more turn${me.overtimeTurnsLeft===1?'':'s'}`);
-    if(me.baseSalary!==SALARY_PER_TURN) perkBadges.push(`📈 Salary: $${me.baseSalary.toLocaleString()}/turn`);
+    if(me.promotionBonus>0) perkBadges.push(`📈 Promotion bonus: +$${me.promotionBonus.toLocaleString()}/turn (your salary only)`);
+    if(me.married) perkBadges.push(`💍 Married — spouse earns 2x your placing salary every turn`);
     (me.portfolioManagers||[]).forEach(pm=>{
       perkBadges.push(`📊 Portfolio Manager — ${pm.turnsLeft} turn${pm.turnsLeft===1?'':'s'} left (+$${Math.round(pm.accumulatedBoost||0).toLocaleString()} banked)`);
     });
@@ -4584,9 +4672,6 @@ function renderChoiceUI(card){
           <button class="btn short" id="c_short">Short (pushes price down)</button>
           <button class="btn secondary" id="c_hold">Hold — no trade</button>
         </div>`;
-    case 'dividend_leach':
-      return `<div class="trade-row"><select id="c_victim">${state.players.map((pl,i)=> (i!==state.current && !pl.eliminated) ? `<option value="${i}">${pl.name}</option>` : '').join('')}</select></div>
-        <button class="btn full" id="c_leach">Leach</button>`;
     case 'insider_blocker':
       return `<div class="trade-row"><select id="c_stock">${STOCK_IDS.map(id=>`<option value="${id}">${id}</option>`).join('')}</select></div>
         <button class="btn full" id="c_block">Protect This Stock</button>
@@ -4624,9 +4709,6 @@ function wireChoiceHandlers(card){
       if(byId('c_sell')) byId('c_sell').onclick = ()=>done({ stock: byId('c_stock').value, qty: parseInt(byId('c_qty').value)||1, side:'sell' });
       if(byId('c_short')) byId('c_short').onclick = ()=>done({ stock: byId('c_stock').value, qty: parseInt(byId('c_qty').value)||1, side:'short' });
       if(byId('c_hold')) byId('c_hold').onclick = ()=>done({ side:'hold' });
-      break;
-    case 'dividend_leach':
-      if(byId('c_leach')) byId('c_leach').onclick = ()=>done({ victimIndex: parseInt(byId('c_victim').value) });
       break;
     case 'insider_blocker':
       if(byId('c_block')) byId('c_block').onclick = ()=>done({ stock: byId('c_stock').value });
