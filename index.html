@@ -1501,17 +1501,18 @@ function projectedDividends(p){
   return total;
 }
 
-/* SP8/Mini SP8 pay a flat 7% dividend on holding value once per ROUND
+/* SP8/Mini SP8 pay a flat 4% dividend on holding value once per ROUND
    (after the last player's turn — see paySP8Dividend), not at the start of
    each player's own turn like the per-stock zone dividends above. So this
    is kept as a separate figure rather than folded into projectedDividends:
    it answers "what would this player collect once the round wraps up,"
    not "what would they collect next turn" — those can be different things
    depending on how many turns are left in the round. */
+const SP8_DIVIDEND_RATE = 0.04;
 function projectedIndexDividend(p){
   let total = 0;
-  if(p.spShares>0) total += Math.round(p.spShares*spPrice()*0.07);
-  if(p.spxShares>0) total += Math.round(p.spxShares*spxPrice()*0.07);
+  if(p.spShares>0) total += Math.round(p.spShares*spPrice()*SP8_DIVIDEND_RATE);
+  if(p.spxShares>0) total += Math.round(p.spxShares*spxPrice()*SP8_DIVIDEND_RATE);
   return total;
 }
 
@@ -3037,23 +3038,23 @@ function endTurn(){
   persist(); render();
 }
 
-/* Both index funds pay a 7% dividend on holdings at the end of every
+/* Both index funds pay a 4% dividend on holdings at the end of every
    round (once every player has taken a turn) — a steady reward for
    parking cash in the "safe" indexes instead of chasing individual
    stocks. Same rate for both — SP8 just moves more dollars per share. */
 function paySP8Dividend(){
   state.players.forEach(pl=>{
     if(pl.spShares>0){
-      const pay = Math.round(pl.spShares*spPrice()*0.07);
+      const pay = Math.round(pl.spShares*spPrice()*SP8_DIVIDEND_RATE);
       pl.cash += pay;
       pl.spDividendsCollected = (pl.spDividendsCollected||0) + pay;
-      logEvent(`${pl.name} collected a $${pay} Mini SP8 dividend (7% of holding value).`, true);
+      logEvent(`${pl.name} collected a $${pay} Mini SP8 dividend (${SP8_DIVIDEND_RATE*100}% of holding value).`, true);
     }
     if(pl.spxShares>0){
-      const pay = Math.round(pl.spxShares*spxPrice()*0.07);
+      const pay = Math.round(pl.spxShares*spxPrice()*SP8_DIVIDEND_RATE);
       pl.cash += pay;
       pl.spxDividendsCollected = (pl.spxDividendsCollected||0) + pay;
-      logEvent(`${pl.name} collected a $${pay} SP8 dividend (7% of holding value).`, true);
+      logEvent(`${pl.name} collected a $${pay} SP8 dividend (${SP8_DIVIDEND_RATE*100}% of holding value).`, true);
     }
   });
 }
