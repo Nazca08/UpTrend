@@ -219,6 +219,18 @@
 
   .log{max-height:190px;overflow-y:auto;font-size:12px;color:var(--muted);display:flex;flex-direction:column;gap:6px;}
   .log-entry{padding:6px 8px;background:var(--panel-2);border-radius:7px;border-left:2px solid var(--line);}
+  .htp-section{margin-bottom:22px;}
+  .htp-section:last-child{margin-bottom:0;}
+  .htp-section h3{margin:0 0 8px;font-size:15px;color:var(--amber);}
+  .htp-section p{margin:0 0 8px;font-size:13px;line-height:1.55;color:var(--text);}
+  .htp-section ul{margin:0 0 8px;padding-left:18px;font-size:13px;line-height:1.6;color:var(--text);}
+  .htp-cat{margin:14px 0 8px;font-size:11px;text-transform:uppercase;letter-spacing:0.8px;color:var(--muted);border-bottom:1px solid var(--line);padding-bottom:4px;}
+  .htp-cat:first-child{margin-top:0;}
+  .card-ref{padding:7px 9px;background:var(--panel-2);border-radius:7px;border-left:2px solid var(--line);margin-bottom:6px;font-size:12.5px;line-height:1.45;}
+  .card-ref b{color:var(--amber);}
+  .htp-nav{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px;position:sticky;top:0;background:#151A24;padding:4px 0 10px;z-index:2;}
+  .htp-nav a{font-size:11px;padding:5px 9px;border-radius:7px;background:var(--panel-2);border:1px solid var(--line);color:var(--muted);text-decoration:none;}
+  .htp-nav a:hover{color:var(--text);border-color:var(--amber);}
   .log-entry.event{border-left-color:var(--amber);color:var(--text);}
 
   /* ---------- overlay modals ---------- */
@@ -3619,6 +3631,7 @@ function renderLandingScreen(){
         <div class="sub">A turn-based stock market game, playable live with friends on separate screens.</div>
         <button class="btn full" id="createRoomBtn">Create Game</button>
         <button class="btn secondary full" id="vsBotBtn" style="margin-top:8px;">Play vs Bot (1 Player)</button>
+        <button class="btn secondary full" id="howToPlayBtn" style="margin-top:8px;">📖 How to Play</button>
         ${renderGameLengthField('landing')}
         <div class="hint" style="margin:14px 0 8px 0;">— or join a game already running —</div>
         <div class="trade-row">
@@ -3627,15 +3640,18 @@ function renderLandingScreen(){
         <button class="btn secondary full" id="joinRoomBtn">Join Game</button>
         <div class="hint" id="joinError" style="color:var(--down);"></div>
       </div>
-    </div>`;
+    </div>
+    ${renderHowToPlayModal()}`;
   wireGameLengthField('landing', renderLandingScreen);
   document.getElementById('createRoomBtn').onclick = ()=>{ subscribeToRoom(genRoomCode()); render(); };
   document.getElementById('vsBotBtn').onclick = ()=>{ subscribeToRoom(genRoomCode()); startBotGame(); };
+  document.getElementById('howToPlayBtn').onclick = ()=>{ showHowToPlay = true; renderLandingScreen(); };
   document.getElementById('joinRoomBtn').onclick = ()=>{
     const code = document.getElementById('joinCodeInput').value.trim().replace(/\D/g,'');
     if(code.length!==6){ document.getElementById('joinError').textContent = 'Enter the 6-digit code your host shared with you.'; return; }
     subscribeToRoom(code); render();
   };
+  if(document.getElementById('closeHowToPlayBtn')) document.getElementById('closeHowToPlayBtn').onclick = ()=>{ showHowToPlay = false; renderLandingScreen(); };
 }
 
 function renderCreateGameScreen(){
@@ -4487,6 +4503,145 @@ function renderGameSummaryModal(){
    (see recordGameToLeaderboard), sorted by wins first, then best net worth
    as a tiebreaker. Purely local: there's no backend to aggregate across
    devices, so this is "this browser's history," not a global ranking. */
+let showHowToPlay = false; // plain module variable, not state — needs to work on the landing screen before any game/state exists
+
+function renderHowToPlayModal(){
+  if(!showHowToPlay) return '';
+  return `<div class="overlay" id="howToPlayOverlay">
+    <div class="modal modal-wide" style="max-width:760px;">
+      <h2>📖 How to Play</h2>
+      <div class="sub">UpTrend is a turn-based stock market game — grow your net worth through smart trading, dividends, salary, and whatever the deck throws at you.</div>
+
+      <div class="htp-nav">
+        <a href="#htp-goal">Goal</a><a href="#htp-turn">Your Turn</a><a href="#htp-trading">Trading</a>
+        <a href="#htp-dividends">Dividends</a><a href="#htp-risk">Risk</a><a href="#htp-career">Salary & Relationships</a>
+        <a href="#htp-cards">Card Reference</a>
+      </div>
+
+      <div class="htp-section" id="htp-goal">
+        <h3>🎯 Goal</h3>
+        <p>Everyone starts with $${START_CASH.toLocaleString()} in cash. Grow your <b>net worth</b> — cash plus the current value of everything you hold, minus what your shorts would cost to close — faster than everyone else. Depending on how the game was set up, it ends one of two ways:</p>
+        <ul>
+          <li><b>Target Net Worth</b> — first player to reach the chosen target (from $100K up to $10M) wins the moment they cross it.</li>
+          <li><b>Timer</b> — everyone plays until the clock runs out; whoever has the highest net worth at that point wins.</li>
+        </ul>
+        <p>Turns go in order around the table. Each player only acts on their own turn — you can always see everyone else's holdings and net worth in the sidebar, but you can't trade until it's your turn.</p>
+      </div>
+
+      <div class="htp-section" id="htp-turn">
+        <h3>🔄 Your Turn</h3>
+        <p>Every turn has three phases:</p>
+        <ul>
+          <li><b>Opening Draw</b> — draw a card and it resolves (or, if it's holdable, you can choose to hold it in your hand for later instead of playing it now).</li>
+          <li><b>Trade Phase</b> — buy, sell, short, or cover, in any combination, up to your turn's limits (see Trading below). You can also play any holdable cards from your hand here.</li>
+          <li><b>Closing Draw</b> — draw one more card to end your turn, then play passes to the next player.</li>
+        </ul>
+        <p>There's a 2-minute clock on each turn — if it runs out, your turn gets auto-advanced using safe, neutral choices so the game doesn't stall. In solo games against bots, you can hit <b>Pause</b> any time to freeze the clock and the bots.</p>
+      </div>
+
+      <div class="htp-section" id="htp-trading">
+        <h3>📈 Trading Basics</h3>
+        <p>Each stock has a price track — buying walks the price up, selling or shorting walks it down. Fills happen in groups of 4 shares; every completed group also costs a small fee. You're capped at <b>${TURN_CAP} total buy/short shares per turn</b>, and at most 4 shares of any single stock per turn (sells and covers aren't capped).</p>
+        <ul>
+          <li><b>Buy</b> — own shares outright. Profits if the price rises.</li>
+          <li><b>Sell</b> — close out shares you own, banking the current price.</li>
+          <li><b>Short</b> — borrow and sell at today's price, betting it falls. Requires locking collateral (cash) equal to the position's value — that cash is unavailable to spend until you cover.</li>
+          <li><b>Cover</b> — buy back a short to close it. Profits if the price fell since you opened it.</li>
+        </ul>
+        <p>Mini SP8 and SP8 are index funds — flat price, no per-share price impact or fee on buys, can't be shorted. A steady, lower-drama place to park cash.</p>
+      </div>
+
+      <div class="htp-section" id="htp-dividends">
+        <h3>💰 Dividends</h3>
+        <ul>
+          <li><b>Dividend zones</b> — each stock has a price band near the top of its range that pays a dividend to anyone holding it long, automatically, at the start of your own turn. The rate scales with how deep into the zone the price is. Shorting into a dividend zone costs you an extra fee instead.</li>
+          <li><b>Mini SP8 / SP8</b> — pay a flat ${(SP8_DIVIDEND_RATE*100)}% of your holding value once per <b>round</b> (after the last player's turn), regardless of price.</li>
+          <li>Your sidebar card and Holdings panel both show a live <b>Projected Dividends</b> estimate — what you'd collect next turn, and separately, what you'd collect from index funds at the end of the round.</li>
+        </ul>
+      </div>
+
+      <div class="htp-section" id="htp-risk">
+        <h3>⚠️ Risk: Margin Calls & Insider Trading</h3>
+        <ul>
+          <li><b>Margin calls</b> — if your cash can't cover the collateral locked by your open shorts (e.g. after a price spike against you), your most expensive short gets force-covered automatically until you're square again.</li>
+          <li><b>Insider Info</b> — tips come in four tiers (C-Suite, Industry Expert, Friend, Napkin) with different odds of being real vs. fake, and different risk if you act on one. You never know which — not even you, the person holding the tip. Acting on it (trading meaningfully in the direction it predicts) exposes you to a per-turn chance of getting <b>caught</b>: a fine based on your net worth, the position seized, a temporary 3-turn ban on trading that stock, and time in jail (no cards, no dividends, no salary while you serve it).</li>
+        </ul>
+      </div>
+
+      <div class="htp-section" id="htp-career">
+        <h3>💼 Salary & Relationships</h3>
+        <p>Salary is paid automatically every turn, based on your current <b>placing</b> by net worth — it's a catch-up mechanic, so falling behind pays better:</p>
+        <ul>
+          <li>1st place: $2,000/turn &nbsp;•&nbsp; 2nd: $4,000/turn &nbsp;•&nbsp; 3rd: $6,000/turn &nbsp;•&nbsp; 4th: $8,000/turn (scales the same way for any player count)</li>
+        </ul>
+        <p>Career and relationship cards modify this:</p>
+        <ul>
+          <li><b>Promotion</b> — permanently adds a flat bonus ($1,000-$6,000) to your own salary only.</li>
+          <li><b>Fired</b> — zero salary (yours and a spouse's, if married) for 1-6 rounds.</li>
+          <li><b>Overtime</b> — 1.5x salary (yours and a spouse's) for 3-10 turns.</li>
+          <li><b>Getting Married</b> — your spouse earns their own salary too: exactly 2x your placing-based salary (not your Promotion bonus), recalculating every turn as your rank changes. Lasts until Divorce.</li>
+          <li><b>Divorce</b> — only hits if you're currently in 1st place: cuts your net worth in half and ends your marriage, if you had one.</li>
+        </ul>
+      </div>
+
+      <div class="htp-section" id="htp-cards">
+        <h3>🃏 Full Card Reference</h3>
+        <p>The deck is large and mostly random — here's what everything does, grouped by theme.</p>
+
+        <div class="htp-cat">Price Movers</div>
+        <div class="card-ref"><b>Move a Stock / Move a Sector</b> — a specific stock or sector moves 1-4 steps up or down. Some are holdable, so you can play them for max effect later instead of taking whatever the market looks like right now.</div>
+        <div class="card-ref"><b>Revert a Stock / Sector</b> — nudges a stock or sector 1-2 steps back toward the middle of its range.</div>
+        <div class="card-ref"><b>Move Any Stock / Move Any Sector</b> — you choose which stock or sector moves, and which direction.</div>
+        <div class="card-ref"><b>Bull Market</b> — every stock and both index funds rise 1-2 steps.</div>
+        <div class="card-ref"><b>Recession / COVID-19</b> — every stock and both index funds drop 2-6 steps. Rare, and the worst one (COVID-19) only appears once in the deck.</div>
+        <div class="card-ref"><b>S&P 8 Up / Down</b> — moves just the two index funds, 1-2 steps.</div>
+        <div class="card-ref"><b>Freeze</b> — a random stock becomes immune to the next dictated-movement card aimed at it.</div>
+        <div class="card-ref"><b>Buyout</b> — a random stock gets bought out at a random price; every open long and short in it is instantly settled at that price, then it reopens and trades normally.</div>
+        <div class="card-ref"><b>Short Squeeze</b> — a random stock surges hard, force-covering everyone shorting it at the new price.</div>
+
+        <div class="htp-cat">Insider Info & Earnings</div>
+        <div class="card-ref"><b>Market Peek</b> — reveals the next 3 cards in the deck.</div>
+        <div class="card-ref"><b>Scheduled Swing</b> — pick a stock and a direction now; in 2 turns it swings 2 steps that way, guaranteed.</div>
+        <div class="card-ref"><b>Insider Info (tip)</b> — a private prediction that a stock hits a specific price within 1-12 turns. See Risk above for what acting on it costs if you're caught.</div>
+        <div class="card-ref"><b>Earnings Report</b> — public news: a random stock beats or misses earnings and drifts up to 4 steps a turn for up to 12 of your turns. Everyone can see it and react.</div>
+        <div class="card-ref"><b>Insider Info Blocker</b> — holdable. Protects a stock you choose from any Insider Info tip coming true (including your own) for a few rounds. Nobody else learns which stock.</div>
+
+        <div class="htp-cat">Cash & Stock Bonuses</div>
+        <div class="card-ref"><b>Cash Bonus</b> — a flat +$5,000 to +$25,000.</div>
+        <div class="card-ref"><b>Stock Gift</b> — 1 free share of a specific stock.</div>
+        <div class="card-ref"><b>Stock Split</b> — pick a stock you own; your shares in it double.</div>
+        <div class="card-ref"><b>Steady Hand</b> — $250 for every distinct stock you currently hold.</div>
+        <div class="card-ref"><b>Loyalty Bonus</b> — pays out based on how long you've continuously held your longest-held stock.</div>
+        <div class="card-ref"><b>Dividend Day</b> — a random sector pays out immediately: you get $100/share owned in its two stocks, everyone else gets $50/share.</div>
+        <div class="card-ref"><b>Whale Trade</b> — trade a stock right now at today's price; your own trade then pushes the price 2 steps further in that direction.</div>
+        <div class="card-ref"><b>Golden Parachute</b> — if you're in last place, receive a $20,000 bailout.</div>
+        <div class="card-ref"><b>Inheritance — 2nd Life</b> — if you're in last place by net worth, receive $0-$250,000.</div>
+        <div class="card-ref"><b>Inheritance</b> — everyone gets a surprise windfall, $0-$100,000, rolled separately per player.</div>
+
+        <div class="htp-cat">Dividends & Income Boosts</div>
+        <div class="card-ref"><b>Golden Goose</b> — a random stock permanently pays YOU an extra 10% dividend on your holdings in it, every one of your turns, for the rest of the game.</div>
+        <div class="card-ref"><b>Goose Hunter</b> — permanently kills one Golden Goose belonging to whichever opponent has the most (their single most valuable one).</div>
+        <div class="card-ref"><b>Rate Hike / Rate Cut</b> — every stock's dividend zone rate is boosted 50% or cut in half, for 6 turns.</div>
+        <div class="card-ref"><b>Public Offering</b> — this turn only: buy up to 4 shares each of up to 3 different stocks with no group fee and no price impact.</div>
+        <div class="card-ref"><b>Dividend Leach</b> — skims 10% of the current leader's dividend earnings (2nd place instead, if you're the leader) — either for 2-10 turns, or permanently, depending on which copy you drew.</div>
+        <div class="card-ref"><b>Margin Call Forgiveness</b> — shields you from your very next forced margin-call liquidation.</div>
+        <div class="card-ref"><b>Portfolio Manager</b> — for several of your turns, everything you buy or short gets a 20% boost on any gain, banked and paid out in cash when the window closes.</div>
+
+        <div class="htp-cat">Career</div>
+        <div class="card-ref"><b>Promotion</b> — permanent +$1,000 to +$6,000/turn added to your own salary.</div>
+        <div class="card-ref"><b>Fired</b> — no salary for 1-6 rounds.</div>
+        <div class="card-ref"><b>Overtime</b> — 1.5x salary for 3-10 turns.</div>
+
+        <div class="htp-cat">Relationships</div>
+        <div class="card-ref"><b>Getting Married</b> — your spouse starts earning a salary too: 2x your placing-based salary, every turn.</div>
+        <div class="card-ref"><b>Divorce</b> — only if you're in 1st place: net worth cut in half, marriage ends.</div>
+      </div>
+
+      <button class="btn full" style="margin-top:4px;" id="closeHowToPlayBtn">Close</button>
+    </div>
+  </div>`;
+}
+
 function renderLeaderboardModal(){
   if(!state.showLeaderboard) return '';
   const data = loadLeaderboardData();
@@ -4769,6 +4924,7 @@ function render(){
         ${isSoloVsBots() && !state.gameOver ? (state.paused
           ? `<button class="btn" id="resumeGameBtn" style="padding:8px 12px;font-size:12px;background:var(--up);">▶ Resume</button>`
           : `<button class="btn secondary" id="pauseGameBtn" style="padding:8px 12px;font-size:12px;">⏸ Pause</button>`) : ''}
+        <button class="btn secondary" id="howToPlayBtn" style="padding:8px 12px;font-size:12px;">📖 How to Play</button>
         <button class="btn secondary" id="leaderboardBtn" style="padding:8px 12px;font-size:12px;">🏆 Leaderboard</button>
         <button class="btn secondary" id="syncNowBtn" style="padding:8px 12px;font-size:12px;">Sync Now</button>
         <button class="btn secondary" id="restartBtn" style="padding:8px 12px;font-size:12px;">Restart</button>
@@ -4782,6 +4938,7 @@ function render(){
     ${renderLogModal()}
     ${renderNetWorthModal()}
     ${renderLeaderboardModal()}
+    ${renderHowToPlayModal()}
     ${renderEndTurnConfirm()}
     ${renderResumeCardBanner()}
     ${renderSpectatorCardBanner()}
@@ -4805,6 +4962,8 @@ function render(){
   if(byId('viewSummaryBtn')) byId('viewSummaryBtn').onclick = ()=>{ state.summaryDismissed = false; render(); };
   if(byId('leaderboardBtn')) byId('leaderboardBtn').onclick = ()=>{ state.showLeaderboard = true; render(); };
   if(byId('closeLeaderboardBtn')) byId('closeLeaderboardBtn').onclick = ()=>{ state.showLeaderboard = false; render(); };
+  if(byId('howToPlayBtn')) byId('howToPlayBtn').onclick = ()=>{ showHowToPlay = true; render(); };
+  if(byId('closeHowToPlayBtn')) byId('closeHowToPlayBtn').onclick = ()=>{ showHowToPlay = false; render(); };
   if(byId('pauseGameBtn')) byId('pauseGameBtn').onclick = pauseGame;
   if(byId('resumeGameBtn')) byId('resumeGameBtn').onclick = resumeGame;
   if(byId('resumeGameBannerBtn')) byId('resumeGameBannerBtn').onclick = resumeGame;
