@@ -2243,18 +2243,26 @@ function tickShortFeesAndDividends(ownerIndex){
   // multiplies everything by 1.5x. Promotion adds a permanent flat bonus,
   // but only to your own cut — a spouse's salary is always exactly 2x
   // your placing-based salary, promotion bonus excluded.
+  //
+  // Exception: round 1. Everyone starts with identical net worth, so
+  // "1st place" vs "last place" this early is just an arbitrary tie-break,
+  // not a real placing — paying wildly different salaries off of that
+  // would be rewarding/punishing nothing. Round 1 pays a flat $4,000
+  // (the old base rate) for everyone instead.
+  const FIRST_ROUND_FLAT_SALARY = 4000;
+  const isFirstRound = state.turnNumber <= state.players.length;
   if(p.firedRoundsLeft>0){
     logEvent(`${p.name} is out of work this turn — no salary.`);
   } else {
     const rank = playerRank(ownerIndex);
-    const placingSalary = placingSalaryForRank(rank);
+    const placingSalary = isFirstRound ? FIRST_ROUND_FLAT_SALARY : placingSalaryForRank(rank);
     const overtimeMult = p.overtimeTurnsLeft>0 ? 1.5 : 1;
     const ownSalary = Math.round((placingSalary + (p.promotionBonus||0)) * overtimeMult);
     const spouseSalary = p.married ? Math.round(placingSalary * 2 * overtimeMult) : 0;
     const salary = ownSalary + spouseSalary;
     p.cash += salary;
     p.salaryCollected = (p.salaryCollected||0) + salary;
-    const parts = [`$${ownSalary.toLocaleString()} salary (rank #${rank})`];
+    const parts = [`$${ownSalary.toLocaleString()} salary (${isFirstRound ? 'flat first-round rate' : `rank #${rank}`})`];
     if(p.married) parts.push(`$${spouseSalary.toLocaleString()} spouse's salary`);
     logEvent(`${p.name} collected ${parts.join(' + ')}${p.overtimeTurnsLeft>0?' (overtime)':''}.`);
     if(p.overtimeTurnsLeft>0){
@@ -4652,6 +4660,7 @@ function renderHowToPlayModal(){
         <p>Salary is paid automatically every turn, based on your current <b>placing</b> by net worth — it's a catch-up mechanic, so falling behind pays better:</p>
         <ul>
           <li>1st place: $2,000/turn &nbsp;•&nbsp; 2nd: $4,000/turn &nbsp;•&nbsp; 3rd: $6,000/turn &nbsp;•&nbsp; 4th: $8,000/turn (scales the same way for any player count)</li>
+          <li>Round 1 is the exception — everyone starts tied, so placing doesn't mean anything yet. Everyone earns a flat $4,000/turn until round 2.</li>
         </ul>
         <p>Career and relationship cards modify this:</p>
         <ul>
