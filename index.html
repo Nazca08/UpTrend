@@ -457,7 +457,7 @@ function buildDeck(){
   add(4, { type:'whale', text:'Whale Trade: trade a stock at today\u2019s price right now — your trade then pushes the price 2 steps in that direction.' });
 
   // Golden Parachute — 3
-  add(3, { type:'parachute', text:'Golden Parachute: if your net worth is under $30,000, receive a $20,000 bailout.' });
+  add(3, { type:'parachute', text:'Golden Parachute: if you\u2019re in last place, receive a $20,000 bailout.' });
 
   // Steady Hand — 4
   add(4, { type:'steady', text:'Steady Hand: gain $250 for every distinct stock you currently hold shares in.' });
@@ -1303,7 +1303,7 @@ function forceAdvanceStalledTurn(){
     if(state.players[stalledIndex].eliminated || state.players[stalledIndex].jailTurnsLeft>0){ endTurn(); break; } // nothing to play — just skip it forward
     const before = JSON.stringify({ phase:state.phase, turnStage:state.turnStage, cardsDrawnThisTurn:state.cardsDrawnThisTurn, pendingCard: state.pendingCard && state.pendingCard._id });
     if(state.awaitingHoldDecision){
-      playCardNowFromDraw(); // AFK on the Play Now/Hold prompt — default to playing it now rather than stalling forever
+      playCardNowFromDraw(true); // AFK on the Play Now/Hold prompt — default to playing it now rather than stalling forever. force=true: this function exists to advance a stalled turn regardless of whose it is (could be a bot, whose "turn" this browser doesn't own), same reason runBotStep uses force.
     } else if(state.phase==='draw'){
       drawCard(true);
     } else if(state.phase==='resolve'){
@@ -2416,10 +2416,21 @@ function resolveAuto(card){
         logEvent(`${p.name} received 1 free share of ${card.stock}.`);
       }
       break;
-    case 'parachute':
-      if(netWorth(p) < START_CASH){ p.cash += 20000; logEvent(`${p.name} was below starting capital ($${START_CASH}) — Golden Parachute pays $20,000.`, true); }
-      else logEvent(`${p.name}'s net worth is healthy — Golden Parachute has no effect.`);
+    case 'parachute': {
+      // "Last place" is measured against everyone still in the game —
+      // eliminated players are out of the running entirely, so they don't
+      // count as a floor to be "above." Ties for lowest all still count as
+      // last place (nobody's edged out by a tie).
+      const active = state.players.filter(pl=>!pl.eliminated);
+      const lowestNetWorth = Math.min(...active.map(pl=>netWorth(pl)));
+      if(!p.eliminated && netWorth(p)<=lowestNetWorth){
+        p.cash += 20000;
+        logEvent(`${p.name} is in last place — Golden Parachute pays $20,000.`, true);
+      } else {
+        logEvent(`${p.name} isn't in last place — Golden Parachute has no effect.`);
+      }
       break;
+    }
     case 'steady': {
       const heldCount = STOCK_IDS.filter(id=>p.shares[id]>0).length;
       const gain = heldCount*250;
