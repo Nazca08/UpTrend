@@ -821,6 +821,8 @@ function repairCollections(s){
   if(s.choiceError===undefined) s.choiceError = null;
   if(s.winner===undefined) s.winner = null;
   if(s.turnNumber===undefined) s.turnNumber = 1;
+  if(s.paused===undefined) s.paused = false;
+  if(s.pausedAt===undefined) s.pausedAt = null;
   if(s.stocks){
     Object.keys(s.stocks).forEach(id=>{
       if(s.stocks[id].tradeMarkers===undefined) s.stocks[id].tradeMarkers = [];
@@ -957,6 +959,21 @@ function renderSyncFailedBanner(){
       <div class="resume-card-sub">Your last action may not have saved. Click Sync Now, or try it again.</div>
     </div>
     <button class="btn" id="retrySyncBtn">Sync Now</button>
+  </div>`;
+}
+
+/* A hard-to-miss banner while paused — the small topbar button is easy to
+   miss, and this makes it obvious at a glance (especially useful if the
+   game was paused mid-bot-turn) that nothing is moving until Resume is
+   clicked. Only ever shown in solo-vs-bots games, same as the button. */
+function renderPausedBanner(){
+  if(!state.paused || state.gameOver) return '';
+  return `<div class="resume-card-banner" style="border-color:var(--amber);bottom:auto;top:22px;">
+    <div>
+      <div class="resume-card-label" style="color:var(--amber);">⏸ Game Paused</div>
+      <div class="resume-card-sub">Bots and both timers are frozen. Resume whenever you're ready.</div>
+    </div>
+    <button class="btn" id="resumeGameBannerBtn">▶ Resume</button>
   </div>`;
 }
 
@@ -1113,6 +1130,8 @@ function freshState(players, gameLength){
     current: 0,
     turnStartedAt: Date.now(), // for the 45-second turn timer
     turnNumber: 1, // increments every endTurn — used to timestamp trade-log entries ("Turn 5: ...")
+    paused: false, // freezes bots and both timers (turn + game) — see pauseGame/resumeGame
+    pausedAt: null, // timestamp pause began, used to shift timers forward by the paused duration on resume
     deck: shuffle(buildDeck()),
     discard: [],
     scheduled: [], // {turnsLeft, resolve}
@@ -1148,10 +1167,18 @@ function freshState(players, gameLength){
 
 function isMyTurn(){ return state && myPlayerIndex!==null && myPlayerIndex===state.current; }
 
+/* Pausing only makes sense when there's exactly one human at the table —
+   in real multiplayer, pausing would freeze the game for other people who
+   didn't ask for a break, so the Pause button only shows up here. */
+function isSoloVsBots(){
+  return !!state && state.players.filter(pl=>!pl.bot).length===1;
+}
+
 const TURN_TIME_LIMIT = 120; // seconds — 2 minutes; enforced by the timeout-enforcement logic below once it expires
 function turnTimerSecondsLeft(){
   if(!state || !state.turnStartedAt || state.gameOver) return TURN_TIME_LIMIT;
-  const elapsed = Math.floor((Date.now()-state.turnStartedAt)/1000);
+  const now = (state.paused && state.pausedAt) ? state.pausedAt : Date.now(); // frozen at the moment pause began
+  const elapsed = Math.floor((now-state.turnStartedAt)/1000);
   return Math.max(0, TURN_TIME_LIMIT-elapsed);
 }
 function formatTurnTimer(secs){
@@ -1160,19 +1187,48 @@ function formatTurnTimer(secs){
 }
 function gameTimeLeftSecs(){
   if(!state || !state.winCondition || state.winCondition.mode!=='timer') return 0;
-  return Math.max(0, Math.floor((state.winCondition.endsAt - Date.now())/1000));
+  const now = (state.paused && state.pausedAt) ? state.pausedAt : Date.now();
+  return Math.max(0, Math.floor((state.winCondition.endsAt - now)/1000));
 }
 function formatGameTimeLeft(){
   const s = gameTimeLeftSecs();
   const m = Math.floor(s/60), sec = s%60;
   return `${m}:${sec<10?'0':''}${sec}`;
 }
+
+/* Pause/resume for solo-vs-bots games — freezes bot turns (see the guard
+   at the top of runBotStep) and both timers. Both timers are shifted
+   forward by the exact paused duration on resume, so no turn time or game
+   time is ever unfairly lost to a break. Synced (not local-only) since
+   pausing needs to actually stop the bots for whichever browser happens to
+   be driving their turn, not just hide the clock on this one screen. */
+function pauseGame(){
+  if(!state || state.paused || state.gameOver) return;
+  state.paused = true;
+  state.pausedAt = Date.now();
+  logEvent('Game paused.', true);
+  persist(); render();
+}
+function resumeGame(){
+  if(!state || !state.paused) return;
+  const pausedDuration = Date.now() - (state.pausedAt || Date.now());
+  state.turnStartedAt = (state.turnStartedAt||Date.now()) + pausedDuration;
+  if(state.winCondition && state.winCondition.mode==='timer' && state.winCondition.endsAt){
+    state.winCondition.endsAt += pausedDuration;
+  }
+  state.paused = false;
+  state.pausedAt = null;
+  logEvent('Game resumed.', true);
+  persist(); render();
+}
+
 /* Updates just the timer's text/color every second, without a full
    re-render — avoids disrupting anything else on screen (like someone mid-
    type in a name field) purely to tick a clock. */
 setInterval(()=>{
   const el = document.getElementById('turnTimerValue');
   if(!el || !state || state.gameOver || state.phase==='lobby') return;
+  if(state.paused){ el.textContent = 'Paused'; el.style.color = 'var(--amber)'; return; }
   const secs = turnTimerSecondsLeft();
   el.textContent = formatTurnTimer(secs);
   el.style.color = secs<=0 ? 'var(--down)' : (secs<=10 ? 'var(--amber)' : '');
@@ -1257,7 +1313,7 @@ function forceAdvanceStalledTurn(){
    push the stalled player's turn forward. */
 let timeoutCheckInFlight = false;
 setInterval(async ()=>{
-  if(timeoutCheckInFlight || !roomCode || !state || state.gameOver || state.phase==='lobby') return;
+  if(timeoutCheckInFlight || !roomCode || !state || state.gameOver || state.phase==='lobby' || state.paused) return;
   if(turnTimerSecondsLeft() > 0) return;
   if(isTurnProtectedFromTimeout()) return;
   timeoutCheckInFlight = true;
@@ -1428,6 +1484,20 @@ function projectedDividends(p){
     const heldLong = p.shares[id]||0;
     if(heldLong>0 && !state.stocks[id].worthless) total += Math.round(heldLong*price(id)*0.10);
   });
+  return total;
+}
+
+/* SP8/Mini SP8 pay a flat 7% dividend on holding value once per ROUND
+   (after the last player's turn — see paySP8Dividend), not at the start of
+   each player's own turn like the per-stock zone dividends above. So this
+   is kept as a separate figure rather than folded into projectedDividends:
+   it answers "what would this player collect once the round wraps up,"
+   not "what would they collect next turn" — those can be different things
+   depending on how many turns are left in the round. */
+function projectedIndexDividend(p){
+  let total = 0;
+  if(p.spShares>0) total += Math.round(p.spShares*spPrice()*0.07);
+  if(p.spxShares>0) total += Math.round(p.spxShares*spxPrice()*0.07);
   return total;
 }
 
@@ -2525,7 +2595,7 @@ function resolveAuto(card){
       break;
     }
     case 'fired': {
-      const rounds = 1 + Math.floor(Math.random()*50); // 1-50 rounds
+      const rounds = 1 + Math.floor(Math.random()*6); // 1-6 rounds
       p.firedRoundsLeft = rounds;
       card.text = `Fired! No salary for the next ${rounds} round${rounds===1?'':'s'}.`;
       logEvent(`${p.name} was fired — no salary for ${rounds} round${rounds===1?'':'s'}.`, true);
@@ -3198,7 +3268,7 @@ async function claimBotTurnLock(turnStartedAt){
    safe even when multiple human browsers call this for the same bot turn
    at roughly the same time. */
 async function maybeStartBotTurn(){
-  if(botTurnRunning || !state || state.gameOver || state.phase==='lobby') return;
+  if(botTurnRunning || !state || state.gameOver || state.phase==='lobby' || state.paused) return;
   const cur = state.players[state.current];
   if(!cur || !cur.bot) return;
   botTurnRunning = true; // set immediately so this browser doesn't re-enter while its own claim is in flight
@@ -3209,6 +3279,7 @@ async function maybeStartBotTurn(){
 
 function runBotStep(){
   if(!state || state.gameOver){ botTurnRunning = false; return; }
+  if(state.paused){ setTimeout(runBotStep, 500); return; } // spin-wait without acting — resumes exactly where it left off once unpaused
   const cur = state.players[state.current];
   if(!cur || !cur.bot){ botTurnRunning = false; return; } // turn already moved on to a human
   if(cur.eliminated){ endTurn(); botTurnRunning = false; return; }
@@ -3777,10 +3848,12 @@ function renderSidebar(){
   state.players.forEach((pl,i)=>{
     const locked = lockedCash(pl);
     const projDiv = projectedDividends(pl);
+    const projIdxDiv = projectedIndexDividend(pl);
     html += `<div class="player-card ${i===state.current?'active':''}" style="border-left-color:${pl.color};${pl.eliminated?'opacity:0.5;':''}">
       <div class="p-top"><span class="p-name" style="color:${pl.color};">${pl.name}${pl.bot?' 🤖':''}${i===state.current?' • turn':''}${pl.eliminated?' <span class="worthless-badge">Eliminated</span>':''}${pl.jailTurnsLeft>0?` <span class="jail-tag">🚔 Jailed (${pl.jailTurnsLeft})</span>`:''}</span><span class="p-cash">$${pl.cash}${locked>0?` <span style="color:var(--muted);font-weight:400;">($${locked} locked)</span>`:''}</span></div>
       <div class="p-net">Net worth: $${netWorth(pl)}</div>
       <div class="p-net" style="${projDiv>0?'color:var(--up);':''}">Projected dividends: $${projDiv}</div>
+      ${projIdxDiv>0?`<div class="p-net" style="color:var(--up);">+ $${projIdxDiv} SP8 (end of round)</div>`:''}
     </div>`;
   });
   html += `</div>`;
@@ -3978,7 +4051,11 @@ function renderSidebar(){
       html += `</table></div>`;
     }
     const projDiv = projectedDividends(me);
+    const projIdxDiv = projectedIndexDividend(me);
     html += `<div class="hint" style="margin:8px 0 0;">Projected dividends next turn: <b style="color:${projDiv>0?'var(--up)':'var(--text)'};">$${projDiv}</b></div>`;
+    if(projIdxDiv>0){
+      html += `<div class="hint" style="margin:2px 0 0;">Projected SP8/Mini SP8 dividend (end of round): <b style="color:var(--up);">$${projIdxDiv}</b></div>`;
+    }
     // active card-granted perks — small badges so they're not forgotten about
     const perkBadges = [];
     if((me.goldenGeese||[]).length){
@@ -4465,9 +4542,12 @@ function render(){
         <div class="item"><div class="label">Mini SP8</div><div class="value mono">$${spPrice()}</div></div>
         <div class="item"><div class="label">SP8</div><div class="value mono">$${spxPrice()}</div></div>
         <div class="item"><div class="label">Turn</div><div class="value" style="color:${p.color};">${p.name}</div></div>
-        <div class="item"><div class="label">Time Left</div><div class="value mono" id="turnTimerValue" style="${turnTimerSecondsLeft()<=0?'color:var(--down);':''}">${formatTurnTimer(turnTimerSecondsLeft())}</div></div>
+        <div class="item"><div class="label">Time Left</div><div class="value mono" id="turnTimerValue" style="${state.paused?'color:var(--amber);':(turnTimerSecondsLeft()<=0?'color:var(--down);':'')}">${state.paused?'Paused':formatTurnTimer(turnTimerSecondsLeft())}</div></div>
         <div class="item"><div class="label">${state.winCondition && state.winCondition.mode==='timer' ? 'Game Ends In' : 'Goal'}</div><div class="value mono" id="gameLengthValue" style="${gameTimeLeftSecs()<=0 && state.winCondition && state.winCondition.mode==='timer' ? 'color:var(--down);' : ''}">${state.winCondition && state.winCondition.mode==='timer' ? formatGameTimeLeft() : '$'+((state.winCondition&&state.winCondition.target)||500000).toLocaleString()}</div></div>
         <div class="item"><div class="label">Deck</div><div class="value mono">${state.deck.length} left</div></div>
+        ${isSoloVsBots() && !state.gameOver ? (state.paused
+          ? `<button class="btn" id="resumeGameBtn" style="padding:8px 12px;font-size:12px;background:var(--up);">▶ Resume</button>`
+          : `<button class="btn secondary" id="pauseGameBtn" style="padding:8px 12px;font-size:12px;">⏸ Pause</button>`) : ''}
         <button class="btn secondary" id="leaderboardBtn" style="padding:8px 12px;font-size:12px;">🏆 Leaderboard</button>
         <button class="btn secondary" id="syncNowBtn" style="padding:8px 12px;font-size:12px;">Sync Now</button>
         <button class="btn secondary" id="restartBtn" style="padding:8px 12px;font-size:12px;">Restart</button>
@@ -4487,6 +4567,7 @@ function render(){
     ${renderRestartConfirm()}
     ${renderExpandedChartModal()}
     ${renderSyncFailedBanner()}
+    ${renderPausedBanner()}
     ${renderGameSummaryModal()}
   `;
 
@@ -4503,6 +4584,9 @@ function render(){
   if(byId('viewSummaryBtn')) byId('viewSummaryBtn').onclick = ()=>{ state.summaryDismissed = false; render(); };
   if(byId('leaderboardBtn')) byId('leaderboardBtn').onclick = ()=>{ state.showLeaderboard = true; render(); };
   if(byId('closeLeaderboardBtn')) byId('closeLeaderboardBtn').onclick = ()=>{ state.showLeaderboard = false; render(); };
+  if(byId('pauseGameBtn')) byId('pauseGameBtn').onclick = pauseGame;
+  if(byId('resumeGameBtn')) byId('resumeGameBtn').onclick = resumeGame;
+  if(byId('resumeGameBannerBtn')) byId('resumeGameBannerBtn').onclick = resumeGame;
   if(byId('buyBtn')) byId('buyBtn').onclick = guardedTradeClick(()=>buyShares(state.tradeSelection, 1));
   if(byId('buyInsiderBtn')) byId('buyInsiderBtn').onclick = ()=>buyInsiderInfo();
   if(byId('sellBtn')) byId('sellBtn').onclick = guardedTradeClick(()=>sellShares(state.tradeSelection, 1));
