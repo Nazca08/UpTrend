@@ -948,7 +948,7 @@ let unsubscribeGame = null; // detach handle for the current room's live listene
 function subscribeToRoom(code){
   if(unsubscribeGame){ unsubscribeGame(); unsubscribeGame = null; }
   roomCode = code;
-  state = null; myPlayerIndex = null; lastKnownSnapshot = {}; jailAlertLogLen = -1; leaderboardRecorded = false;
+  state = null; myPlayerIndex = null; lastKnownSnapshot = {}; jailAlertLogLen = -1; leaderboardRecorded = false; botTurnRunning = false;
   unsubscribeGame = onValue(gameRef(), (snap)=>{
     const remote = snap.val();
     if(!remote){
@@ -1046,7 +1046,7 @@ function renderPausedBanner(){
 
 async function wipeGame(){
   state = null; myPlayerIndex = null;
-  lastKnownSnapshot = {}; jailAlertLogLen = -1; leaderboardRecorded = false;
+  lastKnownSnapshot = {}; jailAlertLogLen = -1; leaderboardRecorded = false; botTurnRunning = false;
   if(!roomCode){ render(); return; }
   try{ await set(gameRef(), null); }catch(e){ console.error('UpTrend: failed to clear game', e); }
   render();
@@ -1056,7 +1056,7 @@ async function wipeGame(){
    (Create Game / Join Game), forgetting the saved seat for this room. */
 function leaveRoom(){
   if(unsubscribeGame){ unsubscribeGame(); unsubscribeGame = null; }
-  roomCode = null; state = null; myPlayerIndex = null; lastKnownSnapshot = {}; jailAlertLogLen = -1; leaderboardRecorded = false;
+  roomCode = null; state = null; myPlayerIndex = null; lastKnownSnapshot = {}; jailAlertLogLen = -1; leaderboardRecorded = false; botTurnRunning = false;
   clearLocalRoom();
   render();
 }
@@ -3486,50 +3486,65 @@ async function claimBotTurnLock(turnStartedAt){
    render() on every re-render — the running flag makes it a no-op once a
    chain of steps is already in flight, and the lock claim above makes it
    safe even when multiple human browsers call this for the same bot turn
-   at roughly the same time. */
+   at roughly the same time. Wrapped in try/catch: if anything below throws
+   unexpectedly, botTurnRunning must still get reset, or the bot silently
+   never gets another chance to move — not just this turn, but for the
+   rest of the session, since this flag is plain in-memory state that
+   isn't tied to the game and survives starting a brand new game in the
+   same tab (only a full page reload would otherwise clear it). */
 async function maybeStartBotTurn(){
   if(botTurnRunning || !state || state.gameOver || state.phase==='lobby' || state.paused) return;
   const cur = state.players[state.current];
   if(!cur || !cur.bot) return;
   botTurnRunning = true; // set immediately so this browser doesn't re-enter while its own claim is in flight
-  const won = await claimBotTurnLock(state.turnStartedAt);
-  if(!won){ botTurnRunning = false; return; } // another connected browser is already handling this bot's turn
-  setTimeout(runBotStep, BOT_STEP_DELAY);
+  try{
+    const won = await claimBotTurnLock(state.turnStartedAt);
+    if(!won){ botTurnRunning = false; return; } // another connected browser is already handling this bot's turn
+    setTimeout(runBotStep, BOT_STEP_DELAY);
+  }catch(e){
+    console.error('UpTrend: maybeStartBotTurn threw — resetting botTurnRunning so the bot can still get a turn', e);
+    botTurnRunning = false;
+  }
 }
 
 function runBotStep(){
-  if(!state || state.gameOver){ botTurnRunning = false; return; }
-  if(state.paused){ setTimeout(runBotStep, 500); return; } // spin-wait without acting — resumes exactly where it left off once unpaused
-  const cur = state.players[state.current];
-  if(!cur || !cur.bot){ botTurnRunning = false; return; } // turn already moved on to a human
-  if(cur.eliminated){ endTurn(); botTurnRunning = false; return; }
-  if(cur.jailTurnsLeft>0){ endTurn(); botTurnRunning = false; return; }
-  if(cur.cash<0){
-    const fixed = botFixNegativeCash();
-    if(!fixed){
-      // Genuinely nothing left to sell — a real margin call from price
-      // movement left cash negative with no long holdings to recover with.
-      // Rather than end the turn and hit this exact same wall again next
-      // time it's the bot's turn (forever), reset it as a bankruptcy so
-      // the game keeps moving for everyone.
-      resetBankruptPlayer(cur);
+  try{
+    if(!state || state.gameOver){ botTurnRunning = false; return; }
+    if(state.paused){ setTimeout(runBotStep, 500); return; } // spin-wait without acting — resumes exactly where it left off once unpaused
+    const cur = state.players[state.current];
+    if(!cur || !cur.bot){ botTurnRunning = false; return; } // turn already moved on to a human
+    if(cur.eliminated){ endTurn(); botTurnRunning = false; return; }
+    if(cur.jailTurnsLeft>0){ endTurn(); botTurnRunning = false; return; }
+    if(cur.cash<0){
+      const fixed = botFixNegativeCash();
+      if(!fixed){
+        // Genuinely nothing left to sell — a real margin call from price
+        // movement left cash negative with no long holdings to recover with.
+        // Rather than end the turn and hit this exact same wall again next
+        // time it's the bot's turn (forever), reset it as a bankruptcy so
+        // the game keeps moving for everyone.
+        resetBankruptPlayer(cur);
+        setTimeout(runBotStep, BOT_STEP_DELAY);
+        return;
+      }
       setTimeout(runBotStep, BOT_STEP_DELAY);
       return;
     }
-    setTimeout(runBotStep, BOT_STEP_DELAY);
-    return;
+    if(state.awaitingHoldDecision){ playCardNowFromDraw(true); setTimeout(runBotStep, BOT_STEP_DELAY); return; }
+    if(isTurnProtectedFromTimeout()){ botResolveChoice(); setTimeout(runBotStep, BOT_STEP_DELAY); return; }
+    if(state.phase==='draw'){ drawCard(true); setTimeout(runBotStep, BOT_STEP_DELAY); return; }
+    if(state.phase==='resolve'){ finishCardResolution(); setTimeout(runBotStep, BOT_STEP_DELAY); return; }
+    if(state.phase==='trade'){
+      if(botTakeOneTradeAction()){ setTimeout(runBotStep, 300); return; }
+      proceedPastTrade();
+      setTimeout(runBotStep, BOT_STEP_DELAY);
+      return;
+    }
+    botTurnRunning = false;
+  }catch(e){
+    console.error('UpTrend: runBotStep threw — resetting botTurnRunning so the game can recover instead of freezing the bot forever', e);
+    botTurnRunning = false;
   }
-  if(state.awaitingHoldDecision){ playCardNowFromDraw(true); setTimeout(runBotStep, BOT_STEP_DELAY); return; }
-  if(isTurnProtectedFromTimeout()){ botResolveChoice(); setTimeout(runBotStep, BOT_STEP_DELAY); return; }
-  if(state.phase==='draw'){ drawCard(true); setTimeout(runBotStep, BOT_STEP_DELAY); return; }
-  if(state.phase==='resolve'){ finishCardResolution(); setTimeout(runBotStep, BOT_STEP_DELAY); return; }
-  if(state.phase==='trade'){
-    if(botTakeOneTradeAction()){ setTimeout(runBotStep, 300); return; }
-    proceedPastTrade();
-    setTimeout(runBotStep, BOT_STEP_DELAY);
-    return;
-  }
-  botTurnRunning = false;
 }
 
 /* Sets up a fresh 1-player-vs-bot game directly, skipping the lobby
@@ -3609,6 +3624,7 @@ function startBotGame(){
   myPlayerIndex = 0;
   saveLocalRoom(roomCode, 0, 'You');
   lastKnownSnapshot = {};
+  botTurnRunning = false; // guarantee the bot can take its first turn even if a previous game in this tab somehow left this stuck true
   persistFull(); render();
 }
 
@@ -3797,6 +3813,7 @@ function startGameFromLobby(){
   state.createdAt = createdAt;
   Object.assign(state, locals);
   lastKnownSnapshot = {}; // structure changed completely — full replace, not a diff
+  botTurnRunning = false; // guarantee any bot seats can take their turn even if a previous game in this tab somehow left this stuck true
   persistFull(); render();
 }
 
