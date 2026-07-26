@@ -948,7 +948,7 @@ let unsubscribeGame = null; // detach handle for the current room's live listene
 function subscribeToRoom(code){
   if(unsubscribeGame){ unsubscribeGame(); unsubscribeGame = null; }
   roomCode = code;
-  state = null; myPlayerIndex = null; lastKnownSnapshot = {}; jailAlertLogLen = -1; leaderboardRecorded = false; botTurnRunning = false;
+  state = null; myPlayerIndex = null; lastKnownSnapshot = {}; jailAlertLogLen = -1; leaderboardRecorded = false; botTurnRunning = false; botStuckVisible = false; botStepFailCount = 0; botStepFailTurnKey = null;
   unsubscribeGame = onValue(gameRef(), (snap)=>{
     const remote = snap.val();
     if(!remote){
@@ -1044,9 +1044,28 @@ function renderPausedBanner(){
   </div>`;
 }
 
+/* Shown only after the bot's turn has failed several times in a row and
+   auto-retry has given up (see handleBotStepFailure) — meaning it's very
+   likely a real, reproducible bug rather than a one-off network blip.
+   Gives the person a way forward regardless: try the exact same thing
+   again (harmless if whatever caused it has since cleared), or just force
+   the stuck turn to end so the game keeps moving even if the underlying
+   cause is never diagnosed. */
+function renderBotStuckBanner(){
+  if(!botStuckVisible || !state || state.gameOver) return '';
+  return `<div class="resume-card-banner" style="border-color:var(--down);bottom:auto;top:22px;">
+    <div>
+      <div class="resume-card-label" style="color:var(--down);">⚠️ Bot's turn got stuck</div>
+      <div class="resume-card-sub">It failed ${botStepFailCount} times in a row. You can try again, or skip its turn so the game keeps going.</div>
+    </div>
+    <button class="btn secondary" id="retryStuckBotBtn">Retry</button>
+    <button class="btn" id="skipStuckBotBtn">Skip Bot's Turn</button>
+  </div>`;
+}
+
 async function wipeGame(){
   state = null; myPlayerIndex = null;
-  lastKnownSnapshot = {}; jailAlertLogLen = -1; leaderboardRecorded = false; botTurnRunning = false;
+  lastKnownSnapshot = {}; jailAlertLogLen = -1; leaderboardRecorded = false; botTurnRunning = false; botStuckVisible = false; botStepFailCount = 0; botStepFailTurnKey = null;
   if(!roomCode){ render(); return; }
   try{ await set(gameRef(), null); }catch(e){ console.error('UpTrend: failed to clear game', e); }
   render();
@@ -1056,7 +1075,7 @@ async function wipeGame(){
    (Create Game / Join Game), forgetting the saved seat for this room. */
 function leaveRoom(){
   if(unsubscribeGame){ unsubscribeGame(); unsubscribeGame = null; }
-  roomCode = null; state = null; myPlayerIndex = null; lastKnownSnapshot = {}; jailAlertLogLen = -1; leaderboardRecorded = false; botTurnRunning = false;
+  roomCode = null; state = null; myPlayerIndex = null; lastKnownSnapshot = {}; jailAlertLogLen = -1; leaderboardRecorded = false; botTurnRunning = false; botStuckVisible = false; botStepFailCount = 0; botStepFailTurnKey = null;
   clearLocalRoom();
   render();
 }
@@ -3502,9 +3521,53 @@ async function maybeStartBotTurn(){
     if(!won){ botTurnRunning = false; return; } // another connected browser is already handling this bot's turn
     setTimeout(runBotStep, BOT_STEP_DELAY);
   }catch(e){
-    console.error('UpTrend: maybeStartBotTurn threw — resetting botTurnRunning so the bot can still get a turn', e);
+    console.error('UpTrend: maybeStartBotTurn threw', e);
     botTurnRunning = false;
+    handleBotStepFailure(e);
   }
+}
+
+/* Tracks repeated bot-turn failures for the CURRENT turn specifically —
+   keyed off turnStartedAt so a fresh turn always gets a clean slate rather
+   than inheriting a failure count from whatever the bot choked on before.
+   A handful of transient failures get auto-retried with backoff (network
+   hiccups, a losing lock race, etc.); if it keeps failing past that, it's
+   very likely a deterministic bug that will just fail identically forever,
+   so auto-retry gives way to a visible banner with manual Retry/Skip
+   buttons instead of an invisible, silent stall. */
+let botStepFailCount = 0;
+let botStepFailTurnKey = null;
+let botStuckVisible = false;
+const BOT_STEP_MAX_AUTO_RETRIES = 4;
+function handleBotStepFailure(e){
+  const key = state ? state.turnStartedAt : null;
+  if(botStepFailTurnKey !== key){ botStepFailTurnKey = key; botStepFailCount = 0; }
+  botStepFailCount++;
+  if(botStepFailCount <= BOT_STEP_MAX_AUTO_RETRIES){
+    setTimeout(()=>{ botTurnRunning = false; maybeStartBotTurn(); }, 1000 * botStepFailCount); // backs off a bit more each retry
+  } else {
+    console.error(`UpTrend: bot turn failed ${botStepFailCount} times in a row on the same turn — giving up on auto-retry`, e);
+    botStuckVisible = true;
+    render();
+  }
+}
+/* Manual escape hatch shown after auto-retry gives up. Retry tries the
+   exact same thing again (harmless if it's about to work now — e.g. a
+   network blip that's since cleared); Skip Bot's Turn force-ends the
+   stuck turn so the game can keep moving even if the underlying cause
+   never gets diagnosed. */
+function retryStuckBot(){
+  botStuckVisible = false; botStepFailCount = 0; botStepFailTurnKey = null;
+  botTurnRunning = false;
+  render();
+}
+function skipStuckBotTurn(){
+  botStuckVisible = false; botStepFailCount = 0; botStepFailTurnKey = null;
+  botTurnRunning = false;
+  try{
+    if(state && !state.gameOver && state.players[state.current] && state.players[state.current].bot) endTurn();
+  }catch(e){ console.error('UpTrend: skipStuckBotTurn failed', e); }
+  render();
 }
 
 function runBotStep(){
@@ -3541,9 +3604,11 @@ function runBotStep(){
       return;
     }
     botTurnRunning = false;
+    botStepFailCount = 0; botStepFailTurnKey = null; // a clean step completed — this turn is healthy again
   }catch(e){
-    console.error('UpTrend: runBotStep threw — resetting botTurnRunning so the game can recover instead of freezing the bot forever', e);
+    console.error('UpTrend: runBotStep threw', e);
     botTurnRunning = false;
+    handleBotStepFailure(e);
   }
 }
 
@@ -3624,7 +3689,7 @@ function startBotGame(){
   myPlayerIndex = 0;
   saveLocalRoom(roomCode, 0, 'You');
   lastKnownSnapshot = {};
-  botTurnRunning = false; // guarantee the bot can take its first turn even if a previous game in this tab somehow left this stuck true
+  botTurnRunning = false; botStuckVisible = false; botStepFailCount = 0; botStepFailTurnKey = null; // guarantee the bot can take its first turn even if a previous game in this tab somehow left this stuck true
   persistFull(); render();
 }
 
@@ -3813,7 +3878,7 @@ function startGameFromLobby(){
   state.createdAt = createdAt;
   Object.assign(state, locals);
   lastKnownSnapshot = {}; // structure changed completely — full replace, not a diff
-  botTurnRunning = false; // guarantee any bot seats can take their turn even if a previous game in this tab somehow left this stuck true
+  botTurnRunning = false; botStuckVisible = false; botStepFailCount = 0; botStepFailTurnKey = null; // guarantee any bot seats can take their turn even if a previous game in this tab somehow left this stuck true
   persistFull(); render();
 }
 
@@ -5084,6 +5149,7 @@ function renderGameScreen(){
     ${renderExpandedChartModal()}
     ${renderSyncFailedBanner()}
     ${renderPausedBanner()}
+    ${renderBotStuckBanner()}
     ${renderGameSummaryModal()}
   `;
 
@@ -5105,6 +5171,8 @@ function renderGameScreen(){
   if(byId('pauseGameBtn')) byId('pauseGameBtn').onclick = pauseGame;
   if(byId('resumeGameBtn')) byId('resumeGameBtn').onclick = resumeGame;
   if(byId('resumeGameBannerBtn')) byId('resumeGameBannerBtn').onclick = resumeGame;
+  if(byId('retryStuckBotBtn')) byId('retryStuckBotBtn').onclick = retryStuckBot;
+  if(byId('skipStuckBotBtn')) byId('skipStuckBotBtn').onclick = skipStuckBotTurn;
   if(byId('buyBtn')) byId('buyBtn').onclick = guardedTradeClick(()=>buyShares(state.tradeSelection, 1));
   if(byId('buyInsiderBtn')) byId('buyInsiderBtn').onclick = ()=>buyInsiderInfo();
   if(byId('sellBtn')) byId('sellBtn').onclick = guardedTradeClick(()=>sellShares(state.tradeSelection, 1));
