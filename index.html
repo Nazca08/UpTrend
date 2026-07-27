@@ -25,13 +25,10 @@
     --spx:#C77DFF;
   }
   *{box-sizing:border-box;}
-  html{overflow-x:hidden;} /* belt-and-suspenders: guarantees no horizontal scrollbar ever, regardless of which inner element might otherwise be a few px too wide */
   body{
     margin:0; background:var(--bg); color:var(--text);
     font-family:'Inter',sans-serif;
     -webkit-font-smoothing:antialiased;
-    overflow-x:hidden;
-    width:100%;
   }
   h1,h2,h3,.display{font-family:'Space Grotesk',sans-serif;}
   .mono{font-family:'IBM Plex Mono',monospace;}
@@ -52,6 +49,12 @@
   .meta .label{font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);}
   .meta .value{font-size:16px;font-weight:600;}
 
+  /* ---------- responsive tiers ----------
+     Desktop:      > 1180px  — two-column layout, sidebar fixed at 580px
+     Tablet/laptop: 641-1180px — single column, full-width board and sidebar stacked
+     Phone:        <= 640px  — single column, tightened padding/sizing throughout
+     Nothing in any tier should ever need horizontal scrolling to reach —
+     each tier's rules are chosen so nothing is wider than its own column. */
   .layout{display:grid;grid-template-columns:1fr 580px;gap:14px;align-items:start;}
   @media (max-width:1180px){.layout{grid-template-columns:1fr;}}
 
@@ -87,7 +90,7 @@
   .stock-row.worthless{opacity:0.5;cursor:default;}
   .stock-row.worthless:hover{background:none;}
 
-  .track{display:flex;align-items:flex-end;gap:2px;position:relative;overflow-x:auto;padding-bottom:2px;}
+  .track{display:flex;align-items:flex-end;gap:2px;position:relative;overflow-x:auto;padding-bottom:2px;-webkit-overflow-scrolling:touch;}
   .dot-wrap{display:flex;flex-direction:column;align-items:center;flex:1;min-width:0;}
   .dot{width:9px;height:9px;border-radius:50%;background:#2A3242;transition:all .25s;}
   .dot.filled{width:12px;height:12px;box-shadow:0 0 7px currentColor;}
@@ -173,7 +176,7 @@
   .resume-card-label{font-size:12px;font-weight:600;color:var(--amber);text-transform:uppercase;letter-spacing:0.5px;}
   .resume-card-sub{font-size:12px;color:var(--muted);margin-top:1px;}
 
-  .holdings-table-wrap{width:100%;overflow-x:auto;}
+  .holdings-table-wrap{width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;}
   .tkr-dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:5px;vertical-align:middle;}
   .short-tag{display:inline-block;background:var(--down);color:#fff;font-size:8px;font-weight:700;padding:0 4px;border-radius:3px;margin-left:4px;vertical-align:middle;letter-spacing:0.3px;}
   .jail-tag{display:inline-block;background:var(--down);color:#fff;font-size:9px;font-weight:700;letter-spacing:0.5px;padding:1px 6px;border-radius:4px;text-transform:uppercase;margin-left:6px;vertical-align:middle;}
@@ -279,6 +282,41 @@
   }
   .length-slider-value{text-align:center;font-family:'IBM Plex Mono';font-size:18px;font-weight:700;color:var(--amber);margin-bottom:2px;}
   .length-slider-endpoints{display:flex;justify-content:space-between;font-size:10px;color:var(--muted);font-family:'IBM Plex Mono';}
+
+  /* ---------- phone tier (<=640px) ----------
+     A real tightened layout, not desktop rules left to squeeze on their
+     own — tighter padding/gaps/font-sizes throughout so nothing is ever
+     wider than the screen, and dense panels stay comfortably tappable
+     instead of cramped. Deliberately placed last so it wins the cascade. */
+  @media (max-width:640px){
+    #app{padding:10px;}
+    .topbar{padding:10px 12px;margin-bottom:10px;row-gap:8px;}
+    .topbar .title{font-size:18px;gap:6px;}
+    .topbar .meta{gap:10px 12px;}
+    .meta .value{font-size:14px;}
+    .meta .label{font-size:9px;}
+    .layout{gap:10px;}
+    .board{gap:8px;}
+    .panel{padding:11px;}
+    .sector-head{padding:8px 12px;font-size:11px;}
+    .stock-row{padding:10px 12px;}
+    .stock-row-inner{gap:9px;}
+    .ticker{font-size:14px;}
+    .price-now{font-size:17px;}
+    .overlay{padding:12px;}
+    .modal{padding:16px;border-radius:14px;}
+    .modal h2{font-size:18px;}
+    .modal.modal-wide{padding:16px;}
+    .card-face{padding:14px;}
+    .card-text{font-size:14px;}
+    .choice-grid{grid-template-columns:1fr;}
+    .player-count-row{flex-wrap:wrap;}
+    .btn{padding:9px 12px;font-size:12.5px;}
+    .jail-flash-stamp{font-size:28px;padding:12px 20px;letter-spacing:2px;border-width:4px;}
+    .resume-card-banner{padding:10px 12px;gap:10px;}
+    .holdings-table{font-size:11px;}
+    .log{max-height:150px;}
+  }
 </style>
 </head>
 <body>
