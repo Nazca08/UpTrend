@@ -34,7 +34,7 @@
   .mono{font-family:'IBM Plex Mono',monospace;}
 
   /* ---------- layout ---------- */
-  #app{max-width:1800px;margin:0 auto;padding:16px;}
+  #app{max-width:1400px;margin:0 auto;padding:16px;}
   .topbar{
     display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;row-gap:12px;
     padding:14px 20px;background:linear-gradient(180deg,#141924,#0F131B);
@@ -50,13 +50,13 @@
   .meta .value{font-size:16px;font-weight:600;}
 
   /* ---------- responsive tiers ----------
-     Desktop:      > 1180px  — two-column layout, sidebar fixed at 580px
-     Tablet/laptop: 641-1180px — single column, full-width board and sidebar stacked
+     Desktop:      > 980px  — two-column layout, sidebar fixed at 340px
+     Tablet/laptop: 641-980px — single column, full-width board and sidebar stacked
      Phone:        <= 640px  — single column, tightened padding/sizing throughout
      Nothing in any tier should ever need horizontal scrolling to reach —
      each tier's rules are chosen so nothing is wider than its own column. */
-  .layout{display:grid;grid-template-columns:1fr 580px;gap:14px;align-items:start;}
-  @media (max-width:1180px){.layout{grid-template-columns:1fr;}}
+  .layout{display:grid;grid-template-columns:1fr 340px;gap:14px;align-items:start;}
+  @media (max-width:980px){.layout{grid-template-columns:1fr;}}
 
   .board{display:flex;flex-direction:column;gap:12px;}
   .sector-panel{
@@ -956,6 +956,7 @@ function repairCollections(s){
       if(pl.overtimeTurnsLeft===undefined) pl.overtimeTurnsLeft = 0;
       if(!Array.isArray(pl.portfolioManagers)) pl.portfolioManagers = [];
       if(!pl.dividendsCollected || typeof pl.dividendsCollected!=='object') pl.dividendsCollected = Object.fromEntries(STOCK_IDS.map(id=>[id,0]));
+      if(!pl.shortDividendFeesPaid || typeof pl.shortDividendFeesPaid!=='object') pl.shortDividendFeesPaid = Object.fromEntries(STOCK_IDS.map(id=>[id,0]));
       if(pl.spDividendsCollected===undefined) pl.spDividendsCollected = 0;
       if(pl.spxDividendsCollected===undefined) pl.spxDividendsCollected = 0;
       if(!pl.realizedGain || typeof pl.realizedGain!=='object') pl.realizedGain = Object.fromEntries(STOCK_IDS.map(id=>[id,0]));
@@ -1228,6 +1229,7 @@ function freshState(players, gameLength){
       costBasis: Object.fromEntries(STOCK_IDS.map(id=>[id,0])), // $ currently invested in open long positions
       shortBasis: Object.fromEntries(STOCK_IDS.map(id=>[id,0])), // $ received for open short positions
       dividendsCollected: Object.fromEntries(STOCK_IDS.map(id=>[id,0])), // all-time $ collected in dividends from this stock (zone payouts, Golden Goose, Dividend Day) — never reset, survives selling/rebuying
+      shortDividendFeesPaid: Object.fromEntries(STOCK_IDS.map(id=>[id,0])), // all-time $ paid in the extra dividend-zone penalty for shorting into a paying stock — kept separate from dividendsCollected (never netted into it) so "total dividends collected" stays a pure earned figure
       realizedGain: Object.fromEntries(STOCK_IDS.map(id=>[id,0])), // all-time $ profit/loss actually banked closing positions in this stock (sells + covers) — unlike costBasis, never reset by closing out
       spShares:0, spCostBasis:0, spDividendsCollected:0, spRealizedGain:0, // Mini SP8 holdings
       spxShares:0, spxCostBasis:0, spxDividendsCollected:0, spxRealizedGain:0, // SP8 (the big one) holdings
@@ -1299,12 +1301,17 @@ function isSoloVsBots(){
   return !!state && state.players.filter(pl=>!pl.bot).length===1;
 }
 
-const TURN_TIME_LIMIT = 120; // seconds — 2 minutes; enforced by the timeout-enforcement logic below once it expires
+const TURN_TIME_LIMIT = 120; // seconds — 2 minutes, for a human's own turn
+const BOT_TURN_TIME_LIMIT = 20; // seconds — bots should never legitimately take anywhere near this long, so if the proactive turn loop ever silently stops for any reason, recovery kicks in within seconds instead of waiting the full human-length timeout
+function currentTurnTimeLimit(){
+  const cur = state && state.players && state.players[state.current];
+  return (cur && cur.bot) ? BOT_TURN_TIME_LIMIT : TURN_TIME_LIMIT;
+}
 function turnTimerSecondsLeft(){
   if(!state || !state.turnStartedAt || state.gameOver) return TURN_TIME_LIMIT;
   const now = (state.paused && state.pausedAt) ? state.pausedAt : Date.now(); // frozen at the moment pause began
   const elapsed = Math.floor((now-state.turnStartedAt)/1000);
-  return Math.max(0, TURN_TIME_LIMIT-elapsed);
+  return Math.max(0, currentTurnTimeLimit()-elapsed);
 }
 function formatTurnTimer(secs){
   const m = Math.floor(secs/60), s = secs%60;
@@ -1410,22 +1417,30 @@ function forceAdvanceStalledTurn(){
   let steps = 0;
   while(steps < 12 && state.current===stalledIndex && !state.gameOver){
     steps++;
-    if(isTurnProtectedFromTimeout()) break; // a real choice is pending — back off
-    if(state.players[stalledIndex].eliminated || state.players[stalledIndex].jailTurnsLeft>0){ endTurn(); break; } // nothing to play — just skip it forward
-    const before = JSON.stringify({ phase:state.phase, turnStage:state.turnStage, cardsDrawnThisTurn:state.cardsDrawnThisTurn, pendingCard: state.pendingCard && state.pendingCard._id });
-    if(state.awaitingHoldDecision){
-      playCardNowFromDraw(true); // AFK on the Play Now/Hold prompt — default to playing it now rather than stalling forever. force=true: this function exists to advance a stalled turn regardless of whose it is (could be a bot, whose "turn" this browser doesn't own), same reason runBotStep uses force.
-    } else if(state.phase==='draw'){
-      drawCard(true);
-    } else if(state.phase==='resolve'){
-      finishCardResolution(); // only reached when the pending card doesn't need a choice
-    } else if(state.phase==='trade'){
-      proceedPastTrade();
-    } else {
-      break;
+    const stalled = state.players[stalledIndex];
+    if(isTurnProtectedFromTimeout()){
+      if(stalled.bot){
+        botResolveChoice(); // bots always have an algorithmic pick ready — no reason to wait forever for a "real" decision that will never come
+      } else {
+        break; // a human might genuinely be mid-decision — back off and wait for them
+      }
+    } else if(stalled.eliminated || stalled.jailTurnsLeft>0){ endTurn(); break; } // nothing to play — just skip it forward
+    else {
+      const before = JSON.stringify({ phase:state.phase, turnStage:state.turnStage, cardsDrawnThisTurn:state.cardsDrawnThisTurn, pendingCard: state.pendingCard && state.pendingCard._id });
+      if(state.awaitingHoldDecision){
+        playCardNowFromDraw(true); // AFK on the Play Now/Hold prompt — default to playing it now rather than stalling forever. force=true: this function exists to advance a stalled turn regardless of whose it is (could be a bot, whose "turn" this browser doesn't own), same reason runBotStep uses force.
+      } else if(state.phase==='draw'){
+        drawCard(true);
+      } else if(state.phase==='resolve'){
+        finishCardResolution(); // only reached when the pending card doesn't need a choice
+      } else if(state.phase==='trade'){
+        proceedPastTrade();
+      } else {
+        break;
+      }
+      const after = JSON.stringify({ phase:state.phase, turnStage:state.turnStage, cardsDrawnThisTurn:state.cardsDrawnThisTurn, pendingCard: state.pendingCard && state.pendingCard._id });
+      if(before===after) break; // no progress possible (e.g. stuck on negative cash) — stop rather than spin
     }
-    const after = JSON.stringify({ phase:state.phase, turnStage:state.turnStage, cardsDrawnThisTurn:state.cardsDrawnThisTurn, pendingCard: state.pendingCard && state.pendingCard._id });
-    if(before===after) break; // no progress possible (e.g. stuck on negative cash) — stop rather than spin
   }
   if(state.current!==stalledIndex || state.gameOver){
     logEvent(`${stalledName} ran out of time — turn auto-advanced.`, true);
@@ -1605,6 +1620,16 @@ function dividendsForKey(p, key){
   if(key==='SP') return p.spDividendsCollected||0;
   if(key==='SPX') return p.spxDividendsCollected||0;
   return (p.dividendsCollected && p.dividendsCollected[key]) || 0;
+}
+/* All-time $ paid in the dividend-zone short penalty for this stock — index
+   funds can't be shorted, so this is always 0 for SP/SPX. Deliberately its
+   own figure, never combined into dividendsForKey — "dividends collected"
+   stays a pure earned number everywhere it already appears (game summary,
+   leaderboard); this is only surfaced in the detailed per-stock holdings
+   table, as its own "paid" column for short rows. */
+function shortDividendFeesForKey(p, key){
+  if(key==='SP' || key==='SPX') return 0;
+  return (p.shortDividendFeesPaid && p.shortDividendFeesPaid[key]) || 0;
 }
 /* All-time $ actually banked closing positions in this stock — the
    complement to the still-open unrealized gain/loss. Same SP/SPX routing
@@ -2031,6 +2056,34 @@ function drawsNeededThisStage(){
   return state.turnStage==='start' ? state.cardsPerTurn : 1;
 }
 
+/* Bots skip past any card that would need a real decision, redrawing until
+   they land on something that auto-resolves — up to a bounded number of
+   attempts, so a deck that's gone unusually choice-heavy can't loop
+   forever. Skipped cards go back into the deck a handful of cards deeper
+   rather than being discarded or lost, so they still show up normally for
+   a human (or for the bot itself, later) — this only changes a BOT's own
+   draw sequence, never the deck's actual composition. Not a hard
+   guarantee (an all-choice-cards deck would eventually force one through
+   after MAX_BOT_DRAW_SKIPS tries), but in any realistic deck a bot should
+   essentially never end up needing to make a real decision, and
+   botResolveChoice already handles it reliably if one ever does slip
+   through. */
+const MAX_BOT_DRAW_SKIPS = 8;
+function drawFromDeck(p){
+  if(state.deck.length===0){ state.deck = shuffle(state.discard); state.discard=[]; }
+  if(!p.bot) return state.deck.shift();
+  for(let i=0; i<MAX_BOT_DRAW_SKIPS; i++){
+    if(state.deck.length===0){ state.deck = shuffle(state.discard); state.discard=[]; }
+    if(state.deck.length===0) break; // nothing left anywhere — shouldn't happen given the deck's size, but don't loop on it
+    const card = state.deck.shift();
+    if(!needsChoice(card)) return card;
+    const reinsertAt = Math.min(state.deck.length, 5 + Math.floor(Math.random()*10));
+    state.deck.splice(reinsertAt, 0, card);
+  }
+  if(state.deck.length===0){ state.deck = shuffle(state.discard); state.discard=[]; }
+  return state.deck.shift();
+}
+
 function drawCard(force){
   if(!force && !isMyTurn()) return;
   const p = state.players[state.current];
@@ -2062,8 +2115,7 @@ function drawCard(force){
     checkGameOver();
     if(state.gameOver){ persist(); render(); return; } // a scheduled prediction landing just ended the game
   }
-  if(state.deck.length===0){ state.deck = shuffle(state.discard); state.discard=[]; }
-  const card = state.deck.shift();
+  const card = drawFromDeck(p);
   state.pendingCard = card;
   state.phase = 'resolve';
   state.choiceError = null;
@@ -2351,7 +2403,7 @@ function tickShortFeesAndDividends(ownerIndex){
       }
       if(heldShort>0){
         const penalty = takeClamped(Math.round(heldShort*pr*rate*0.33));
-        if(penalty>0){ p.cash -= penalty; totalFee += penalty; }
+        if(penalty>0){ p.cash -= penalty; totalFee += penalty; p.shortDividendFeesPaid[id] = (p.shortDividendFeesPaid[id]||0) + penalty; }
       }
     }
   });
@@ -4283,7 +4335,71 @@ function renderBoard(){
       </div>
     </div>
   </div>`;
+  html += renderDetailedHoldingsTable();
   return html;
+}
+
+/* The full per-holding breakdown — basis, gain/loss, dividends
+   earned/paid, and total gain — lives here at the bottom of the board
+   (wide column) rather than in the sidebar, so it has room for all 7
+   columns without ever needing to squeeze or scroll sideways. The sidebar
+   keeps a compact Ticker/Shares/Value summary instead. Dividends
+   Earned/Paid is earned (green) for a long position, or the dividend-zone
+   short penalty actually paid (red) for a short — that column's sign is
+   exactly what feeds into Total Gain, so a short's Total Gain is honestly
+   net of what it cost to hold through a paying zone. This is intentionally
+   separate from dividendsForKey/totalGain used elsewhere (game summary,
+   leaderboard) — those stay pure "dividends earned," never netted against
+   short fees. */
+function renderDetailedHoldingsTable(){
+  const me = state.players[myPlayerIndex];
+  if(!me) return '';
+  const glCell = (gl)=> `<td style="color:${gl>=0?'var(--up)':'var(--down)'};">${gl>=0?'+':'-'}$${Math.abs(Math.round(gl))}</td>`;
+  const divCell = (amt, isPaid)=>{
+    if(Math.round(Math.abs(amt))===0) return `<td>$0</td>`;
+    return `<td style="color:${isPaid?'var(--down)':'var(--up)'};">${isPaid?'-':'+'}$${Math.round(Math.abs(amt))}</td>`;
+  };
+  const tkrCell = (id, sectorLabel, short)=> `<td><span class="tkr-dot" style="background:${SECTORS[STOCKS[id].sector].color};" title="${sectorLabel}"></span>${id}${short?'<span class="short-tag">SHORT</span>':''}</td>`;
+  const rows = [];
+  STOCK_IDS.forEach(id=>{
+    if(me.shares[id]>0){
+      const sectorLabel = SECTORS[STOCKS[id].sector].label || STOCKS[id].sector;
+      const value = me.shares[id]*price(id);
+      const basis = Math.round((me.costBasis[id]||0) / me.shares[id]);
+      const gl = longGainLoss(me,id), div = dividendsForKey(me,id);
+      rows.push({ value, html: `<tr>${tkrCell(id,sectorLabel,false)}<td>${me.shares[id]}</td><td>$${basis}</td><td>$${value}</td>${glCell(gl)}${divCell(div,false)}${glCell(gl+div)}</tr>` });
+    }
+  });
+  if(me.spShares>0){
+    const value = me.spShares*spPrice();
+    const basis = Math.round((me.spCostBasis||0) / me.spShares);
+    const gl = longGainLoss(me,'SP'), div = dividendsForKey(me,'SP');
+    rows.push({ value, html: `<tr><td>Mini SP8</td><td>${me.spShares}</td><td>$${basis}</td><td>$${value}</td>${glCell(gl)}${divCell(div,false)}${glCell(gl+div)}</tr>` });
+  }
+  if(me.spxShares>0){
+    const value = me.spxShares*spxPrice();
+    const basis = Math.round((me.spxCostBasis||0) / me.spxShares);
+    const gl = longGainLoss(me,'SPX'), div = dividendsForKey(me,'SPX');
+    rows.push({ value, html: `<tr><td>SP8</td><td>${me.spxShares}</td><td>$${basis}</td><td>$${value}</td>${glCell(gl)}${divCell(div,false)}${glCell(gl+div)}</tr>` });
+  }
+  STOCK_IDS.forEach(id=>{
+    if((me.shorts[id]||0)>0){
+      const sectorLabel = SECTORS[STOCKS[id].sector].label || STOCKS[id].sector;
+      const value = -(me.shorts[id]*price(id));
+      const basis = Math.round((me.shortBasis[id]||0) / me.shorts[id]); // average proceeds received per share, when the short was opened
+      const gl = shortGainLoss(me,id), fee = shortDividendFeesForKey(me,id);
+      rows.push({ value, html: `<tr>${tkrCell(id,sectorLabel,true)}<td>${me.shorts[id]}</td><td>$${basis}</td><td style="color:var(--down);">-$${Math.abs(value)}</td>${glCell(gl)}${divCell(fee,true)}${glCell(gl-fee)}</tr>` });
+    }
+  });
+  if(rows.length===0) return '';
+  rows.sort((a,b)=>b.value-a.value);
+  return `<div class="panel" style="margin-top:12px;">
+    <h3 style="color:${me.color};">Detailed Holdings</h3>
+    <div class="holdings-table-wrap"><table class="holdings-table">
+      <tr><th>Ticker</th><th>Shares</th><th>Avg. Basis</th><th>Value</th><th>Gain/Loss</th><th>Dividends Earned/Paid</th><th>Total Gain</th></tr>
+      ${rows.map(r=>r.html).join('')}
+    </table></div>
+  </div>`;
 }
 
 function renderSidebar(){
@@ -4454,38 +4570,28 @@ function renderSidebar(){
   if(!me){
     html += `<div class="panel"><h3>Your Holdings</h3><div class="hint" style="margin:0;">You're spectating — no holdings of your own to show.</div></div>`;
   } else {
-    const glCell = (gl)=> `<td style="color:${gl>=0?'var(--up)':'var(--down)'};">${gl>=0?'+':'-'}$${Math.abs(Math.round(gl))}</td>`;
-    const divCell = (div)=> `<td>$${Math.round(div)}</td>`;
     const tkrCell = (id, sectorLabel, short)=> `<td><span class="tkr-dot" style="background:${SECTORS[STOCKS[id].sector].color};" title="${sectorLabel}"></span>${id}${short?'<span class="short-tag">SHORT</span>':''}</td>`;
     const holdingRows = [];
     STOCK_IDS.forEach(id=>{
       if(me.shares[id]>0){
         const sectorLabel = SECTORS[STOCKS[id].sector].label || STOCKS[id].sector;
         const value = me.shares[id]*price(id);
-        const basis = Math.round((me.costBasis[id]||0) / me.shares[id]);
-        const gl = longGainLoss(me,id), div = dividendsForKey(me,id);
-        holdingRows.push({ value, html: `<tr>${tkrCell(id, sectorLabel, false)}<td>${me.shares[id]}</td><td>$${basis}</td><td>$${value}</td>${glCell(gl)}${divCell(div)}${glCell(totalGain(me,id,gl))}</tr>` });
+        holdingRows.push({ value, html: `<tr>${tkrCell(id, sectorLabel, false)}<td>${me.shares[id]}</td><td>$${value}</td></tr>` });
       }
     });
     if(me.spShares>0){
       const value = me.spShares*spPrice();
-      const basis = Math.round((me.spCostBasis||0) / me.spShares);
-      const gl = longGainLoss(me,'SP'), div = dividendsForKey(me,'SP');
-      holdingRows.push({ value, html: `<tr><td>Mini SP8</td><td>${me.spShares}</td><td>$${basis}</td><td>$${value}</td>${glCell(gl)}${divCell(div)}${glCell(totalGain(me,'SP',gl))}</tr>` });
+      holdingRows.push({ value, html: `<tr><td>Mini SP8</td><td>${me.spShares}</td><td>$${value}</td></tr>` });
     }
     if(me.spxShares>0){
       const value = me.spxShares*spxPrice();
-      const basis = Math.round((me.spxCostBasis||0) / me.spxShares);
-      const gl = longGainLoss(me,'SPX'), div = dividendsForKey(me,'SPX');
-      holdingRows.push({ value, html: `<tr><td>SP8</td><td>${me.spxShares}</td><td>$${basis}</td><td>$${value}</td>${glCell(gl)}${divCell(div)}${glCell(totalGain(me,'SPX',gl))}</tr>` });
+      holdingRows.push({ value, html: `<tr><td>SP8</td><td>${me.spxShares}</td><td>$${value}</td></tr>` });
     }
     STOCK_IDS.forEach(id=>{
       if((me.shorts[id]||0)>0){
         const sectorLabel = SECTORS[STOCKS[id].sector].label || STOCKS[id].sector;
         const value = -(me.shorts[id]*price(id));
-        const basis = Math.round((me.shortBasis[id]||0) / me.shorts[id]); // average proceeds received per share, when the short was opened
-        const gl = shortGainLoss(me,id), div = dividendsForKey(me,id);
-        holdingRows.push({ value, html: `<tr>${tkrCell(id, sectorLabel, true)}<td>${me.shorts[id]}</td><td>$${basis}</td><td style="color:var(--down);">-$${Math.abs(value)}</td>${glCell(gl)}${divCell(div)}${glCell(totalGain(me,id,gl))}</tr>` });
+        holdingRows.push({ value, html: `<tr>${tkrCell(id, sectorLabel, true)}<td>${me.shorts[id]}</td><td style="color:var(--down);">-$${Math.abs(value)}</td></tr>` });
       }
     });
     holdingRows.sort((a,b)=>b.value-a.value);
@@ -4494,9 +4600,9 @@ function renderSidebar(){
     if(holdingRows.length===0){
       html += `<div class="hint" style="margin:0;">No open positions yet.</div>`;
     } else {
-      html += `<div class="holdings-table-wrap"><table class="holdings-table"><tr><th>Ticker</th><th>Shares</th><th>Cost</th><th>Value</th><th>G/L</th><th>Div.</th><th>Total</th></tr>`;
+      html += `<div class="holdings-table-wrap"><table class="holdings-table"><tr><th>Ticker</th><th>Shares</th><th>Value</th></tr>`;
       holdingRows.forEach(r=>{ html += r.html; });
-      html += `</table></div>`;
+      html += `</table></div><div class="hint" style="margin:6px 0 0;">Full breakdown (basis, gain/loss, dividends) is at the bottom of the board.</div>`;
     }
     const projDiv = projectedDividends(me);
     const projIdxDiv = projectedIndexDividend(me);
