@@ -103,10 +103,10 @@
   .dot-wrap.div-zone-start{border-left:1px solid rgba(62,207,142,0.45);border-top-left-radius:6px;border-bottom-left-radius:6px;}
   .dot-wrap.div-zone-end{border-right:1px solid rgba(62,207,142,0.45);border-top-right-radius:6px;border-bottom-right-radius:6px;}
   .div-zone-rate{font-size:8px;font-family:'IBM Plex Mono';color:var(--up);font-weight:700;white-space:nowrap;margin-bottom:2px;}
-  .dot-wrap.short-zone{background:rgba(185,140,255,0.10);border-top:1px solid rgba(185,140,255,0.45);border-bottom:1px solid rgba(185,140,255,0.45);padding-bottom:1px;}
-  .dot-wrap.short-zone-start{border-left:1px solid rgba(185,140,255,0.45);border-top-left-radius:6px;border-bottom-left-radius:6px;}
-  .dot-wrap.short-zone-end{border-right:1px solid rgba(185,140,255,0.45);border-top-right-radius:6px;border-bottom-right-radius:6px;}
-  .short-zone-rate{font-size:8px;font-family:'IBM Plex Mono';color:var(--tech);font-weight:700;white-space:nowrap;margin-top:2px;}
+  .dot-wrap.short-zone{background:rgba(255,92,92,0.10);border-top:1px solid rgba(255,92,92,0.45);border-bottom:1px solid rgba(255,92,92,0.45);padding-bottom:1px;}
+  .dot-wrap.short-zone-start{border-left:1px solid rgba(255,92,92,0.45);border-top-left-radius:6px;border-bottom-left-radius:6px;}
+  .dot-wrap.short-zone-end{border-right:1px solid rgba(255,92,92,0.45);border-top-right-radius:6px;border-bottom-right-radius:6px;}
+  .short-zone-rate{font-size:8px;font-family:'IBM Plex Mono';color:var(--down);font-weight:700;white-space:nowrap;margin-top:2px;}
 
   /* ---------- sidebar ---------- */
   .sidebar{display:flex;flex-direction:column;gap:12px;position:sticky;top:16px;}
@@ -1221,19 +1221,19 @@ function dividendZoneRateAt(id, idx){
    the BOTTOM of the track instead of the top. Pays shorts held there,
    rewarding a short that's actually working (the stock has fallen hard)
    instead of only ever costing money to hold. Deliberately smaller than
-   the Dividend Zones (4-8 dots vs 9-14) and lower-rate — a real bonus, not
+   the Dividend Zones (5-9 dots vs 9-14) and lower-rate — a real bonus, not
    a parity mirror; longs pay nothing extra when a stock passes through it.
    Rate escalates the DEEPER the price falls (strongest right at $0),
    mirroring how a Dividend Zone's rate escalates toward the very top. */
 const SHORT_REBATE_ZONES = {
-  QBIT: { dots:4, rates:[0.05, 0.08, 0.12, 0.18] },
-  VITA: { dots:4, rates:[0.045, 0.07, 0.11, 0.16] },
-  PWR:  { dots:5, rates:[0.03, 0.045, 0.065, 0.09, 0.12] },
-  RXCO: { dots:5, rates:[0.028, 0.042, 0.06, 0.085, 0.11] },
-  LUXE: { dots:6, rates:[0.02, 0.03, 0.042, 0.056, 0.072, 0.09] },
-  OILX: { dots:6, rates:[0.018, 0.027, 0.038, 0.05, 0.064, 0.08] },
-  NOVA: { dots:8, rates:[0.012, 0.017, 0.022, 0.028, 0.035, 0.043, 0.052, 0.06] },
-  SPRE: { dots:8, rates:[0.012, 0.017, 0.022, 0.028, 0.035, 0.043, 0.052, 0.06] },
+  QBIT: { dots:5, rates:[0.035, 0.05, 0.08, 0.12, 0.18] },
+  VITA: { dots:5, rates:[0.03, 0.045, 0.07, 0.11, 0.16] },
+  PWR:  { dots:6, rates:[0.02, 0.03, 0.045, 0.065, 0.09, 0.12] },
+  RXCO: { dots:6, rates:[0.02, 0.028, 0.042, 0.06, 0.085, 0.11] },
+  LUXE: { dots:7, rates:[0.014, 0.02, 0.03, 0.042, 0.056, 0.072, 0.09] },
+  OILX: { dots:7, rates:[0.013, 0.018, 0.027, 0.038, 0.05, 0.064, 0.08] },
+  NOVA: { dots:9, rates:[0.009, 0.012, 0.017, 0.022, 0.028, 0.035, 0.043, 0.052, 0.06] },
+  SPRE: { dots:9, rates:[0.009, 0.012, 0.017, 0.022, 0.028, 0.035, 0.043, 0.052, 0.06] },
 };
 function inShortRebateZone(id){
   const zone = SHORT_REBATE_ZONES[id];
@@ -3041,7 +3041,18 @@ function resolveChoice(card, choice){
       const { stock } = choice;
       if((p.shorts[stock]||0)<=0){ state.choiceError = `You're not shorting any ${stock} — pick a stock you have an open short in.`; return false; }
       const addQty = Math.min(p.shorts[stock], 20); // full double up to 20 shares shorted; capped at +20 beyond that
-      p.shorts[stock] += addQty; // short basis total is unchanged by design, same as Stock Split — this dilutes the average proceeds/share
+      // Locked collateral (see lockedCash) is calculated live from
+      // shorts*price — simply adding shares without any cash would spike
+      // that requirement with nothing to back it, instantly wiping out free
+      // cash (this is exactly what caused an elimination). Crediting cash
+      // and shortBasis together, matching current price, mirrors a real
+      // short-open 1:1: proceeds in, matching collateral locked, net free
+      // cash unchanged. The bonus is skipping the turn cap and cash outlay
+      // a normal short would need — not free money on top of that.
+      const proceeds = addQty * price(stock);
+      p.cash += proceeds;
+      p.shortBasis[stock] = (p.shortBasis[stock]||0) + proceeds;
+      p.shorts[stock] += addQty;
       logEvent(`${p.name} pressed their bet on ${stock} — short position +${addQty}, now ${p.shorts[stock]}.`);
       break;
     }
