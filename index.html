@@ -4231,8 +4231,8 @@ function renderTrack(track, curIdx, prevIdx, colorVar, id){
     const inZone = zone && i>=zoneStartIdx;
     const zoneClasses = inZone ? ` div-zone${i===zoneStartIdx?' div-zone-start':''}${i===track.length-1?' div-zone-end':''}` : '';
     const dotRateLabel = inZone ? `${(zone.rates[i-zoneStartIdx]*100).toFixed(1).replace(/\.0$/,'')}%` : '';
-    const inShortZoneDot = shortZone && i<shortZone.dots;
-    const shortZoneClasses = inShortZoneDot ? ` short-zone${i===0?' short-zone-start':''}${i===shortZone.dots-1?' short-zone-end':''}` : '';
+    const inShortZoneDot = shortZone && i<shortZone.dots && !(i===0 && shortRebateZoneExcludesZeroBubble(id));
+    const shortZoneClasses = inShortZoneDot ? ` short-zone${i===(shortRebateZoneExcludesZeroBubble(id)?1:0)?' short-zone-start':''}${i===shortZone.dots-1?' short-zone-end':''}` : '';
     const shortRateLabel = inShortZoneDot ? `${(shortZone.rates[shortZone.dots-1-i]*100).toFixed(1).replace(/\.0$/,'')}%` : '';
     html += `<div class="dot-wrap ${filled?'active':''} ${edge?'edge':''} ${isCenter?'center':''}${zoneClasses}${shortZoneClasses}">
       ${inZone?`<div class="div-zone-rate">${dotRateLabel}</div>`:''}
