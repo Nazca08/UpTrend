@@ -103,6 +103,10 @@
   .dot-wrap.div-zone-start{border-left:1px solid rgba(62,207,142,0.45);border-top-left-radius:6px;border-bottom-left-radius:6px;}
   .dot-wrap.div-zone-end{border-right:1px solid rgba(62,207,142,0.45);border-top-right-radius:6px;border-bottom-right-radius:6px;}
   .div-zone-rate{font-size:8px;font-family:'IBM Plex Mono';color:var(--up);font-weight:700;white-space:nowrap;margin-bottom:2px;}
+  .dot-wrap.short-zone{background:rgba(185,140,255,0.10);border-top:1px solid rgba(185,140,255,0.45);border-bottom:1px solid rgba(185,140,255,0.45);padding-bottom:1px;}
+  .dot-wrap.short-zone-start{border-left:1px solid rgba(185,140,255,0.45);border-top-left-radius:6px;border-bottom-left-radius:6px;}
+  .dot-wrap.short-zone-end{border-right:1px solid rgba(185,140,255,0.45);border-top-right-radius:6px;border-bottom-right-radius:6px;}
+  .short-zone-rate{font-size:8px;font-family:'IBM Plex Mono';color:var(--tech);font-weight:700;white-space:nowrap;margin-top:2px;}
 
   /* ---------- sidebar ---------- */
   .sidebar{display:flex;flex-direction:column;gap:12px;position:sticky;top:16px;}
@@ -492,7 +496,17 @@ function buildDeck(){
   });
 
   // Stock Split — 2
-  add(2, { type:'split', text:'Stock Split: pick a stock you own — your shares in it double.' });
+  add(2, { type:'split', text:'Stock Split: pick a stock you own — your shares in it double, capped at +20 shares.' });
+
+  // Press Your Bet — 2. The short-side mirror of Stock Split: holdable, so
+  // you can time it, and optional in the sense that the choice screen
+  // (like Split's) lets you back out if you've got nothing shorted.
+  add(2, { type:'press_your_bet', holdable:true, text:'Press Your Bet: pick a stock you\u2019re shorting \u2014 your short position doubles, capped at +20 shares.' });
+
+  // Short Seller's Bonus — 2. Flat $1,000 per share currently shorted,
+  // across every stock — the short-side counterpart to a flat cash bonus
+  // scaling with position size, same spirit as Steady Hand for longs.
+  add(2, { type:'short_bonus', text:'Short Seller\u2019s Bonus: $1,000 for every share you currently have shorted, across all stocks.' });
 
   // Move Any Stock ±1 (player choice) — 6, half holdable — held copies let you
   // pick the stock/direction whenever you actually play them, not at draw time
@@ -955,8 +969,10 @@ function repairCollections(s){
       if(pl.firedRoundsLeft===undefined) pl.firedRoundsLeft = 0;
       if(pl.overtimeTurnsLeft===undefined) pl.overtimeTurnsLeft = 0;
       if(!Array.isArray(pl.portfolioManagers)) pl.portfolioManagers = [];
+      pl.portfolioManagers.forEach(pm=>{ if(!Array.isArray(pm.lots)) pm.lots = []; }); // an empty lots:[] can come back missing after a Firebase round-trip — same class of bug as the earlier Dividend Leach Infinity issue
       if(!pl.dividendsCollected || typeof pl.dividendsCollected!=='object') pl.dividendsCollected = Object.fromEntries(STOCK_IDS.map(id=>[id,0]));
       if(!pl.shortDividendFeesPaid || typeof pl.shortDividendFeesPaid!=='object') pl.shortDividendFeesPaid = Object.fromEntries(STOCK_IDS.map(id=>[id,0]));
+      if(!pl.shortRebatesCollected || typeof pl.shortRebatesCollected!=='object') pl.shortRebatesCollected = Object.fromEntries(STOCK_IDS.map(id=>[id,0]));
       if(pl.spDividendsCollected===undefined) pl.spDividendsCollected = 0;
       if(pl.spxDividendsCollected===undefined) pl.spxDividendsCollected = 0;
       if(!pl.realizedGain || typeof pl.realizedGain!=='object') pl.realizedGain = Object.fromEntries(STOCK_IDS.map(id=>[id,0]));
@@ -1184,6 +1200,7 @@ const DIVIDEND_ZONES = {
   SPRE: { dots:14, rates:[0.025, 0.026, 0.028, 0.032, 0.036, 0.042, 0.049, 0.056, 0.065, 0.074, 0.084, 0.095, 0.107, 0.12] },
 };
 const SHORT_CARRY_FEE_RATE = 0.01; // 1% of a short's current liability, charged every one of your own turns
+const SHORT_DIVIDEND_ZONE_PENALTY_RATE = 0.10; // extra penalty a short pays on top of the carry fee, when the stock is also in its (long) Dividend Zone — 10% of that zone's rate
 
 /* The dividend rate for a specific dot position on a stock's track — 0 if
    that dot isn't in the zone at all. Used both for actually paying out and
@@ -1198,6 +1215,36 @@ function dividendZoneRateAt(id, idx){
   let rate = zone.rates[pos];
   if(state.dividendRateModifier) rate *= state.dividendRateModifier.multiplier;
   return rate;
+}
+
+/* Short Rebate Zone — the short-side mirror of a Dividend Zone, sitting at
+   the BOTTOM of the track instead of the top. Pays shorts held there,
+   rewarding a short that's actually working (the stock has fallen hard)
+   instead of only ever costing money to hold. Deliberately smaller than
+   the Dividend Zones (4-8 dots vs 9-14) and lower-rate — a real bonus, not
+   a parity mirror; longs pay nothing extra when a stock passes through it.
+   Rate escalates the DEEPER the price falls (strongest right at $0),
+   mirroring how a Dividend Zone's rate escalates toward the very top. */
+const SHORT_REBATE_ZONES = {
+  QBIT: { dots:4, rates:[0.05, 0.08, 0.12, 0.18] },
+  VITA: { dots:4, rates:[0.045, 0.07, 0.11, 0.16] },
+  PWR:  { dots:5, rates:[0.03, 0.045, 0.065, 0.09, 0.12] },
+  RXCO: { dots:5, rates:[0.028, 0.042, 0.06, 0.085, 0.11] },
+  LUXE: { dots:6, rates:[0.02, 0.03, 0.042, 0.056, 0.072, 0.09] },
+  OILX: { dots:6, rates:[0.018, 0.027, 0.038, 0.05, 0.064, 0.08] },
+  NOVA: { dots:8, rates:[0.012, 0.017, 0.022, 0.028, 0.035, 0.043, 0.052, 0.06] },
+  SPRE: { dots:8, rates:[0.012, 0.017, 0.022, 0.028, 0.035, 0.043, 0.052, 0.06] },
+};
+function inShortRebateZone(id){
+  const zone = SHORT_REBATE_ZONES[id];
+  if(!zone) return false;
+  return state.stocks[id].idx < zone.dots;
+}
+function shortRebateZoneRateAt(id, idx){
+  const zone = SHORT_REBATE_ZONES[id];
+  if(!zone || idx >= zone.dots) return 0;
+  const pos = zone.dots - 1 - idx; // 0 at the zone's entry edge (falling in), max at idx=0 (the very bottom)
+  return zone.rates[pos];
 }
 
 function freshState(players, gameLength){
@@ -1230,6 +1277,7 @@ function freshState(players, gameLength){
       shortBasis: Object.fromEntries(STOCK_IDS.map(id=>[id,0])), // $ received for open short positions
       dividendsCollected: Object.fromEntries(STOCK_IDS.map(id=>[id,0])), // all-time $ collected in dividends from this stock (zone payouts, Golden Goose, Dividend Day) — never reset, survives selling/rebuying
       shortDividendFeesPaid: Object.fromEntries(STOCK_IDS.map(id=>[id,0])), // all-time $ paid in the extra dividend-zone penalty for shorting into a paying stock — kept separate from dividendsCollected (never netted into it) so "total dividends collected" stays a pure earned figure
+      shortRebatesCollected: Object.fromEntries(STOCK_IDS.map(id=>[id,0])), // all-time $ earned from the Short Rebate Zone — the short-side income mirror of dividendsCollected
       realizedGain: Object.fromEntries(STOCK_IDS.map(id=>[id,0])), // all-time $ profit/loss actually banked closing positions in this stock (sells + covers) — unlike costBasis, never reset by closing out
       spShares:0, spCostBasis:0, spDividendsCollected:0, spRealizedGain:0, // Mini SP8 holdings
       spxShares:0, spxCostBasis:0, spxDividendsCollected:0, spxRealizedGain:0, // SP8 (the big one) holdings
@@ -1631,6 +1679,15 @@ function shortDividendFeesForKey(p, key){
   if(key==='SP' || key==='SPX') return 0;
   return (p.shortDividendFeesPaid && p.shortDividendFeesPaid[key]) || 0;
 }
+/* All-time $ earned from the Short Rebate Zone for this stock — the
+   short-side income counterpart to dividendsForKey. Also never combined
+   into dividendsForKey/the aggregate "dividends collected" stat; only
+   surfaced in the detailed holdings table, netted against
+   shortDividendFeesForKey for that row's Dividends Earned/Paid column. */
+function shortRebateForKey(p, key){
+  if(key==='SP' || key==='SPX') return 0;
+  return (p.shortRebatesCollected && p.shortRebatesCollected[key]) || 0;
+}
 /* All-time $ actually banked closing positions in this stock — the
    complement to the still-open unrealized gain/loss. Same SP/SPX routing
    as dividendsForKey. */
@@ -1666,6 +1723,22 @@ function projectedDividends(p){
   (p.goldenGeese||[]).forEach(id=>{
     const heldLong = p.shares[id]||0;
     if(heldLong>0 && !state.stocks[id].worthless) total += Math.round(heldLong*price(id)*0.10);
+  });
+  return total;
+}
+
+/* Short-side mirror of projectedDividends — what this player would earn
+   from the Short Rebate Zone right now if their turn started this
+   instant. Same live-estimate caveat: a stock can drift in or out of the
+   zone before their turn actually comes up. */
+function projectedShortRebate(p){
+  let total = 0;
+  STOCK_IDS.forEach(id=>{
+    const heldShort = p.shorts[id]||0;
+    if(heldShort>0 && inShortRebateZone(id)){
+      const rate = shortRebateZoneRateAt(id, state.stocks[id].idx);
+      total += Math.round(heldShort*price(id)*rate);
+    }
   });
   return total;
 }
@@ -2402,9 +2475,18 @@ function tickShortFeesAndDividends(ownerIndex){
         if(pay>0){ p.cash += pay; totalDiv += pay; p.dividendsCollected[id] = (p.dividendsCollected[id]||0) + pay; }
       }
       if(heldShort>0){
-        const penalty = takeClamped(Math.round(heldShort*pr*rate*0.33));
+        const penalty = takeClamped(Math.round(heldShort*pr*rate*SHORT_DIVIDEND_ZONE_PENALTY_RATE));
         if(penalty>0){ p.cash -= penalty; totalFee += penalty; p.shortDividendFeesPaid[id] = (p.shortDividendFeesPaid[id]||0) + penalty; }
       }
+    }
+    // Short Rebate Zone — the short-side mirror of a dividend zone, sitting
+    // at the BOTTOM of the track instead of the top. Pure bonus income for
+    // shorts held there, on top of (not instead of) the flat carry fee
+    // above; longs pay nothing extra for a stock passing through it.
+    if(heldShort>0 && inShortRebateZone(id)){
+      const rebateRate = shortRebateZoneRateAt(id, state.stocks[id].idx);
+      const rebate = Math.round(heldShort*pr*rebateRate);
+      if(rebate>0){ p.cash += rebate; totalDiv += rebate; p.shortRebatesCollected[id] = (p.shortRebatesCollected[id]||0) + rebate; }
     }
   });
 
@@ -2651,6 +2733,15 @@ function resolveAuto(card){
       const gain = heldCount*250;
       p.cash += gain;
       logEvent(`${p.name} holds ${heldCount} stock(s) — Steady Hand pays $${gain}.`);
+      break;
+    }
+    case 'short_bonus': {
+      const totalShorted = STOCK_IDS.reduce((sum,id)=> sum + (p.shorts[id]||0), 0);
+      if(totalShorted<=0){ logEvent(`${p.name} has no open shorts — Short Seller's Bonus has no effect.`); break; }
+      const pay = totalShorted*1000;
+      p.cash += pay;
+      card.text = `Short Seller's Bonus: ${totalShorted} shares shorted — $${pay.toLocaleString()} bonus!`;
+      logEvent(`${p.name} has ${totalShorted} shares shorted — Short Seller's Bonus pays $${pay.toLocaleString()}.`, true);
       break;
     }
     case 'dividend': {
@@ -2924,7 +3015,7 @@ function resolveAuto(card){
 }
 
 function needsChoice(card){
-  return ['sched_swing','split','choose_stock_move','choose_sector_move','whale','insider_blocker'].includes(card.type);
+  return ['sched_swing','split','choose_stock_move','choose_sector_move','whale','insider_blocker','press_your_bet'].includes(card.type);
 }
 
 /* choice resolvers, called from UI */
@@ -2941,8 +3032,17 @@ function resolveChoice(card, choice){
     case 'split': {
       const { stock } = choice;
       if(p.shares[stock]<=0){ state.choiceError = `You don't own any ${stock} — pick a stock you hold shares in.`; return false; }
-      p.shares[stock]*=2; // cost basis total is unchanged by design — a split just halves avg cost/share
-      logEvent(`${p.name}'s ${stock} shares split — now ${p.shares[stock]}.`);
+      const addQty = Math.min(p.shares[stock], 20); // full double up to 20 shares owned; capped at +20 beyond that
+      p.shares[stock] += addQty; // cost basis total is unchanged by design — a split just dilutes avg cost/share
+      logEvent(`${p.name}'s ${stock} shares split — +${addQty}, now ${p.shares[stock]}.`);
+      break;
+    }
+    case 'press_your_bet': {
+      const { stock } = choice;
+      if((p.shorts[stock]||0)<=0){ state.choiceError = `You're not shorting any ${stock} — pick a stock you have an open short in.`; return false; }
+      const addQty = Math.min(p.shorts[stock], 20); // full double up to 20 shares shorted; capped at +20 beyond that
+      p.shorts[stock] += addQty; // short basis total is unchanged by design, same as Stock Split — this dilutes the average proceeds/share
+      logEvent(`${p.name} pressed their bet on ${stock} — short position +${addQty}, now ${p.shorts[stock]}.`);
       break;
     }
     case 'choose_stock_move': {
@@ -3109,12 +3209,14 @@ function checkInsiderTradingRisk(ownerIndex){
 function trackPortfolioManagerOpen(p, id, side, qty, pricePerShare){
   if(!p.portfolioManagers || p.portfolioManagers.length===0) return;
   p.portfolioManagers.forEach(pm=>{
+    if(!Array.isArray(pm.lots)) pm.lots = []; // can come back missing after a Firebase round-trip — empty arrays don't survive sync reliably (same class of bug as the earlier Dividend Leach Infinity issue)
     pm.lots.push({ stock:id, side, qty, costPerShare: pricePerShare });
   });
 }
 function trackPortfolioManagerClose(p, id, side, qty, closePricePerShare){
   if(!p.portfolioManagers || p.portfolioManagers.length===0) return;
   p.portfolioManagers.forEach(pm=>{
+    if(!Array.isArray(pm.lots)) pm.lots = [];
     let remaining = qty;
     for(let i=pm.lots.length-1; i>=0 && remaining>0; i--){
       const lot = pm.lots[i];
@@ -3375,6 +3477,13 @@ function botLargestHolding(bot){
   });
   return best;
 }
+function botLargestShortHolding(bot){
+  let best=null, bestQty=0;
+  STOCK_IDS.forEach(id=>{
+    if((bot.shorts[id]||0)>bestQty){ bestQty=bot.shorts[id]; best=id; }
+  });
+  return best;
+}
 
 /* Sells down the bot's biggest long holding, repeatedly, until its cash is
    back to $0+ — the same forced-liquidation a human faces after a margin
@@ -3405,6 +3514,12 @@ function botResolveChoice(){
       const held = botLargestHolding(bot);
       if(!held){ finishCardResolution(); return; } // owns nothing — same as the human "no effect" path
       choice = { stock: held };
+      break;
+    }
+    case 'press_your_bet': {
+      const shorted = botLargestShortHolding(bot);
+      if(!shorted){ finishCardResolution(); return; } // nothing shorted — same as the human "no effect" path
+      choice = { stock: shorted };
       break;
     }
     case 'choose_stock_move': {
@@ -4082,6 +4197,7 @@ function priceDeltaBadge(cur, prev){
 function renderTrack(track, curIdx, prevIdx, colorVar, id){
   const zone = id ? DIVIDEND_ZONES[id] : null;
   const zoneStartIdx = zone ? track.length - zone.dots : -1;
+  const shortZone = id ? SHORT_REBATE_ZONES[id] : null;
   let html = `<div class="track">`;
   const centerIdx = (track.length-1)/2;
   track.forEach((pr,i)=>{
@@ -4091,10 +4207,14 @@ function renderTrack(track, curIdx, prevIdx, colorVar, id){
     const inZone = zone && i>=zoneStartIdx;
     const zoneClasses = inZone ? ` div-zone${i===zoneStartIdx?' div-zone-start':''}${i===track.length-1?' div-zone-end':''}` : '';
     const dotRateLabel = inZone ? `${(zone.rates[i-zoneStartIdx]*100).toFixed(1).replace(/\.0$/,'')}%` : '';
-    html += `<div class="dot-wrap ${filled?'active':''} ${edge?'edge':''} ${isCenter?'center':''}${zoneClasses}">
+    const inShortZoneDot = shortZone && i<shortZone.dots;
+    const shortZoneClasses = inShortZoneDot ? ` short-zone${i===0?' short-zone-start':''}${i===shortZone.dots-1?' short-zone-end':''}` : '';
+    const shortRateLabel = inShortZoneDot ? `${(shortZone.rates[shortZone.dots-1-i]*100).toFixed(1).replace(/\.0$/,'')}%` : '';
+    html += `<div class="dot-wrap ${filled?'active':''} ${edge?'edge':''} ${isCenter?'center':''}${zoneClasses}${shortZoneClasses}">
       ${inZone?`<div class="div-zone-rate">${dotRateLabel}</div>`:''}
       <div class="dot ${filled?'filled':''}" style="${filled?`background:${colorVar};color:${colorVar};`:''}"></div>
       <div class="dot-price">${pr}</div>
+      ${inShortZoneDot?`<div class="short-zone-rate">${shortRateLabel}</div>`:''}
     </div>`;
   });
   html += `</div>`;
@@ -4387,8 +4507,9 @@ function renderDetailedHoldingsTable(){
       const sectorLabel = SECTORS[STOCKS[id].sector].label || STOCKS[id].sector;
       const value = -(me.shorts[id]*price(id));
       const basis = Math.round((me.shortBasis[id]||0) / me.shorts[id]); // average proceeds received per share, when the short was opened
-      const gl = shortGainLoss(me,id), fee = shortDividendFeesForKey(me,id);
-      rows.push({ value, html: `<tr>${tkrCell(id,sectorLabel,true)}<td>${me.shorts[id]}</td><td>$${basis}</td><td style="color:var(--down);">-$${Math.abs(value)}</td>${glCell(gl)}${divCell(fee,true)}${glCell(gl-fee)}</tr>` });
+      const gl = shortGainLoss(me,id);
+      const netDiv = shortRebateForKey(me,id) - shortDividendFeesForKey(me,id); // Short Rebate Zone earnings minus dividend-zone short fees, netted for this one row
+      rows.push({ value, html: `<tr>${tkrCell(id,sectorLabel,true)}<td>${me.shorts[id]}</td><td>$${basis}</td><td style="color:var(--down);">-$${Math.abs(value)}</td>${glCell(gl)}${divCell(netDiv, netDiv<0)}${glCell(gl+netDiv)}</tr>` });
     }
   });
   if(rows.length===0) return '';
@@ -4413,11 +4534,13 @@ function renderSidebar(){
     const locked = lockedCash(pl);
     const projDiv = projectedDividends(pl);
     const projIdxDiv = projectedIndexDividend(pl);
+    const projShortRebate = projectedShortRebate(pl);
     html += `<div class="player-card ${i===state.current?'active':''}" style="border-left-color:${pl.color};${pl.eliminated?'opacity:0.5;':''}">
       <div class="p-top"><span class="p-name" style="color:${pl.color};">${pl.name}${pl.bot?' 🤖':''}${i===state.current?' • turn':''}${pl.eliminated?' <span class="worthless-badge">Eliminated</span>':''}${pl.jailTurnsLeft>0?` <span class="jail-tag">🚔 Jailed (${pl.jailTurnsLeft})</span>`:''}</span><span class="p-cash">$${pl.cash}${locked>0?` <span style="color:var(--muted);font-weight:400;">($${locked} locked)</span>`:''}</span></div>
       <div class="p-net">Net worth: $${netWorth(pl)}</div>
       <div class="p-net" style="${projDiv>0?'color:var(--up);':''}">Projected dividends: $${projDiv}</div>
       ${projIdxDiv>0?`<div class="p-net" style="color:var(--up);">+ $${projIdxDiv} SP8 (end of round)</div>`:''}
+      ${projShortRebate>0?`<div class="p-net" style="color:var(--up);">+ $${projShortRebate} short rebate</div>`:''}
     </div>`;
   });
   html += `</div>`;
@@ -4606,9 +4729,13 @@ function renderSidebar(){
     }
     const projDiv = projectedDividends(me);
     const projIdxDiv = projectedIndexDividend(me);
+    const projShortRebate = projectedShortRebate(me);
     html += `<div class="hint" style="margin:8px 0 0;">Projected dividends next turn: <b style="color:${projDiv>0?'var(--up)':'var(--text)'};">$${projDiv}</b></div>`;
     if(projIdxDiv>0){
       html += `<div class="hint" style="margin:2px 0 0;">Projected SP8/Mini SP8 dividend (end of round): <b style="color:var(--up);">$${projIdxDiv}</b></div>`;
+    }
+    if(projShortRebate>0){
+      html += `<div class="hint" style="margin:2px 0 0;">Projected short rebate next turn: <b style="color:var(--up);">$${projShortRebate}</b></div>`;
     }
     // active card-granted perks — small badges so they're not forgotten about
     const perkBadges = [];
@@ -4858,18 +4985,19 @@ function renderHowToPlayModal(){
         <ul>
           <li><b>Buy</b> — own shares outright. Profits if the price rises.</li>
           <li><b>Sell</b> — close out shares you own, banking the current price.</li>
-          <li><b>Short</b> — borrow and sell at today's price, betting it falls. Requires locking collateral (cash) equal to the position's value — that cash is unavailable to spend until you cover.</li>
+          <li><b>Short</b> — borrow and sell at today's price, betting it falls. Requires locking collateral (cash) equal to the position's value — that cash is unavailable to spend until you cover. Costs a flat ${(SHORT_CARRY_FEE_RATE*100)}% carrying fee per turn while open (more in a Dividend Zone, less — or a bonus — in a Short Rebate Zone; see Dividends below).</li>
           <li><b>Cover</b> — buy back a short to close it. Profits if the price fell since you opened it.</li>
         </ul>
         <p>Mini SP8 and SP8 are index funds — flat price, no per-share price impact or fee on buys, can't be shorted. A steady, lower-drama place to park cash.</p>
       </div>
 
       <div class="htp-section" id="htp-dividends">
-        <h3>💰 Dividends</h3>
+        <h3>💰 Dividends & Short Rebates</h3>
         <ul>
-          <li><b>Dividend zones</b> — each stock has a price band near the top of its range that pays a dividend to anyone holding it long, automatically, at the start of your own turn. The rate scales with how deep into the zone the price is. Shorting into a dividend zone costs you an extra fee instead.</li>
+          <li><b>Dividend zones</b> — each stock has a price band near the <b>top</b> of its range that pays a dividend to anyone holding it long, automatically, at the start of your own turn. The rate scales with how deep into the zone the price is. Shorting into a dividend zone costs a small extra penalty on top of the regular short fee (${(SHORT_DIVIDEND_ZONE_PENALTY_RATE*100)}% of that zone's rate).</li>
+          <li><b>Short Rebate Zones</b> — the mirror image, at the <b>bottom</b> of each stock's range. Any short held there earns a bonus payout instead of just paying fees — the deeper the price has fallen, the bigger the rebate. Pure upside for shorts; longs pay nothing extra passing through it.</li>
           <li><b>Mini SP8 / SP8</b> — pay a flat ${(SP8_DIVIDEND_RATE*100)}% of your holding value once per <b>round</b> (after the last player's turn), regardless of price.</li>
-          <li>Your sidebar card and Holdings panel both show a live <b>Projected Dividends</b> estimate — what you'd collect next turn, and separately, what you'd collect from index funds at the end of the round.</li>
+          <li>Your sidebar card and Holdings panel show live <b>Projected</b> estimates for all three — dividends, short rebates, and index fund payouts — so you can see what's coming before it happens.</li>
         </ul>
       </div>
 
@@ -4923,7 +5051,9 @@ function renderHowToPlayModal(){
         <div class="htp-cat">Cash & Stock Bonuses</div>
         <div class="card-ref"><b>Cash Bonus</b> — a flat +$5,000 to +$25,000.</div>
         <div class="card-ref"><b>Stock Gift</b> — 1 free share of a specific stock.</div>
-        <div class="card-ref"><b>Stock Split</b> — pick a stock you own; your shares in it double.</div>
+        <div class="card-ref"><b>Stock Split</b> — pick a stock you own; your shares in it double, capped at +20 shares.</div>
+        <div class="card-ref"><b>Press Your Bet</b> — the short-side mirror of Stock Split: holdable, pick a stock you're shorting, and that short position doubles, capped at +20 shares.</div>
+        <div class="card-ref"><b>Short Seller's Bonus</b> — $1,000 for every share you currently have shorted, across all stocks.</div>
         <div class="card-ref"><b>Steady Hand</b> — $250 for every distinct stock you currently hold.</div>
         <div class="card-ref"><b>Loyalty Bonus</b> — pays out based on how long you've continuously held your longest-held stock.</div>
         <div class="card-ref"><b>Dividend Day</b> — a random sector pays out immediately: you get $100/share owned in its two stocks, everyone else gets $50/share.</div>
@@ -5115,6 +5245,12 @@ function renderChoiceUI(card){
       return `<div class="trade-row"><select id="c_stock">${owned.map(id=>`<option value="${id}">${id} (${p.shares[id]} shares)</option>`).join('')}</select></div>
         <button class="btn full" id="c_split">Split</button>`;
     }
+    case 'press_your_bet': {
+      const shorted = STOCK_IDS.filter(id=>(p.shorts[id]||0)>0);
+      if(shorted.length===0) return `<div class="hint">You have no open shorts — this card has no effect.</div><button class="btn full" id="ackBtn">Continue</button>`;
+      return `<div class="trade-row"><select id="c_stock">${shorted.map(id=>`<option value="${id}">${id} (${p.shorts[id]} shares shorted)</option>`).join('')}</select></div>
+        <button class="btn full" id="c_press">Press Your Bet</button>`;
+    }
     case 'choose_stock_move':
       return `
         <div class="trade-row"><select id="c_stock">${STOCK_IDS.map(id=>`<option value="${id}">${id}</option>`).join('')}</select></div>
@@ -5165,6 +5301,10 @@ function wireChoiceHandlers(card){
       if(byId('c_split')) byId('c_split').onclick = ()=>done({ stock: byId('c_stock').value });
       if(byId('ackBtn')) byId('ackBtn').onclick = ()=>finishCardResolution();
       break;
+    case 'press_your_bet':
+      if(byId('c_press')) byId('c_press').onclick = ()=>done({ stock: byId('c_stock').value });
+      if(byId('ackBtn')) byId('ackBtn').onclick = ()=>finishCardResolution();
+      break;
     case 'choose_stock_move':
       if(byId('c_up')) byId('c_up').onclick = ()=>done({ stock: byId('c_stock').value, dir:1 });
       if(byId('c_down')) byId('c_down').onclick = ()=>done({ stock: byId('c_stock').value, dir:-1 });
@@ -5210,9 +5350,20 @@ function renderCrashRecovery(e){
       <div class="sub">The screen hit an unexpected error and stopped updating. Your game itself is fine — this is just a display hiccup — reloading will pick it right back up.</div>
       <div class="hint mono" style="white-space:pre-wrap;word-break:break-all;margin-bottom:14px;">${((e&&e.message)?e.message:String(e)).replace(/</g,'&lt;')}</div>
       <button class="btn full" id="crashReloadBtn">Reload</button>
+      <button class="btn secondary full" style="margin-top:8px;" id="crashLeaveBtn">Leave This Room</button>
+      <div class="hint" style="margin-top:10px;">Still stuck after reloading? This browser auto-reconnects to whatever room it last remembers — Leave This Room forgets it and sends you back to the start screen instead, in case the room itself keeps hitting the same error.</div>
     </div></div>`;
-    const btn = document.getElementById('crashReloadBtn');
-    if(btn) btn.onclick = ()=>location.reload();
+    const reloadBtn = document.getElementById('crashReloadBtn');
+    if(reloadBtn) reloadBtn.onclick = ()=>location.reload();
+    const leaveBtn = document.getElementById('crashLeaveBtn');
+    if(leaveBtn) leaveBtn.onclick = ()=>{
+      try{ leaveRoom(); }
+      catch(e3){
+        console.error('UpTrend: leaveRoom failed from crash recovery, falling back to a full reload of a cleared room', e3);
+        try{ clearLocalRoom(); }catch(e4){}
+        location.reload();
+      }
+    };
   }catch(e2){
     console.error('UpTrend: even the crash recovery screen failed', e2);
   }
