@@ -1220,29 +1220,42 @@ function dividendZoneRateAt(id, idx){
 /* Short Rebate Zone — the short-side mirror of a Dividend Zone, sitting at
    the BOTTOM of the track instead of the top. Pays shorts held there,
    rewarding a short that's actually working (the stock has fallen hard)
-   instead of only ever costing money to hold. Deliberately smaller than
-   the Dividend Zones (5-9 dots vs 9-14) and lower-rate — a real bonus, not
-   a parity mirror; longs pay nothing extra when a stock passes through it.
-   Rate escalates the DEEPER the price falls (strongest right at $0),
-   mirroring how a Dividend Zone's rate escalates toward the very top. */
+   instead of only ever costing money to hold. Rate escalates the DEEPER
+   the price falls (strongest right near $0), mirroring how a Dividend
+   Zone's rate escalates toward the very top — deliberately steep here, to
+   make riding a short all the way down genuinely lucrative rather than
+   just "less costly than before." Longs pay nothing extra when a stock
+   passes through it. */
 const SHORT_REBATE_ZONES = {
-  QBIT: { dots:5, rates:[0.035, 0.05, 0.08, 0.12, 0.18] },
-  VITA: { dots:5, rates:[0.03, 0.045, 0.07, 0.11, 0.16] },
-  PWR:  { dots:6, rates:[0.02, 0.03, 0.045, 0.065, 0.09, 0.12] },
-  RXCO: { dots:6, rates:[0.02, 0.028, 0.042, 0.06, 0.085, 0.11] },
-  LUXE: { dots:7, rates:[0.014, 0.02, 0.03, 0.042, 0.056, 0.072, 0.09] },
-  OILX: { dots:7, rates:[0.013, 0.018, 0.027, 0.038, 0.05, 0.064, 0.08] },
-  NOVA: { dots:9, rates:[0.009, 0.012, 0.017, 0.022, 0.028, 0.035, 0.043, 0.052, 0.06] },
-  SPRE: { dots:9, rates:[0.009, 0.012, 0.017, 0.022, 0.028, 0.035, 0.043, 0.052, 0.06] },
+  QBIT: { dots:6, rates:[0.10, 0.14, 0.20, 0.32, 0.48, 0.72] },
+  VITA: { dots:6, rates:[0.08, 0.12, 0.18, 0.28, 0.44, 0.64] },
+  PWR:  { dots:7, rates:[0.052, 0.08, 0.12, 0.18, 0.26, 0.36, 0.48] },
+  RXCO: { dots:7, rates:[0.056, 0.08, 0.112, 0.168, 0.24, 0.34, 0.44] },
+  LUXE: { dots:8, rates:[0.04, 0.056, 0.08, 0.12, 0.168, 0.224, 0.288, 0.36] },
+  OILX: { dots:8, rates:[0.036, 0.052, 0.072, 0.108, 0.152, 0.20, 0.256, 0.32] },
+  NOVA: { dots:10, rates:[0.028, 0.036, 0.048, 0.068, 0.088, 0.112, 0.14, 0.172, 0.208, 0.24] },
+  SPRE: { dots:10, rates:[0.028, 0.036, 0.048, 0.068, 0.088, 0.112, 0.14, 0.172, 0.208, 0.24] },
 };
+/* NOVA/QBIT/PWR/OILX have a $0 floor (see STOCK_PRICE_CONFIG) — they can
+   actually go worthless. The very bottom bubble on those four is $0 itself,
+   where there's nothing left to short (or hold long) at all, so it never
+   pays a rebate no matter how the rates table above is tuned. VITA/RXCO/
+   LUXE/SPRE have a positive floor and never hit this case — their bottom
+   bubble is a real price, so it pays normally. */
+function shortRebateZoneExcludesZeroBubble(id){
+  return STOCK_PRICE_CONFIG[id] && STOCK_PRICE_CONFIG[id].bottom===0;
+}
 function inShortRebateZone(id){
   const zone = SHORT_REBATE_ZONES[id];
   if(!zone) return false;
-  return state.stocks[id].idx < zone.dots;
+  const idx = state.stocks[id].idx;
+  if(idx===0 && shortRebateZoneExcludesZeroBubble(id)) return false;
+  return idx < zone.dots;
 }
 function shortRebateZoneRateAt(id, idx){
   const zone = SHORT_REBATE_ZONES[id];
   if(!zone || idx >= zone.dots) return 0;
+  if(idx===0 && shortRebateZoneExcludesZeroBubble(id)) return 0;
   const pos = zone.dots - 1 - idx; // 0 at the zone's entry edge (falling in), max at idx=0 (the very bottom)
   return zone.rates[pos];
 }
