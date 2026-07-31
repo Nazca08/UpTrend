@@ -1393,6 +1393,88 @@ function shortRebateZoneRateAt(id, idx){
   return zone.rates[pos];
 }
 
+/* ===== EXPANSION-ONLY: basis-bubble dividend/rebate decay =====
+   In the base game, a Dividend/Short Rebate Zone's rate depends only on
+   where the price is sitting RIGHT NOW (dividendZoneRateAt/
+   shortRebateZoneRateAt above) — completely untouched by this section,
+   still exactly what the base game uses.
+   In the expansion pack, the rate instead depends on WHICH BUBBLE you
+   actually bought/shorted at, once the stock happens to be in its zone
+   this turn:
+     - Dividends: full ceiling rate (that stock's own top zone rate) if
+       your average cost basis maps to the cheapest bubble that isn't
+       $0. Every bubble higher than that costs you a slice of the
+       ceiling, landing at exactly HALF the ceiling if your basis maps to
+       the very top bubble.
+     - Short rebates: the mirror image — full ceiling rate for an average
+       short basis at the very TOP bubble (the priciest possible entry),
+       decaying the same way down to half ceiling at the cheapest
+       non-zero bubble.
+   The slice lost per bubble isn't a fixed fraction — it's derived per
+   stock as 1 / (relevantSpaces * 2), where relevantSpaces is how many
+   bubbles actually separate the cheapest non-zero bubble from the top
+   bubble on THAT stock's track (29 for a $0-floor stock, 30 for a
+   positive-floor one). Multiplying by 2 is what guarantees the worst
+   bubble always lands at exactly 50% of ceiling on every stock,
+   regardless of how many bubbles it actually has. Being IN the zone at
+   all still gates whether any payout happens this turn — this only ever
+   changes what RATE you get once you're already getting paid. */
+function nearestBubbleIndex(track, pr){
+  let bestIdx = 0, bestDiff = Infinity;
+  track.forEach((v,i)=>{
+    const diff = Math.abs(v-pr);
+    if(diff<bestDiff){ bestDiff = diff; bestIdx = i; }
+  });
+  return bestIdx;
+}
+function cheapestNonZeroBubbleIdx(id){
+  return (STOCK_PRICE_CONFIG[id] && STOCK_PRICE_CONFIG[id].bottom===0) ? 1 : 0;
+}
+function basisDividendRate(p, id){
+  const zone = DIVIDEND_ZONES[id];
+  if(!zone) return 0;
+  const shares = p.shares[id]||0;
+  if(shares<=0) return 0;
+  const avgCost = (p.costBasis[id]||0)/shares;
+  const track = state.stocks[id].track;
+  const topIdx = track.length-1;
+  const cheapIdx = cheapestNonZeroBubbleIdx(id);
+  const spaces = topIdx - cheapIdx;
+  const ceiling = zone.rates[zone.rates.length-1];
+  if(spaces<=0) return ceiling;
+  const yourIdx = nearestBubbleIndex(track, avgCost);
+  const steps = Math.min(spaces, Math.max(0, yourIdx - cheapIdx));
+  let rate = ceiling * (1 - steps/(spaces*2));
+  if(state.dividendRateModifier) rate *= state.dividendRateModifier.multiplier;
+  return Math.max(0, rate);
+}
+function basisShortRebateRate(p, id){
+  const zone = SHORT_REBATE_ZONES[id];
+  if(!zone) return 0;
+  const shorts = p.shorts[id]||0;
+  if(shorts<=0) return 0;
+  const avgBasis = (p.shortBasis[id]||0)/shorts;
+  const track = state.stocks[id].track;
+  const topIdx = track.length-1;
+  const cheapIdx = cheapestNonZeroBubbleIdx(id);
+  const spaces = topIdx - cheapIdx;
+  const ceiling = zone.rates[zone.rates.length-1];
+  if(spaces<=0) return ceiling;
+  const yourIdx = nearestBubbleIndex(track, avgBasis);
+  const steps = Math.min(spaces, Math.max(0, topIdx - yourIdx));
+  const rate = ceiling * (1 - steps/(spaces*2));
+  return Math.max(0, rate);
+}
+/* Picks basis-bubble rate in expansion games, the original dot-position
+   rate in base games — the single switch point every payout/preview call
+   below goes through, so the base game's math is never touched. */
+function effectiveDividendRate(p, id, idx){
+  return (state && state.expansionMode) ? basisDividendRate(p, id) : dividendZoneRateAt(id, idx);
+}
+function effectiveShortRebateRate(p, id, idx){
+  return (state && state.expansionMode) ? basisShortRebateRate(p, id) : shortRebateZoneRateAt(id, idx);
+}
+
 function freshState(players, gameLength){
   const gl = gameLength || { mode:'networth', target:500000 };
   const winCondition = gl.mode==='timer'
@@ -1863,7 +1945,7 @@ function projectedDividends(p){
   STOCK_IDS.forEach(id=>{
     const heldLong = p.shares[id]||0;
     if(heldLong>0 && inDividendZone(id)){
-      const rate = dividendZoneRateAt(id, state.stocks[id].idx);
+      const rate = effectiveDividendRate(p, id, state.stocks[id].idx);
       total += Math.round(heldLong*price(id)*rate);
     }
   });
@@ -1883,7 +1965,7 @@ function projectedShortRebate(p){
   STOCK_IDS.forEach(id=>{
     const heldShort = p.shorts[id]||0;
     if(heldShort>0 && inShortRebateZone(id)){
-      const rate = shortRebateZoneRateAt(id, state.stocks[id].idx);
+      const rate = effectiveShortRebateRate(p, id, state.stocks[id].idx);
       total += Math.round(heldShort*price(id)*rate);
     }
   });
@@ -2616,9 +2698,10 @@ function tickShortFeesAndDividends(ownerIndex){
       if(carry>0){ p.cash -= carry; totalFee += carry; }
     }
     if(inDividendZone(id)){
-      const rate = dividendZoneRateAt(id, state.stocks[id].idx);
+      const rate = dividendZoneRateAt(id, state.stocks[id].idx); // penalty below is about market conditions right now, not this player's own entry — always the plain dot rate, expansion or not
       if(heldLong>0){
-        const pay = Math.round(heldLong*pr*rate);
+        const payRate = effectiveDividendRate(p, id, state.stocks[id].idx);
+        const pay = Math.round(heldLong*pr*payRate);
         if(pay>0){ p.cash += pay; totalDiv += pay; p.dividendsCollected[id] = (p.dividendsCollected[id]||0) + pay; }
       }
       if(heldShort>0){
@@ -2631,7 +2714,7 @@ function tickShortFeesAndDividends(ownerIndex){
     // shorts held there, on top of (not instead of) the flat carry fee
     // above; longs pay nothing extra for a stock passing through it.
     if(heldShort>0 && inShortRebateZone(id)){
-      const rebateRate = shortRebateZoneRateAt(id, state.stocks[id].idx);
+      const rebateRate = effectiveShortRebateRate(p, id, state.stocks[id].idx);
       const rebate = Math.round(heldShort*pr*rebateRate);
       if(rebate>0){ p.cash += rebate; totalDiv += rebate; p.shortRebatesCollected[id] = (p.shortRebatesCollected[id]||0) + rebate; }
     }
@@ -4394,10 +4477,25 @@ function priceDeltaBadge(cur, prev){
   return cur>prev ? `<span class="price-delta up">▲ up</span>` : `<span class="price-delta down">▼ down</span>`;
 }
 
+/* Compact label for a track dot's price — used for any stock whose
+   middle bubble (center price) is $10,000+, since the normal full-digit
+   label ("184323") is too cluttered to read at the tiny dot-label size
+   once prices get that large. Rounds to the nearest hundred and shows
+   one decimal of a thousand, dropping the decimal when it's a whole
+   number, so 50000->"$50k", 55970->"$56k", 62134->"$62.1k",
+   78420->"$78.4k". Values under $1,000 (only possible on Bitcoin, near
+   its $1 floor) print as-is, uncompacted. */
+function formatCompactPrice(pr){
+  if(pr < 1000) return '$'+pr;
+  const k = Math.round(pr/100) / 10; // rounds to the nearest hundred, expressed as thousands
+  return '$'+(Number.isInteger(k) ? k.toFixed(0) : k.toFixed(1)) + 'k';
+}
 function renderTrack(track, curIdx, prevIdx, colorVar, id){
   const zone = id ? DIVIDEND_ZONES[id] : null;
   const zoneStartIdx = zone ? track.length - zone.dots : -1;
   const shortZone = id ? SHORT_REBATE_ZONES[id] : null;
+  const priceCfg = id ? STOCK_PRICE_CONFIG[id] : null;
+  const useCompactPrice = priceCfg && priceCfg.center >= 10000;
   let html = `<div class="track">`;
   const centerIdx = (track.length-1)/2;
   track.forEach((pr,i)=>{
@@ -4410,10 +4508,11 @@ function renderTrack(track, curIdx, prevIdx, colorVar, id){
     const inShortZoneDot = shortZone && i<shortZone.dots && !(i===0 && shortRebateZoneExcludesZeroBubble(id));
     const shortZoneClasses = inShortZoneDot ? ` short-zone${i===(shortRebateZoneExcludesZeroBubble(id)?1:0)?' short-zone-start':''}${i===shortZone.dots-1?' short-zone-end':''}` : '';
     const shortRateLabel = inShortZoneDot ? `${(shortZone.rates[shortZone.dots-1-i]*100).toFixed(1).replace(/\.0$/,'')}%` : '';
+    const priceLabel = useCompactPrice ? formatCompactPrice(pr) : pr;
     html += `<div class="dot-wrap ${filled?'active':''} ${edge?'edge':''} ${isCenter?'center':''}${zoneClasses}${shortZoneClasses}">
       ${inZone?`<div class="div-zone-rate">${dotRateLabel}</div>`:''}
       <div class="dot ${filled?'filled':''}" style="${filled?`background:${colorVar};color:${colorVar};`:''}"></div>
-      <div class="dot-price">${pr}</div>
+      <div class="dot-price">${priceLabel}</div>
       ${inShortZoneDot?`<div class="short-zone-rate">${shortRateLabel}</div>`:''}
     </div>`;
   });
