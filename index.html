@@ -21,6 +21,7 @@
     --energy:#FFB454;
     --health:#5CD6C0;
     --consumer:#6FA8FF;
+    --crypto:#FF7A9C;
     --sp:#F5A623;
     --spx:#C77DFF;
   }
@@ -328,13 +329,13 @@
 
 <script type="module">
 /* ============================= CONFIG ============================= */
-const SECTORS = {
+const BASE_SECTORS = {
   Tech:      { color:'var(--tech)',     top:400, bottom:0,  stocks:['NOVA','QBIT'] },
   Energy:    { color:'var(--energy)',   top:300, bottom:0,  stocks:['PWR','OILX'] },
   Health:    { color:'var(--health)',   top:220, bottom:15, stocks:['VITA','RXCO'] },
   Consumer:  { color:'var(--consumer)', top:160, bottom:35, stocks:['LUXE','SPRE'], label:'Consumer Discretionary' },
 };
-const STOCKS = {
+const BASE_STOCKS = {
   NOVA:{ name:'Nova Systems',  sector:'Tech' },
   QBIT:{ name:'Qubit AI',      sector:'Tech' },
   PWR: { name:'Ampere Power',  sector:'Energy' },
@@ -344,7 +345,53 @@ const STOCKS = {
   LUXE:{ name:'Luxeway',       sector:'Consumer' },
   SPRE:{ name:'SpreeMart',     sector:'Consumer' },
 };
-const STOCK_IDS = Object.keys(STOCKS);
+
+/* ===== EXPANSION PACK: "Digital Assets" =====
+   Adds a 5th sector (Crypto) and widens every sector from 2 stocks to 4.
+   Everything downstream (deck building, board rendering, per-player
+   holdings) is already keyed off SECTORS/STOCKS/STOCK_IDS dynamically, so
+   this dataset just needs to be swapped in via setActiveMode() below —
+   no other game logic needs to know the expansion exists. */
+const EXPANSION_SECTORS = {
+  Tech:      { color:'var(--tech)',     top:400, bottom:0,  stocks:['NOVA','QBIT','SYNC','HELX'] },
+  Energy:    { color:'var(--energy)',   top:300, bottom:0,  stocks:['PWR','OILX','SOLR','GRID'] },
+  Health:    { color:'var(--health)',   top:220, bottom:15, stocks:['VITA','RXCO','GENE','CARE'] },
+  Consumer:  { color:'var(--consumer)', top:160, bottom:35, stocks:['LUXE','SPRE','BREW','TREK'], label:'Consumer Discretionary' },
+  Crypto:    { color:'var(--crypto)',   top:500, bottom:0,  stocks:['LDGR','CHAN','VLTX','FORG'], label:'Digital Assets' },
+};
+const EXPANSION_STOCKS = {
+  NOVA:{ name:'Nova Systems',   sector:'Tech' },
+  QBIT:{ name:'Qubit AI',       sector:'Tech' },
+  SYNC:{ name:'SyncWave Robotics', sector:'Tech' },
+  HELX:{ name:'Helix Cloud',    sector:'Tech' },
+  PWR: { name:'Ampere Power',   sector:'Energy' },
+  OILX:{ name:'OilCross',       sector:'Energy' },
+  SOLR:{ name:'Solora Renewables', sector:'Energy' },
+  GRID:{ name:'GridForge Utilities', sector:'Energy' },
+  VITA:{ name:'Vitalis Health', sector:'Health' },
+  RXCO:{ name:'RxCore',         sector:'Health' },
+  GENE:{ name:'GenomeWorks',    sector:'Health' },
+  CARE:{ name:'CareBridge Systems', sector:'Health' },
+  LUXE:{ name:'Luxeway',        sector:'Consumer' },
+  SPRE:{ name:'SpreeMart',      sector:'Consumer' },
+  BREW:{ name:'BrewCraft Co.',  sector:'Consumer' },
+  TREK:{ name:'TrekGear Outdoors', sector:'Consumer' },
+  LDGR:{ name:'LedgerPeak',     sector:'Crypto' },
+  CHAN:{ name:'ChainBridge',    sector:'Crypto' },
+  VLTX:{ name:'VaultX Custody', sector:'Crypto' },
+  FORG:{ name:'CoinForge Mining', sector:'Crypto' },
+};
+
+/* Active dataset pointers — reassigned by setActiveMode() below. `let`
+   (not `const`) on purpose: every other function in this file reads these
+   as module-scope closures, so swapping the bindings before a room's game
+   state is built (or the moment a synced state tells us which mode it's
+   in) is all it takes for deck-building, price tracks, and rendering to
+   pick up the expansion content with zero other changes. */
+let activeMode = 'base'; // 'base' | 'expansion'
+let SECTORS = BASE_SECTORS;
+let STOCKS = BASE_STOCKS;
+let STOCK_IDS = Object.keys(STOCKS);
 const STOCK_DOTS_PER_SIDE = 15;  // 15 left of center + center + 15 right, for every individual stock
 const SP_DOTS_PER_SIDE = 15;     // SP8 gets its own, wider track: 15 left + center + 15 right
 const STOCK_CENTER_IDX = STOCK_DOTS_PER_SIDE;
@@ -988,6 +1035,13 @@ function mergeRemote(remote){
     const locals = state ? {} : localDefaults();
     if(state) LOCAL_ONLY_KEYS.forEach(k=>{ locals[k] = state[k]; });
     state = { ...remote, ...locals };
+    // Whatever dataset THIS synced state was actually built with wins —
+    // never inferred from whatever button this particular tab happened to
+    // click. Matters most for someone who joins an expansion room via a
+    // raw room code or shared link, never having touched the Expansion
+    // Mode button themselves. Must run before repairCollections(), which
+    // reads STOCK_IDS to backfill missing per-stock fields.
+    setActiveMode(state.expansionMode ? 'expansion' : 'base');
     repairCollections(state);
     lastKnownSnapshot = snapshotFields(extractSynced(state)); // our diff baseline is now up to date too
   } finally {
@@ -1131,11 +1185,15 @@ async function wipeGame(){
 function leaveRoom(){
   if(unsubscribeGame){ unsubscribeGame(); unsubscribeGame = null; }
   roomCode = null; state = null; myPlayerIndex = null; lastKnownSnapshot = {}; jailAlertLogLen = -1; leaderboardRecorded = false; botTurnRunning = false; botStuckVisible = false; botStepFailCount = 0; botStepFailTurnKey = null;
+  // Deliberately does NOT reset activeMode/landingView — "Use a Different
+  // Room" should drop you back on whichever landing screen (classic or
+  // expansion) you were already using, not silently switch modes on you.
   clearLocalRoom();
   render();
 }
 
 let myPlayerIndex = null; // which seat THIS browser tab is playing — resets on reload
+let landingView = 'main'; // 'main' | 'expansion' — which pre-room screen to show; only meaningful while roomCode is null
 
 /* ============================= STATE ============================= */
 let state = null;
@@ -1150,7 +1208,7 @@ let state = null;
 // floors lowered ~25% over the original ladder to give the 2 extra dots on
 // each end (below) genuinely bigger jumps rather than finer subdivisions of
 // the same old range.
-const STOCK_PRICE_CONFIG = {
+const BASE_STOCK_PRICE_CONFIG = {
   NOVA: { center:5000, top:12650, bottom:0 },
   QBIT: { center:1200, top:5500,  bottom:0 },
   PWR:  { center:2800, top:9650,  bottom:0 },
@@ -1159,6 +1217,27 @@ const STOCK_PRICE_CONFIG = {
   RXCO: { center:1400, top:3550,  bottom:160 },
   LUXE: { center:3200, top:5900,  bottom:840 },
   SPRE: { center:800,  top:1450,  bottom:210 },
+};
+/* Expansion pack adds 12 new stocks. Existing 8 keep their exact original
+   numbers; new siblings are pitched at a similar order of magnitude to the
+   stock they share a sector with, so nothing in the new sector feels out
+   of place next to the originals. Crypto is deliberately the wildest —
+   every one of its four stocks has a $0 floor (can go worthless) and the
+   widest top-to-center ratio in the game. */
+const EXPANSION_STOCK_PRICE_CONFIG = {
+  ...BASE_STOCK_PRICE_CONFIG,
+  SYNC: { center:2600, top:6800,  bottom:0 },
+  HELX: { center:700,  top:2600,  bottom:0 },
+  SOLR: { center:1500, top:5200,  bottom:0 },
+  GRID: { center:2200, top:4200,  bottom:600 },
+  GENE: { center:1800, top:6200,  bottom:0 },
+  CARE: { center:1600, top:3200,  bottom:300 },
+  BREW: { center:1100, top:2200,  bottom:180 },
+  TREK: { center:1900, top:3800,  bottom:350 },
+  LDGR: { center:4000, top:16000, bottom:0 },
+  CHAN: { center:1600, top:7200,  bottom:0 },
+  VLTX: { center:900,  top:4500,  bottom:0 },
+  FORG: { center:350,  top:2000,  bottom:0 },
 };
 
 /* Dividend zones: the top N bubbles of a stock's own track pay a per-turn
@@ -1189,7 +1268,7 @@ const STOCK_PRICE_CONFIG = {
    penalty on top of the flat 1% per-turn short carrying fee every open
    short pays regardless of zone — mirrors Dividend Day's drawer/everyone-
    else split, and is what makes shorting a zone-topped stock costly. */
-const DIVIDEND_ZONES = {
+const BASE_DIVIDEND_ZONES = {
   QBIT: { dots:9,  rates:[0.08, 0.087, 0.103, 0.128, 0.16, 0.2, 0.247, 0.3, 0.36] },
   VITA: { dots:9,  rates:[0.07, 0.076, 0.091, 0.113, 0.142, 0.177, 0.219, 0.267, 0.32] },
   PWR:  { dots:11, rates:[0.05, 0.053, 0.06, 0.072, 0.087, 0.105, 0.126, 0.15, 0.177, 0.207, 0.24] },
@@ -1198,6 +1277,23 @@ const DIVIDEND_ZONES = {
   OILX: { dots:13, rates:[0.035, 0.036, 0.04, 0.045, 0.052, 0.061, 0.071, 0.082, 0.095, 0.109, 0.125, 0.142, 0.16] },
   NOVA: { dots:14, rates:[0.025, 0.026, 0.028, 0.032, 0.036, 0.042, 0.049, 0.056, 0.065, 0.074, 0.084, 0.095, 0.107, 0.12] },
   SPRE: { dots:14, rates:[0.025, 0.026, 0.028, 0.032, 0.036, 0.042, 0.049, 0.056, 0.065, 0.074, 0.084, 0.095, 0.107, 0.12] },
+};
+/* Expansion pack: dividend zones for the 8 new non-Crypto stocks, same
+   shape/scale as their sector sibling above. Crypto is deliberately left
+   out of this table entirely — none of its 4 stocks have a passive top-
+   of-track dividend zone, which fits the theme (crypto doesn't pay
+   yield) and gives the sector a genuinely different feel: all of its
+   upside has to be taken as price appreciation, not collected income. */
+const EXPANSION_DIVIDEND_ZONES = {
+  ...BASE_DIVIDEND_ZONES,
+  SYNC: { dots:9,  rates:[0.075, 0.082, 0.097, 0.121, 0.151, 0.189, 0.233, 0.284, 0.34] },
+  HELX: { dots:14, rates:[0.03, 0.031, 0.034, 0.038, 0.043, 0.05, 0.058, 0.067, 0.077, 0.088, 0.1, 0.113, 0.127, 0.143] },
+  SOLR: { dots:10, rates:[0.06, 0.065, 0.075, 0.09, 0.108, 0.13, 0.155, 0.183, 0.213, 0.246] },
+  GRID: { dots:12, rates:[0.045, 0.047, 0.052, 0.06, 0.07, 0.083, 0.098, 0.115, 0.134, 0.155, 0.178, 0.203] },
+  GENE: { dots:9,  rates:[0.07, 0.076, 0.09, 0.112, 0.14, 0.175, 0.216, 0.264, 0.316] },
+  CARE: { dots:12, rates:[0.045, 0.047, 0.052, 0.06, 0.07, 0.083, 0.098, 0.115, 0.134, 0.155, 0.178, 0.203] },
+  BREW: { dots:13, rates:[0.038, 0.04, 0.044, 0.05, 0.057, 0.066, 0.077, 0.089, 0.103, 0.118, 0.135, 0.153, 0.173] },
+  TREK: { dots:11, rates:[0.05, 0.053, 0.06, 0.072, 0.087, 0.105, 0.126, 0.15, 0.177, 0.207, 0.24] },
 };
 const SHORT_CARRY_FEE_RATE = 0.01; // 1% of a short's current liability, charged every one of your own turns
 const SHORT_DIVIDEND_ZONE_PENALTY_RATE = 0.10; // extra penalty a short pays on top of the carry fee, when the stock is also in its (long) Dividend Zone — 10% of that zone's rate
@@ -1226,7 +1322,7 @@ function dividendZoneRateAt(id, idx){
    make riding a short all the way down genuinely lucrative rather than
    just "less costly than before." Longs pay nothing extra when a stock
    passes through it. */
-const SHORT_REBATE_ZONES = {
+const BASE_SHORT_REBATE_ZONES = {
   QBIT: { dots:6, rates:[0.10, 0.14, 0.20, 0.32, 0.48, 0.72] },
   VITA: { dots:6, rates:[0.08, 0.12, 0.18, 0.28, 0.44, 0.64] },
   PWR:  { dots:7, rates:[0.052, 0.08, 0.12, 0.18, 0.26, 0.36, 0.48] },
@@ -1236,6 +1332,56 @@ const SHORT_REBATE_ZONES = {
   NOVA: { dots:10, rates:[0.028, 0.036, 0.048, 0.068, 0.088, 0.112, 0.14, 0.172, 0.208, 0.24] },
   SPRE: { dots:10, rates:[0.028, 0.036, 0.048, 0.068, 0.088, 0.112, 0.14, 0.172, 0.208, 0.24] },
 };
+/* Expansion pack: short rebate zones for all 12 new stocks. Crypto gets
+   the steepest curve in the game — crashing hardest and paying shorts
+   the most for riding it down is the point of the sector. */
+const EXPANSION_SHORT_REBATE_ZONES = {
+  ...BASE_SHORT_REBATE_ZONES,
+  SYNC: { dots:6, rates:[0.09, 0.13, 0.19, 0.30, 0.46, 0.68] },
+  HELX: { dots:10, rates:[0.03, 0.038, 0.05, 0.07, 0.09, 0.115, 0.145, 0.178, 0.215, 0.25] },
+  SOLR: { dots:7, rates:[0.06, 0.09, 0.13, 0.19, 0.27, 0.37, 0.50] },
+  GRID: { dots:9, rates:[0.04, 0.05, 0.065, 0.085, 0.108, 0.135, 0.165, 0.198, 0.23] },
+  GENE: { dots:6, rates:[0.09, 0.13, 0.19, 0.30, 0.46, 0.68] },
+  CARE: { dots:9, rates:[0.04, 0.05, 0.065, 0.085, 0.108, 0.135, 0.165, 0.198, 0.23] },
+  BREW: { dots:8, rates:[0.038, 0.054, 0.078, 0.116, 0.162, 0.216, 0.278, 0.35] },
+  TREK: { dots:7, rates:[0.052, 0.08, 0.12, 0.18, 0.26, 0.36, 0.48] },
+  LDGR: { dots:12, rates:[0.05, 0.06, 0.075, 0.095, 0.12, 0.15, 0.19, 0.24, 0.30, 0.38, 0.47, 0.58] },
+  CHAN: { dots:10, rates:[0.06, 0.075, 0.095, 0.12, 0.155, 0.20, 0.26, 0.34, 0.44, 0.56] },
+  VLTX: { dots:9, rates:[0.065, 0.085, 0.11, 0.145, 0.19, 0.25, 0.33, 0.43, 0.56] },
+  FORG: { dots:8, rates:[0.08, 0.11, 0.15, 0.21, 0.29, 0.40, 0.54, 0.72] },
+};
+
+// Active pointers for the three zone/price tables above — same pattern as
+// SECTORS/STOCKS/STOCK_IDS near the top of the file, reassigned in bulk by
+// setActiveMode() just below.
+let STOCK_PRICE_CONFIG = BASE_STOCK_PRICE_CONFIG;
+let DIVIDEND_ZONES = BASE_DIVIDEND_ZONES;
+let SHORT_REBATE_ZONES = BASE_SHORT_REBATE_ZONES;
+
+/* Swaps every active dataset pointer between the base game and the
+   expansion pack. Called (a) the moment the player picks Expansion Mode
+   from the landing screen, before any room/state exists yet, and (b)
+   inside mergeRemote() every time synced state arrives, so a player who
+   joins an expansion room directly via room code or a shared link ends up
+   on the same dataset as everyone else in it — never inferred locally,
+   always driven by state.expansionMode once a game exists. */
+function setActiveMode(mode){
+  activeMode = mode==='expansion' ? 'expansion' : 'base';
+  if(activeMode==='expansion'){
+    SECTORS = EXPANSION_SECTORS;
+    STOCKS = EXPANSION_STOCKS;
+    STOCK_PRICE_CONFIG = EXPANSION_STOCK_PRICE_CONFIG;
+    DIVIDEND_ZONES = EXPANSION_DIVIDEND_ZONES;
+    SHORT_REBATE_ZONES = EXPANSION_SHORT_REBATE_ZONES;
+  } else {
+    SECTORS = BASE_SECTORS;
+    STOCKS = BASE_STOCKS;
+    STOCK_PRICE_CONFIG = BASE_STOCK_PRICE_CONFIG;
+    DIVIDEND_ZONES = BASE_DIVIDEND_ZONES;
+    SHORT_REBATE_ZONES = BASE_SHORT_REBATE_ZONES;
+  }
+  STOCK_IDS = Object.keys(STOCKS);
+}
 /* NOVA/QBIT/PWR/OILX have a $0 floor (see STOCK_PRICE_CONFIG) — they can
    actually go worthless. The very bottom bubble on those four is $0 itself,
    where there's nothing left to short (or hold long) at all, so it never
@@ -1281,6 +1427,7 @@ function freshState(players, gameLength){
   const spx = { idx: 0, track: spxTrack, prevIdx: 0, history:[spxTrack[0]], tradeMarkers:[], tradeLog:[] };
   return {
     stocks, sp, spx,
+    expansionMode: activeMode==='expansion', // stamped at creation so every client (including ones that joined by room code, never touched the landing button) converges on the same dataset once this syncs — see mergeRemote()
     players: players.map((name,i)=>({
       name, cash: START_CASH,
       color: PLAYER_COLORS[i % PLAYER_COLORS.length],
@@ -3958,7 +4105,7 @@ const app = document.getElementById('app');
 function esc(s){ return s; }
 
 function renderSetup(){
-  if(!roomCode){ renderLandingScreen(); return; }
+  if(!roomCode){ (landingView==='expansion' ? renderExpansionLandingScreen : renderLandingScreen)(); return; }
   if(!state){ renderCreateGameScreen(); return; }
   if(state.phase==='lobby'){ renderLobbyScreen(); return; }
   renderWhoAreYouScreen();
@@ -3982,6 +4129,10 @@ function renderLandingScreen(){
         </div>
         <button class="btn secondary full" id="joinRoomBtn">Join Game</button>
         <div class="hint" id="joinError" style="color:var(--down);"></div>
+        <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line);">
+          <button class="btn full" id="expansionModeBtn" style="background:linear-gradient(135deg,var(--crypto),var(--tech));border:none;">🧪 Try the Expansion: Digital Assets</button>
+          <div class="hint" style="margin-top:6px;">A new Crypto sector, and every sector now runs 4 stocks instead of 2 — separate rooms, doesn't touch your regular games.</div>
+        </div>
       </div>
     </div>
     ${renderHowToPlayModal()}`;
@@ -3994,7 +4145,44 @@ function renderLandingScreen(){
     if(code.length!==6){ document.getElementById('joinError').textContent = 'Enter the 6-digit code your host shared with you.'; return; }
     subscribeToRoom(code); render();
   };
+  document.getElementById('expansionModeBtn').onclick = ()=>{ landingView = 'expansion'; setActiveMode('expansion'); render(); };
   if(document.getElementById('closeHowToPlayBtn')) document.getElementById('closeHowToPlayBtn').onclick = ()=>{ showHowToPlay = false; renderLandingScreen(); };
+}
+
+/* Expansion Mode's own landing screen — a distinct "room" from the base
+   game's landing screen, reached via the button above. Create/Join work
+   exactly like the base game (same subscribeToRoom/genRoomCode plumbing),
+   just with activeMode already set to 'expansion' before the room is
+   created, so freshState() stamps expansionMode:true into it and every
+   downstream system (deck, prices, board) picks up the wider dataset. */
+function renderExpansionLandingScreen(){
+  app.innerHTML = `
+    <div class="overlay">
+      <div class="modal">
+        <div style="display:inline-block;font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--crypto);background:rgba(255,122,156,0.12);padding:3px 8px;border-radius:5px;margin-bottom:8px;">Expansion Pack</div>
+        <h2><span style="color:#FFFFFF;">Up</span><span style="color:var(--up);">Trend</span><span style="color:var(--crypto);">: Digital Assets</span></h2>
+        <div class="sub">Same game, one new Crypto sector, and 4 stocks per sector instead of 2. Rooms created here are separate from the regular game.</div>
+        <button class="btn full" id="expCreateRoomBtn" style="background:linear-gradient(135deg,var(--crypto),var(--tech));border:none;">Create Expansion Game</button>
+        <button class="btn secondary full" id="expVsBotBtn" style="margin-top:8px;">Play vs Bot (1 Player)</button>
+        ${renderGameLengthField('landing')}
+        <div class="hint" style="margin:14px 0 8px 0;">— or join an expansion game already running —</div>
+        <div class="trade-row">
+          <input type="text" id="expJoinCodeInput" inputmode="numeric" maxlength="6" placeholder="6-digit room code" style="flex:1;padding:9px 10px;border-radius:8px;background:var(--panel-2);border:1px solid var(--line);color:var(--text);font-family:'IBM Plex Mono';">
+        </div>
+        <button class="btn secondary full" id="expJoinRoomBtn">Join Game</button>
+        <div class="hint" id="expJoinError" style="color:var(--down);"></div>
+        <button class="btn secondary full" id="backToMainBtn" style="margin-top:16px;">← Back to Classic UpTrend</button>
+      </div>
+    </div>`;
+  wireGameLengthField('landing', renderExpansionLandingScreen);
+  document.getElementById('expCreateRoomBtn').onclick = ()=>{ setActiveMode('expansion'); subscribeToRoom(genRoomCode()); render(); };
+  document.getElementById('expVsBotBtn').onclick = ()=>{ setActiveMode('expansion'); subscribeToRoom(genRoomCode()); startBotGame(); };
+  document.getElementById('expJoinRoomBtn').onclick = ()=>{
+    const code = document.getElementById('expJoinCodeInput').value.trim().replace(/\D/g,'');
+    if(code.length!==6){ document.getElementById('expJoinError').textContent = 'Enter the 6-digit code your host shared with you.'; return; }
+    setActiveMode('expansion'); subscribeToRoom(code); render();
+  };
+  document.getElementById('backToMainBtn').onclick = ()=>{ landingView = 'main'; setActiveMode('base'); render(); };
 }
 
 function renderCreateGameScreen(){
@@ -4002,7 +4190,8 @@ function renderCreateGameScreen(){
   app.innerHTML = `
     <div class="overlay">
       <div class="modal">
-        <h2><span style="color:#FFFFFF;">Up</span><span style="color:var(--up);">Trend</span></h2>
+        ${activeMode==='expansion' ? `<div style="display:inline-block;font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--crypto);background:rgba(255,122,156,0.12);padding:3px 8px;border-radius:5px;margin-bottom:8px;">Expansion Pack</div>` : ''}
+        <h2><span style="color:#FFFFFF;">Up</span><span style="color:var(--up);">Trend</span>${activeMode==='expansion' ? `<span style="color:var(--crypto);">: Digital Assets</span>` : ''}</h2>
         <div class="selected-ticker-box" style="margin-bottom:12px;">
           <span class="stx">Room Code</span>
           <span class="spx mono" style="font-size:18px;letter-spacing:1px;">${roomCode}</span>
@@ -4038,7 +4227,7 @@ function createLobby(count){
   // Empty seats use '' (not null!) — Firebase Realtime Database silently
   // strips null entries out of arrays/objects on write, which was quietly
   // collapsing a 2-seat lobby down to 1 the moment it hit the database.
-  state = { phase:'lobby', lobbySeats: Array(count).fill(''), lobbyBots: Array(count).fill(false), gameLength, version:0, createdAt: Date.now(), ...localDefaults() };
+  state = { phase:'lobby', lobbySeats: Array(count).fill(''), lobbyBots: Array(count).fill(false), gameLength, expansionMode: activeMode==='expansion', version:0, createdAt: Date.now(), ...localDefaults() };
   lastKnownSnapshot = {}; // this is a whole new structure — nothing to diff against yet
   persistFull(); render();
 }
