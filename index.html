@@ -347,39 +347,34 @@ const BASE_STOCKS = {
 };
 
 /* ===== EXPANSION PACK: "Digital Assets" =====
-   Adds a 5th sector (Crypto) and widens every sector from 2 stocks to 4.
-   Everything downstream (deck building, board rendering, per-player
-   holdings) is already keyed off SECTORS/STOCKS/STOCK_IDS dynamically, so
-   this dataset just needs to be swapped in via setActiveMode() below —
-   no other game logic needs to know the expansion exists. */
+   Adds a 5th sector (Crypto, 2 stocks) and gives each of the 4 existing
+   sectors 1 more stock (2 -> 3). 6 new stocks total. Everything downstream
+   (deck building, board rendering, per-player holdings) is already keyed
+   off SECTORS/STOCKS/STOCK_IDS dynamically, so this dataset just needs to
+   be swapped in via setActiveMode() below — no other game logic needs to
+   know the expansion exists. */
 const EXPANSION_SECTORS = {
-  Tech:      { color:'var(--tech)',     top:400, bottom:0,  stocks:['NOVA','QBIT','SYNC','HELX'] },
-  Energy:    { color:'var(--energy)',   top:300, bottom:0,  stocks:['PWR','OILX','SOLR','GRID'] },
-  Health:    { color:'var(--health)',   top:220, bottom:15, stocks:['VITA','RXCO','GENE','CARE'] },
-  Consumer:  { color:'var(--consumer)', top:160, bottom:35, stocks:['LUXE','SPRE','BREW','TREK'], label:'Consumer Discretionary' },
-  Crypto:    { color:'var(--crypto)',   top:500, bottom:0,  stocks:['LDGR','CHAN','VLTX','FORG'], label:'Digital Assets' },
+  Tech:      { color:'var(--tech)',     top:400, bottom:0,  stocks:['NOVA','QBIT','SYNC'] },
+  Energy:    { color:'var(--energy)',   top:300, bottom:0,  stocks:['PWR','OILX','SOLR'] },
+  Health:    { color:'var(--health)',   top:220, bottom:15, stocks:['VITA','RXCO','GENE'] },
+  Consumer:  { color:'var(--consumer)', top:160, bottom:35, stocks:['LUXE','SPRE','BREW'], label:'Consumer Discretionary' },
+  Crypto:    { color:'var(--crypto)',   top:500, bottom:0,  stocks:['BTC','ETX'], label:'Digital Assets' },
 };
 const EXPANSION_STOCKS = {
   NOVA:{ name:'Nova Systems',   sector:'Tech' },
   QBIT:{ name:'Qubit AI',       sector:'Tech' },
   SYNC:{ name:'SyncWave Robotics', sector:'Tech' },
-  HELX:{ name:'Helix Cloud',    sector:'Tech' },
   PWR: { name:'Ampere Power',   sector:'Energy' },
   OILX:{ name:'OilCross',       sector:'Energy' },
   SOLR:{ name:'Solora Renewables', sector:'Energy' },
-  GRID:{ name:'GridForge Utilities', sector:'Energy' },
   VITA:{ name:'Vitalis Health', sector:'Health' },
   RXCO:{ name:'RxCore',         sector:'Health' },
   GENE:{ name:'GenomeWorks',    sector:'Health' },
-  CARE:{ name:'CareBridge Systems', sector:'Health' },
   LUXE:{ name:'Luxeway',        sector:'Consumer' },
   SPRE:{ name:'SpreeMart',      sector:'Consumer' },
   BREW:{ name:'BrewCraft Co.',  sector:'Consumer' },
-  TREK:{ name:'TrekGear Outdoors', sector:'Consumer' },
-  LDGR:{ name:'LedgerPeak',     sector:'Crypto' },
-  CHAN:{ name:'ChainBridge',    sector:'Crypto' },
-  VLTX:{ name:'VaultX Custody', sector:'Crypto' },
-  FORG:{ name:'CoinForge Mining', sector:'Crypto' },
+  BTC: { name:'Bitcoin',        sector:'Crypto' },
+  ETX: { name:'EtherLine',      sector:'Crypto' },
 };
 
 /* Active dataset pointers — reassigned by setActiveMode() below. `let`
@@ -1218,26 +1213,25 @@ const BASE_STOCK_PRICE_CONFIG = {
   LUXE: { center:3200, top:5900,  bottom:840 },
   SPRE: { center:800,  top:1450,  bottom:210 },
 };
-/* Expansion pack adds 12 new stocks. Existing 8 keep their exact original
-   numbers; new siblings are pitched at a similar order of magnitude to the
-   stock they share a sector with, so nothing in the new sector feels out
-   of place next to the originals. Crypto is deliberately the wildest —
-   every one of its four stocks has a $0 floor (can go worthless) and the
-   widest top-to-center ratio in the game. */
+/* Expansion pack adds 6 new stocks: 1 per existing sector, plus 2 Crypto
+   stocks. Existing 8 keep their exact original numbers.
+   Three of the new non-Bitcoin stocks are the "mega-cap" tier requested —
+   centers of exactly $10,000 / $20,000 / $32,000 — spread one per sector
+   (Energy/Crypto/Tech) rather than stacked in one place, so the high end
+   of the board isn't dominated by a single sector. The other two new
+   stocks (Health, Consumer) stay at ordinary scale, in line with their
+   sector's existing stocks.
+   Bitcoin is the one hard-coded exception in the whole pricing model: a
+   $50,000 center and a $1 floor instead of the usual $0 — it can crash
+   brutally but, per your instruction, never actually go worthless. */
 const EXPANSION_STOCK_PRICE_CONFIG = {
   ...BASE_STOCK_PRICE_CONFIG,
-  SYNC: { center:2600, top:6800,  bottom:0 },
-  HELX: { center:700,  top:2600,  bottom:0 },
-  SOLR: { center:1500, top:5200,  bottom:0 },
-  GRID: { center:2200, top:4200,  bottom:600 },
-  GENE: { center:1800, top:6200,  bottom:0 },
-  CARE: { center:1600, top:3200,  bottom:300 },
-  BREW: { center:1100, top:2200,  bottom:180 },
-  TREK: { center:1900, top:3800,  bottom:350 },
-  LDGR: { center:4000, top:16000, bottom:0 },
-  CHAN: { center:1600, top:7200,  bottom:0 },
-  VLTX: { center:900,  top:4500,  bottom:0 },
-  FORG: { center:350,  top:2000,  bottom:0 },
+  SYNC: { center:32000, top:96000,  bottom:0 },  // Tech — mega-cap tier
+  SOLR: { center:10000, top:34000,  bottom:0 },  // Energy — mega-cap tier
+  GENE: { center:1800,  top:4600,   bottom:200 }, // Health — ordinary scale
+  BREW: { center:1100,  top:2100,   bottom:180 }, // Consumer — ordinary scale
+  BTC:  { center:50000, top:200000, bottom:1 },  // Crypto — can't go below $1
+  ETX:  { center:20000, top:80000,  bottom:0 },  // Crypto — mega-cap tier, can go worthless
 };
 
 /* Dividend zones: the top N bubbles of a stock's own track pay a per-turn
@@ -1278,22 +1272,18 @@ const BASE_DIVIDEND_ZONES = {
   NOVA: { dots:14, rates:[0.025, 0.026, 0.028, 0.032, 0.036, 0.042, 0.049, 0.056, 0.065, 0.074, 0.084, 0.095, 0.107, 0.12] },
   SPRE: { dots:14, rates:[0.025, 0.026, 0.028, 0.032, 0.036, 0.042, 0.049, 0.056, 0.065, 0.074, 0.084, 0.095, 0.107, 0.12] },
 };
-/* Expansion pack: dividend zones for the 8 new non-Crypto stocks, same
-   shape/scale as their sector sibling above. Crypto is deliberately left
-   out of this table entirely — none of its 4 stocks have a passive top-
-   of-track dividend zone, which fits the theme (crypto doesn't pay
-   yield) and gives the sector a genuinely different feel: all of its
-   upside has to be taken as price appreciation, not collected income. */
+/* Expansion pack: dividend zones for the 4 new non-Crypto stocks, styled
+   after whichever existing sibling they're closest to in scale/shape.
+   Crypto (BTC, ETX) is deliberately left out of this table entirely —
+   neither has a passive top-of-track dividend zone, which fits the theme
+   (crypto doesn't pay yield) and gives the sector a genuinely different
+   feel: all of its upside has to be taken as price appreciation. */
 const EXPANSION_DIVIDEND_ZONES = {
   ...BASE_DIVIDEND_ZONES,
-  SYNC: { dots:9,  rates:[0.075, 0.082, 0.097, 0.121, 0.151, 0.189, 0.233, 0.284, 0.34] },
-  HELX: { dots:14, rates:[0.03, 0.031, 0.034, 0.038, 0.043, 0.05, 0.058, 0.067, 0.077, 0.088, 0.1, 0.113, 0.127, 0.143] },
-  SOLR: { dots:10, rates:[0.06, 0.065, 0.075, 0.09, 0.108, 0.13, 0.155, 0.183, 0.213, 0.246] },
-  GRID: { dots:12, rates:[0.045, 0.047, 0.052, 0.06, 0.07, 0.083, 0.098, 0.115, 0.134, 0.155, 0.178, 0.203] },
-  GENE: { dots:9,  rates:[0.07, 0.076, 0.09, 0.112, 0.14, 0.175, 0.216, 0.264, 0.316] },
-  CARE: { dots:12, rates:[0.045, 0.047, 0.052, 0.06, 0.07, 0.083, 0.098, 0.115, 0.134, 0.155, 0.178, 0.203] },
-  BREW: { dots:13, rates:[0.038, 0.04, 0.044, 0.05, 0.057, 0.066, 0.077, 0.089, 0.103, 0.118, 0.135, 0.153, 0.173] },
-  TREK: { dots:11, rates:[0.05, 0.053, 0.06, 0.072, 0.087, 0.105, 0.126, 0.15, 0.177, 0.207, 0.24] },
+  SYNC: { dots:14, rates:[0.025, 0.026, 0.028, 0.032, 0.036, 0.042, 0.049, 0.056, 0.065, 0.074, 0.084, 0.095, 0.107, 0.12] }, // mirrors NOVA — same $0-floor, big-range shape
+  SOLR: { dots:13, rates:[0.035, 0.036, 0.04, 0.045, 0.052, 0.061, 0.071, 0.082, 0.095, 0.109, 0.125, 0.142, 0.16] },        // mirrors OILX
+  GENE: { dots:9,  rates:[0.07, 0.076, 0.091, 0.113, 0.142, 0.177, 0.219, 0.267, 0.32] },                                    // mirrors VITA
+  BREW: { dots:14, rates:[0.025, 0.026, 0.028, 0.032, 0.036, 0.042, 0.049, 0.056, 0.065, 0.074, 0.084, 0.095, 0.107, 0.12] }, // mirrors SPRE
 };
 const SHORT_CARRY_FEE_RATE = 0.01; // 1% of a short's current liability, charged every one of your own turns
 const SHORT_DIVIDEND_ZONE_PENALTY_RATE = 0.10; // extra penalty a short pays on top of the carry fee, when the stock is also in its (long) Dividend Zone — 10% of that zone's rate
@@ -1332,23 +1322,20 @@ const BASE_SHORT_REBATE_ZONES = {
   NOVA: { dots:10, rates:[0.028, 0.036, 0.048, 0.068, 0.088, 0.112, 0.14, 0.172, 0.208, 0.24] },
   SPRE: { dots:10, rates:[0.028, 0.036, 0.048, 0.068, 0.088, 0.112, 0.14, 0.172, 0.208, 0.24] },
 };
-/* Expansion pack: short rebate zones for all 12 new stocks. Crypto gets
-   the steepest curve in the game — crashing hardest and paying shorts
-   the most for riding it down is the point of the sector. */
+/* Expansion pack: short rebate zones for all 6 new stocks. Crypto keeps
+   the steepest curve in the game — crashing hardest and paying shorts the
+   most for riding it down is the point of the sector. Note BTC's floor is
+   $1, not $0, so shortRebateZoneExcludesZeroBubble() (below) never
+   excludes its bottom dot the way it does for $0-floor stocks — riding
+   Bitcoin all the way down still pays out at the very last bubble. */
 const EXPANSION_SHORT_REBATE_ZONES = {
   ...BASE_SHORT_REBATE_ZONES,
-  SYNC: { dots:6, rates:[0.09, 0.13, 0.19, 0.30, 0.46, 0.68] },
-  HELX: { dots:10, rates:[0.03, 0.038, 0.05, 0.07, 0.09, 0.115, 0.145, 0.178, 0.215, 0.25] },
-  SOLR: { dots:7, rates:[0.06, 0.09, 0.13, 0.19, 0.27, 0.37, 0.50] },
-  GRID: { dots:9, rates:[0.04, 0.05, 0.065, 0.085, 0.108, 0.135, 0.165, 0.198, 0.23] },
-  GENE: { dots:6, rates:[0.09, 0.13, 0.19, 0.30, 0.46, 0.68] },
-  CARE: { dots:9, rates:[0.04, 0.05, 0.065, 0.085, 0.108, 0.135, 0.165, 0.198, 0.23] },
-  BREW: { dots:8, rates:[0.038, 0.054, 0.078, 0.116, 0.162, 0.216, 0.278, 0.35] },
-  TREK: { dots:7, rates:[0.052, 0.08, 0.12, 0.18, 0.26, 0.36, 0.48] },
-  LDGR: { dots:12, rates:[0.05, 0.06, 0.075, 0.095, 0.12, 0.15, 0.19, 0.24, 0.30, 0.38, 0.47, 0.58] },
-  CHAN: { dots:10, rates:[0.06, 0.075, 0.095, 0.12, 0.155, 0.20, 0.26, 0.34, 0.44, 0.56] },
-  VLTX: { dots:9, rates:[0.065, 0.085, 0.11, 0.145, 0.19, 0.25, 0.33, 0.43, 0.56] },
-  FORG: { dots:8, rates:[0.08, 0.11, 0.15, 0.21, 0.29, 0.40, 0.54, 0.72] },
+  SYNC: { dots:10, rates:[0.028, 0.036, 0.048, 0.068, 0.088, 0.112, 0.14, 0.172, 0.208, 0.24] }, // mirrors NOVA
+  SOLR: { dots:8,  rates:[0.036, 0.052, 0.072, 0.108, 0.152, 0.20, 0.256, 0.32] },                // mirrors OILX
+  GENE: { dots:6,  rates:[0.08, 0.12, 0.18, 0.28, 0.44, 0.64] },                                  // mirrors VITA
+  BREW: { dots:10, rates:[0.028, 0.036, 0.048, 0.068, 0.088, 0.112, 0.14, 0.172, 0.208, 0.24] },  // mirrors SPRE
+  BTC:  { dots:14, rates:[0.05, 0.06, 0.072, 0.09, 0.112, 0.14, 0.175, 0.22, 0.275, 0.34, 0.42, 0.51, 0.62, 0.75] },
+  ETX:  { dots:12, rates:[0.05, 0.06, 0.075, 0.095, 0.12, 0.15, 0.19, 0.24, 0.30, 0.38, 0.47, 0.58] },
 };
 
 // Active pointers for the three zone/price tables above — same pattern as
@@ -4131,7 +4118,7 @@ function renderLandingScreen(){
         <div class="hint" id="joinError" style="color:var(--down);"></div>
         <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line);">
           <button class="btn full" id="expansionModeBtn" style="background:linear-gradient(135deg,var(--crypto),var(--tech));border:none;">🧪 Try the Expansion: Digital Assets</button>
-          <div class="hint" style="margin-top:6px;">A new Crypto sector, and every sector now runs 4 stocks instead of 2 — separate rooms, doesn't touch your regular games.</div>
+          <div class="hint" style="margin-top:6px;">A new Crypto sector (including Bitcoin), and every sector now runs 3 stocks instead of 2 — separate rooms, doesn't touch your regular games.</div>
         </div>
       </div>
     </div>
@@ -4161,7 +4148,7 @@ function renderExpansionLandingScreen(){
       <div class="modal">
         <div style="display:inline-block;font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--crypto);background:rgba(255,122,156,0.12);padding:3px 8px;border-radius:5px;margin-bottom:8px;">Expansion Pack</div>
         <h2><span style="color:#FFFFFF;">Up</span><span style="color:var(--up);">Trend</span><span style="color:var(--crypto);">: Digital Assets</span></h2>
-        <div class="sub">Same game, one new Crypto sector, and 4 stocks per sector instead of 2. Rooms created here are separate from the regular game.</div>
+        <div class="sub">Same game, one new Crypto sector with Bitcoin, and 3 stocks per sector instead of 2. Rooms created here are separate from the regular game.</div>
         <button class="btn full" id="expCreateRoomBtn" style="background:linear-gradient(135deg,var(--crypto),var(--tech));border:none;">Create Expansion Game</button>
         <button class="btn secondary full" id="expVsBotBtn" style="margin-top:8px;">Play vs Bot (1 Player)</button>
         ${renderGameLengthField('landing')}
