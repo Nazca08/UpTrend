@@ -1467,12 +1467,37 @@ function basisShortRebateRate(p, id){
 }
 /* Picks basis-bubble rate in expansion games, the original dot-position
    rate in base games — the single switch point every payout/preview call
-   below goes through, so the base game's math is never touched. */
+   below goes through, so the base game's math is never touched.
+
+   In expansion games, this does NOT just hand out basisDividendRate/
+   basisShortRebateRate on its own (that ignores how deep the current
+   zone dot actually is, which is how a mediocre BTC entry once paid out
+   at 8x the stock's own current rate). Instead it multiplies the plain
+   current-dot rate by a NORMALIZED basis factor — basisRate divided by
+   that stock's own ceiling, so the factor always lands between 0.5x
+   (worst possible entry bubble) and 1.0x (best possible entry bubble).
+   A perfect entry means factor=1.0, so you get exactly the plain
+   current-dot rate — full parity with the base game, no penalty. Anything
+   worse than perfect scales the payout down from there, down to half at
+   the worst entry bubble. This keeps the reward tied to BOTH how good
+   your entry was AND how deep the crash/rally actually is right now,
+   instead of the entry alone being able to blow the payout out to
+   several times what the current dot would otherwise pay. */
 function effectiveDividendRate(p, id, idx){
-  return (state && state.expansionMode) ? basisDividendRate(p, id) : dividendZoneRateAt(id, idx);
+  if(!(state && state.expansionMode)) return dividendZoneRateAt(id, idx);
+  const zone = DIVIDEND_ZONES[id];
+  if(!zone) return 0;
+  const ceiling = zone.rates[zone.rates.length-1];
+  const basisFactor = ceiling>0 ? basisDividendRate(p, id)/ceiling : 1; // 0.5 .. 1.0
+  return dividendZoneRateAt(id, idx) * basisFactor;
 }
 function effectiveShortRebateRate(p, id, idx){
-  return (state && state.expansionMode) ? basisShortRebateRate(p, id) : shortRebateZoneRateAt(id, idx);
+  if(!(state && state.expansionMode)) return shortRebateZoneRateAt(id, idx);
+  const zone = SHORT_REBATE_ZONES[id];
+  if(!zone) return 0;
+  const ceiling = zone.rates[zone.rates.length-1];
+  const basisFactor = ceiling>0 ? basisShortRebateRate(p, id)/ceiling : 1; // 0.5 .. 1.0
+  return shortRebateZoneRateAt(id, idx) * basisFactor;
 }
 
 function freshState(players, gameLength){
