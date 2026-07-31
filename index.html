@@ -96,6 +96,7 @@
   .dot{width:9px;height:9px;border-radius:50%;background:#2A3242;transition:all .25s;}
   .dot.filled{width:12px;height:12px;box-shadow:0 0 7px currentColor;}
   .dot-price{font-size:8.5px;font-family:'IBM Plex Mono';color:var(--muted);margin-top:4px;white-space:nowrap;}
+  .dot-price.price-above{order:-1;margin-top:0;margin-bottom:4px;}
   .dot.filled + .dot-price, .dot-wrap.active .dot-price{color:var(--text);font-weight:600;}
   .dot-wrap.edge .dot{outline:1px solid rgba(255,255,255,0.15);outline-offset:2px;}
   .dot-wrap.center .dot{box-shadow:0 0 0 2px rgba(255,255,255,0.28);}
@@ -1228,8 +1229,8 @@ const EXPANSION_STOCK_PRICE_CONFIG = {
   ...BASE_STOCK_PRICE_CONFIG,
   SYNC: { center:32000, top:96000,  bottom:0 },  // Tech — mega-cap tier
   SOLR: { center:10000, top:34000,  bottom:0 },  // Energy — mega-cap tier
-  GENE: { center:1800,  top:4600,   bottom:200 }, // Health — ordinary scale
-  BREW: { center:1100,  top:2100,   bottom:180 }, // Consumer — ordinary scale
+  GENE: { center:7000,  top:17900,  bottom:800 }, // Health — bumped up to $7k center at your request, top/bottom scaled proportionally to its original 2.56x/0.11x ratios
+  BREW: { center:8000,  top:15300,  bottom:1300 }, // Consumer — bumped up to $8k center at your request, top/bottom scaled proportionally to its original 1.9x/0.16x ratios
   BTC:  { center:50000, top:200000, bottom:1 },  // Crypto — can't go below $1
   ETX:  { center:20000, top:80000,  bottom:0 },  // Crypto — mega-cap tier, can go worthless
 };
@@ -1322,20 +1323,34 @@ const BASE_SHORT_REBATE_ZONES = {
   NOVA: { dots:10, rates:[0.028, 0.036, 0.048, 0.068, 0.088, 0.112, 0.14, 0.172, 0.208, 0.24] },
   SPRE: { dots:10, rates:[0.028, 0.036, 0.048, 0.068, 0.088, 0.112, 0.14, 0.172, 0.208, 0.24] },
 };
-/* Expansion pack: short rebate zones for all 6 new stocks. Crypto keeps
-   the steepest curve in the game — crashing hardest and paying shorts the
-   most for riding it down is the point of the sector. Note BTC's floor is
-   $1, not $0, so shortRebateZoneExcludesZeroBubble() (below) never
-   excludes its bottom dot the way it does for $0-floor stocks — riding
-   Bitcoin all the way down still pays out at the very last bubble. */
+/* Expansion pack: every short rebate rate is exactly HALF of what the
+   base game pays, across all 14 stocks (the original 8 included, not
+   just the 6 new ones) — per your instruction to cut short rebates in
+   half for the expansion specifically. This is why it no longer spreads
+   ...BASE_SHORT_REBATE_ZONES like the other expansion tables do — that
+   would've kept the original 8 stocks at full strength while only the 6
+   new ones got halved. Every dots count is unchanged from the base/
+   original values; only the rates themselves are halved. Crypto still
+   keeps the steepest curve in the game, just at half its original scale.
+   Note BTC's floor is $1, not $0, so shortRebateZoneExcludesZeroBubble()
+   (below) never excludes its bottom dot the way it does for $0-floor
+   stocks — riding Bitcoin all the way down still pays out at the very
+   last bubble. */
 const EXPANSION_SHORT_REBATE_ZONES = {
-  ...BASE_SHORT_REBATE_ZONES,
-  SYNC: { dots:10, rates:[0.028, 0.036, 0.048, 0.068, 0.088, 0.112, 0.14, 0.172, 0.208, 0.24] }, // mirrors NOVA
-  SOLR: { dots:8,  rates:[0.036, 0.052, 0.072, 0.108, 0.152, 0.20, 0.256, 0.32] },                // mirrors OILX
-  GENE: { dots:6,  rates:[0.08, 0.12, 0.18, 0.28, 0.44, 0.64] },                                  // mirrors VITA
-  BREW: { dots:10, rates:[0.028, 0.036, 0.048, 0.068, 0.088, 0.112, 0.14, 0.172, 0.208, 0.24] },  // mirrors SPRE
-  BTC:  { dots:14, rates:[0.05, 0.06, 0.072, 0.09, 0.112, 0.14, 0.175, 0.22, 0.275, 0.34, 0.42, 0.51, 0.62, 0.75] },
-  ETX:  { dots:12, rates:[0.05, 0.06, 0.075, 0.095, 0.12, 0.15, 0.19, 0.24, 0.30, 0.38, 0.47, 0.58] },
+  QBIT: { dots:6,  rates:[0.05, 0.07, 0.10, 0.16, 0.24, 0.36] },
+  VITA: { dots:6,  rates:[0.04, 0.06, 0.09, 0.14, 0.22, 0.32] },
+  PWR:  { dots:7,  rates:[0.026, 0.04, 0.06, 0.09, 0.13, 0.18, 0.24] },
+  RXCO: { dots:7,  rates:[0.028, 0.04, 0.056, 0.084, 0.12, 0.17, 0.22] },
+  LUXE: { dots:8,  rates:[0.02, 0.028, 0.04, 0.06, 0.084, 0.112, 0.144, 0.18] },
+  OILX: { dots:8,  rates:[0.018, 0.026, 0.036, 0.054, 0.076, 0.10, 0.128, 0.16] },
+  NOVA: { dots:10, rates:[0.014, 0.018, 0.024, 0.034, 0.044, 0.056, 0.07, 0.086, 0.104, 0.12] },
+  SPRE: { dots:10, rates:[0.014, 0.018, 0.024, 0.034, 0.044, 0.056, 0.07, 0.086, 0.104, 0.12] },
+  SYNC: { dots:10, rates:[0.014, 0.018, 0.024, 0.034, 0.044, 0.056, 0.07, 0.086, 0.104, 0.12] }, // mirrors NOVA
+  SOLR: { dots:8,  rates:[0.018, 0.026, 0.036, 0.054, 0.076, 0.10, 0.128, 0.16] },                // mirrors OILX
+  GENE: { dots:6,  rates:[0.04, 0.06, 0.09, 0.14, 0.22, 0.32] },                                  // mirrors VITA
+  BREW: { dots:10, rates:[0.014, 0.018, 0.024, 0.034, 0.044, 0.056, 0.07, 0.086, 0.104, 0.12] },  // mirrors SPRE
+  BTC:  { dots:14, rates:[0.025, 0.03, 0.036, 0.045, 0.056, 0.07, 0.0875, 0.11, 0.1375, 0.17, 0.21, 0.255, 0.31, 0.375] },
+  ETX:  { dots:12, rates:[0.025, 0.03, 0.0375, 0.0475, 0.06, 0.075, 0.095, 0.12, 0.15, 0.19, 0.235, 0.29] },
 };
 
 // Active pointers for the three zone/price tables above — same pattern as
@@ -2136,18 +2151,33 @@ function humanBankruptcyReset(){
   schedulePersist(); render();
 }
 
+/* Expansion pack rule: total locked short collateral can never exceed
+   10x your net worth. Reuses the exact same "auto-cover your biggest
+   short liability" mechanism as the cash-based margin call directly
+   below, just with a second trigger condition — so it catches both
+   over-leveraging in a single trade AND passively drifting over the cap
+   because the market moved against an already-open short (checkMarginCalls
+   already runs after every trade in the game, for every player, so a
+   price move from someone ELSE's trade re-checks everyone automatically).
+   Base game is completely unaffected — this only ever evaluates when
+   state.expansionMode is true. */
+const EXPANSION_LOCKED_CASH_LEVERAGE_CAP = 10;
+function overExpansionLeverageCap(p, locked){
+  return state.expansionMode && locked > netWorth(p)*EXPANSION_LOCKED_CASH_LEVERAGE_CAP;
+}
 function checkMarginCalls(){
   state.players.forEach(p=>{
     let locked = lockedCash(p);
-    if(locked > p.cash && p.marginShield){
+    if((locked > p.cash || overExpansionLeverageCap(p, locked)) && p.marginShield){
       p.marginShield = false;
       logEvent(`${p.name}'s Margin Call Forgiveness absorbed a margin call this turn — no forced liquidation.`, true);
       return;
     }
     let guard = 0;
     let forcedThisCall = false;
-    while(locked > p.cash && guard < STOCK_IDS.length+1){
+    while((locked > p.cash || overExpansionLeverageCap(p, locked)) && guard < STOCK_IDS.length+1){
       guard++;
+      const leverageTriggered = overExpansionLeverageCap(p, locked) && !(locked > p.cash);
       let target = null, maxLiab = -1;
       STOCK_IDS.forEach(id=>{
         const liab = (p.shorts[id]||0)*price(id);
@@ -2159,7 +2189,9 @@ function checkMarginCalls(){
       p.cash -= cost;
       p.shorts[target] = 0;
       forcedThisCall = true;
-      logEvent(`Margin call: ${p.name}'s ${target} short was auto-covered at $${price(target)}.`, true);
+      logEvent(leverageTriggered
+        ? `Leverage cap: ${p.name}'s locked short collateral exceeded 10x net worth — ${target} short auto-covered at $${price(target)}.`
+        : `Margin call: ${p.name}'s ${target} short was auto-covered at $${price(target)}.`, true);
       locked = lockedCash(p);
     }
     if(forcedThisCall) p.marginCallCount = (p.marginCallCount||0) + 1;
@@ -4534,10 +4566,16 @@ function renderTrack(track, curIdx, prevIdx, colorVar, id){
     const shortZoneClasses = inShortZoneDot ? ` short-zone${i===(shortRebateZoneExcludesZeroBubble(id)?1:0)?' short-zone-start':''}${i===shortZone.dots-1?' short-zone-end':''}` : '';
     const shortRateLabel = inShortZoneDot ? `${(shortZone.rates[shortZone.dots-1-i]*100).toFixed(1).replace(/\.0$/,'')}%` : '';
     const priceLabel = useCompactPrice ? formatCompactPrice(pr) : pr;
+    // Only the $10k+ centered stocks (same group that gets compact "$Xk"
+    // labels) alternate their price label above/below the dot — their
+    // labels run wider than plain digits, and 31 crowded dots is where
+    // staggering actually earns back horizontal room. Every other stock
+    // keeps every label below, unchanged.
+    const priceAboveClass = (useCompactPrice && i%2===1) ? ' price-above' : '';
     html += `<div class="dot-wrap ${filled?'active':''} ${edge?'edge':''} ${isCenter?'center':''}${zoneClasses}${shortZoneClasses}">
       ${inZone?`<div class="div-zone-rate">${dotRateLabel}</div>`:''}
       <div class="dot ${filled?'filled':''}" style="${filled?`background:${colorVar};color:${colorVar};`:''}"></div>
-      <div class="dot-price">${priceLabel}</div>
+      <div class="dot-price${priceAboveClass}">${priceLabel}</div>
       ${inShortZoneDot?`<div class="short-zone-rate">${shortRateLabel}</div>`:''}
     </div>`;
   });
