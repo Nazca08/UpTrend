@@ -4593,7 +4593,13 @@ function renderTrack(track, curIdx, prevIdx, colorVar, id){
     // labels run wider than plain digits, and 31 crowded dots is where
     // staggering actually earns back horizontal room. Every other stock
     // keeps every label below, unchanged.
-    const priceAbove = useCompactPrice && i%2===1;
+    // A dividend-zone dot already has a badge competing for the "above"
+    // spot — alternating the price there too meant the badge and price
+    // kept swapping which one was on top from dot to dot. Dividend-zone
+    // dots always keep price below, so the badge is consistently the top
+    // line across the whole zone; alternation still applies everywhere
+    // else, where there's nothing else up there to collide with.
+    const priceAbove = useCompactPrice && i%2===1 && !inZone;
     const priceHtml = `<div class="dot-price">${priceLabel}</div>`;
     // Always exactly 5 slots, in fixed order, whether or not THIS
     // particular dot has content for a given slot — an empty slot still
