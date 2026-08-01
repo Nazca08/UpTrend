@@ -70,6 +70,10 @@
   }
   .sector-dot{width:8px;height:8px;border-radius:50%;}
   .stock-row{padding:12px 16px;border-bottom:1px solid var(--line);cursor:pointer;transition:background .15s;}
+  .stock-row.minimized{padding:8px 16px;}
+  .stock-row.minimized .row-top{gap:8px;margin-bottom:0;}
+  .minimize-toggle{background:none;border:none;color:var(--muted);cursor:pointer;font-size:10px;padding:2px 4px;line-height:1;border-radius:4px;flex-shrink:0;}
+  .minimize-toggle:hover{color:var(--text);background:rgba(255,255,255,0.08);}
   .stock-row:last-child{border-bottom:none;}
   .stock-row:hover{background:rgba(255,255,255,0.02);}
   .stock-row.selected{background:rgba(245,166,35,0.07);box-shadow:inset 3px 0 0 var(--amber);}
@@ -1200,6 +1204,23 @@ function leaveRoom(){
 
 let myPlayerIndex = null; // which seat THIS browser tab is playing — resets on reload
 let landingView = 'main'; // 'main' | 'expansion' — which pre-room screen to show; only meaningful while roomCode is null
+/* Expansion-only: which stock tickers this browser has collapsed to save
+   space (20 stocks across 5 sectors gets crowded fast, especially on
+   mobile). Purely a personal view preference — never written into `state`
+   or synced through Firebase, since one player minimizing a stock has no
+   business hiding it for anyone else at the table. Resets on reload,
+   same as myPlayerIndex above; not worth the complexity of persisting it
+   for what's just a decluttering toggle. */
+let minimizedStocks = new Set();
+/* House rules being edited on the House Rules screen, before a room code
+   even exists yet — null until the player clicks Create Game / vs Bot,
+   at which point it's populated fresh from DEFAULT_HOUSE_RULES (see
+   openHouseRulesScreen below). Deliberately not initialized here at
+   module-load time, since DEFAULT_HOUSE_RULES isn't declared until later
+   in the file — this avoids any load-order dependency entirely. */
+let pendingHouseRules = null;
+let preRoomScreen = 'landing'; // 'landing' | 'rules' — only meaningful while roomCode is null; which of the two pre-room screens to show
+let pendingCreateAction = null; // 'multiplayer' | 'bot' — which button (Create Game vs vs Bot) sent the player to the House Rules screen, so Continue knows what to do afterward
 
 /* ============================= STATE ============================= */
 let state = null;
@@ -1490,11 +1511,15 @@ function basisShortRebateRate(p, id){
   const rate = ceiling * (1 - steps/(spaces*2));
   return Math.max(0, rate);
 }
-/* Picks basis-bubble rate in expansion games, the original dot-position
-   rate in base games — the single switch point every payout/preview call
-   below goes through, so the base game's math is never touched.
+/* Picks basis-bubble rate under the Cut Rate Dividends house rule, the
+   original dot-position rate under Full Rate — the single switch point
+   every payout/preview call below goes through, so a base game running
+   Full Rate (its historical default) is never touched, and Cut Rate works
+   identically whether the room is base or expansion. This one house rule
+   controls dividends AND short rebates together, never independently —
+   see houseRules().dividendMode.
 
-   In expansion games, this does NOT just hand out basisDividendRate/
+   Under Cut Rate, this does NOT just hand out basisDividendRate/
    basisShortRebateRate on its own (that ignores how deep the current
    zone dot actually is, which is how a mediocre BTC entry once paid out
    at 8x the stock's own current rate). Instead it multiplies the plain
@@ -1502,14 +1527,14 @@ function basisShortRebateRate(p, id){
    that stock's own ceiling, so the factor always lands between 0.5x
    (worst possible entry bubble) and 1.0x (best possible entry bubble).
    A perfect entry means factor=1.0, so you get exactly the plain
-   current-dot rate — full parity with the base game, no penalty. Anything
+   current-dot rate — full parity with Full Rate, no penalty. Anything
    worse than perfect scales the payout down from there, down to half at
    the worst entry bubble. This keeps the reward tied to BOTH how good
    your entry was AND how deep the crash/rally actually is right now,
    instead of the entry alone being able to blow the payout out to
    several times what the current dot would otherwise pay. */
 function effectiveDividendRate(p, id, idx){
-  if(!(state && state.expansionMode)) return dividendZoneRateAt(id, idx);
+  if(houseRules().dividendMode!=='cut') return dividendZoneRateAt(id, idx);
   const zone = DIVIDEND_ZONES[id];
   if(!zone) return 0;
   const ceiling = zone.rates[zone.rates.length-1];
@@ -1517,7 +1542,7 @@ function effectiveDividendRate(p, id, idx){
   return dividendZoneRateAt(id, idx) * basisFactor;
 }
 function effectiveShortRebateRate(p, id, idx){
-  if(!(state && state.expansionMode)) return shortRebateZoneRateAt(id, idx);
+  if(houseRules().dividendMode!=='cut') return shortRebateZoneRateAt(id, idx);
   const zone = SHORT_REBATE_ZONES[id];
   if(!zone) return 0;
   const ceiling = zone.rates[zone.rates.length-1];
@@ -1547,6 +1572,7 @@ function freshState(players, gameLength){
   return {
     stocks, sp, spx,
     expansionMode: activeMode==='expansion', // stamped at creation so every client (including ones that joined by room code, never touched the landing button) converges on the same dataset once this syncs — see mergeRemote()
+    houseRules: { ...pendingHouseRules }, // locked in on the House Rules screen, before the room code even existed — never edited after this point
     players: players.map((name,i)=>({
       name, cash: START_CASH,
       color: PLAYER_COLORS[i % PLAYER_COLORS.length],
@@ -1628,23 +1654,26 @@ function isSoloVsBots(){
   return !!state && state.players.filter(pl=>!pl.bot).length===1;
 }
 
-const TURN_TIME_LIMIT = 90; // seconds — 1.5 minutes, for a human's own turn in a multi-human game (solo-vs-bots has no timer at all, see isSoloVsBots below)
+const TURN_TIME_LIMIT_FALLBACK = 90; // only used before turnStartedAt exists at all / before houseRules is reachable — never the actual limit once a turn is underway
 const BOT_TURN_TIME_LIMIT = 20; // seconds — bots should never legitimately take anywhere near this long, so if the proactive turn loop ever silently stops for any reason, recovery kicks in within seconds instead of waiting the full human-length timeout
 /* Solo-vs-bots (exactly one human at the table, see isSoloVsBots above)
    has no other player waiting on you, so there's no one for a turn timer
    to protect — it removes the clock entirely for the human's own turn,
-   in both the base game and the expansion pack. Bots keep their own
-   internal BOT_TURN_TIME_LIMIT regardless — that's a stall-recovery
-   safety net, not turn-time pressure on a player, so it stays untouched
-   either way. */
+   in both the base game and the expansion pack, regardless of what the
+   house rule below is set to. Bots keep their own internal
+   BOT_TURN_TIME_LIMIT regardless — that's a stall-recovery safety net,
+   not turn-time pressure on a player, so it stays untouched either way.
+   Otherwise, the limit comes straight from the house rule the room was
+   created with — 30/60/90/120 seconds, or 'off' for no cap at all. */
 function currentTurnTimeLimit(){
   const cur = state && state.players && state.players[state.current];
   if(cur && cur.bot) return BOT_TURN_TIME_LIMIT;
   if(isSoloVsBots()) return Infinity;
-  return TURN_TIME_LIMIT;
+  const configured = houseRules().turnTimerSeconds;
+  return (configured==='off' || !configured) ? Infinity : configured;
 }
 function turnTimerSecondsLeft(){
-  if(!state || !state.turnStartedAt || state.gameOver) return TURN_TIME_LIMIT;
+  if(!state || !state.turnStartedAt || state.gameOver) return TURN_TIME_LIMIT_FALLBACK;
   const limit = currentTurnTimeLimit();
   if(limit===Infinity) return Infinity;
   const now = (state.paused && state.pausedAt) ? state.pausedAt : Date.now(); // frozen at the moment pause began
@@ -1844,14 +1873,51 @@ function lockedCash(p){
 }
 function freeCash(p){ return p.cash - lockedCash(p); }
 
+/* ===== HOUSE RULES =====
+   A per-game ruleset the room creator locks in before the room code is
+   even generated (see the House Rules screen in the create-game flow) —
+   available in both the base game and the expansion pack, not gated to
+   either. Stored directly on `state.houseRules` and synced through
+   Firebase like any other field, so every player in the room — including
+   ones who joined via room code and never saw the create-flow — plays
+   under the exact same rules with zero special-casing needed.
+   houseRules() is a safe accessor: any state that predates this feature,
+   or a call before `state` exists at all, falls back to these defaults
+   (which reproduce the exact behavior the game already had before this
+   system existed — full-rate dividends, 1x everything, no leverage cap,
+   90s turns, Divorce fires on 1st place regardless of marriage). */
+const DEFAULT_HOUSE_RULES = {
+  dividendMode: 'full',        // 'full' | 'cut' — controls BOTH the dividend and short-rebate rate FORMULA together, never independently (see effectiveDividendRate/effectiveShortRebateRate)
+  capitalGainsMultiplier: 1,   // 1 | 2 | 5 | 10 — multiplies gains AND losses, realized and unrealized, longs and shorts; never touches principal, dividends, or locked collateral
+  salaryMultiplier: 1,         // 1 | 2 | 5 | 10 — multiplies placing-based salary and spouse's salary together
+  leverageCap: 'off',          // 1 | 2 | 4 | 5 | 8 | 10 | 'off' — max locked short collateral as a multiple of net worth
+  turnTimerSeconds: 90,        // 30 | 60 | 90 | 120 | 'off' — irrelevant in solo-vs-bots, which is always untimed regardless
+  divorceRequiresMarriage: false, // false = Divorce fires on 1st place alone (today's behavior); true = also requires being currently married
+};
+function houseRules(){ return { ...DEFAULT_HOUSE_RULES, ...((state && state.houseRules) || {}) }; }
+function capitalGainsMultiplier(){ return houseRules().capitalGainsMultiplier || 1; }
+function salaryMultiplier(){ return houseRules().salaryMultiplier || 1; }
+/* The one formula every capital-gains-multiplier touch point below shares:
+   basisAmount (what you actually put in / received) always comes back at
+   face value; only the GAP between it and faceAmount (what it's worth
+   now, or what you're closing it at) gets scaled by mult. At mult=1 this
+   is provably identical to the un-adjusted amount — basisAmount*(1-1) +
+   faceAmount*1 = faceAmount — so every call site below behaves exactly
+   like the pre-house-rules game whenever the multiplier is left at 1x. */
+function capGainAdjust(basisAmount, faceAmount, mult){
+  return basisAmount*(1-mult) + faceAmount*mult;
+}
+
+
 function netWorth(p){
+  const mult = capitalGainsMultiplier();
   let v = p.cash;
   STOCK_IDS.forEach(id=>{
-    v += p.shares[id]*price(id);
-    v -= (p.shorts[id]||0)*price(id);
+    v += capGainAdjust(p.costBasis[id]||0, p.shares[id]*price(id), mult);
+    v -= capGainAdjust(p.shortBasis[id]||0, (p.shorts[id]||0)*price(id), mult);
   });
-  v += p.spShares*spPrice();
-  v += p.spxShares*spxPrice();
+  v += capGainAdjust(p.spCostBasis||0, p.spShares*spPrice(), mult);
+  v += capGainAdjust(p.spxCostBasis||0, p.spxShares*spxPrice(), mult);
   return v;
 }
 
@@ -2173,33 +2239,35 @@ function humanBankruptcyReset(){
   schedulePersist(); render();
 }
 
-/* Expansion pack rule: total locked short collateral can never exceed
-   10x your net worth. Reuses the exact same "auto-cover your biggest
-   short liability" mechanism as the cash-based margin call directly
-   below, just with a second trigger condition — so it catches both
-   over-leveraging in a single trade AND passively drifting over the cap
-   because the market moved against an already-open short (checkMarginCalls
-   already runs after every trade in the game, for every player, so a
-   price move from someone ELSE's trade re-checks everyone automatically).
-   Base game is completely unaffected — this only ever evaluates when
-   state.expansionMode is true. */
-const EXPANSION_LOCKED_CASH_LEVERAGE_CAP = 10;
-function overExpansionLeverageCap(p, locked){
-  return state.expansionMode && locked > netWorth(p)*EXPANSION_LOCKED_CASH_LEVERAGE_CAP;
+/* House rule: total locked short collateral can never exceed a chosen
+   multiple of net worth (1x/2x/4x/5x/8x/10x, or 'off' for no cap at
+   all — see houseRules().leverageCap). Reuses the exact same "auto-cover
+   your biggest short liability" mechanism as the cash-based margin call
+   directly below, just with a second trigger condition — so it catches
+   both over-leveraging in a single trade AND passively drifting over the
+   cap because the market moved against an already-open short
+   (checkMarginCalls already runs after every trade in the game, for
+   every player, so a price move from someone ELSE's trade re-checks
+   everyone automatically). Available in both the base game and the
+   expansion — house rules aren't gated to either. */
+function overLeverageCap(p, locked){
+  const cap = houseRules().leverageCap;
+  if(cap==='off' || !cap) return false;
+  return locked > netWorth(p)*cap;
 }
 function checkMarginCalls(){
   state.players.forEach(p=>{
     let locked = lockedCash(p);
-    if((locked > p.cash || overExpansionLeverageCap(p, locked)) && p.marginShield){
+    if((locked > p.cash || overLeverageCap(p, locked)) && p.marginShield){
       p.marginShield = false;
       logEvent(`${p.name}'s Margin Call Forgiveness absorbed a margin call this turn — no forced liquidation.`, true);
       return;
     }
     let guard = 0;
     let forcedThisCall = false;
-    while((locked > p.cash || overExpansionLeverageCap(p, locked)) && guard < STOCK_IDS.length+1){
+    while((locked > p.cash || overLeverageCap(p, locked)) && guard < STOCK_IDS.length+1){
       guard++;
-      const leverageTriggered = overExpansionLeverageCap(p, locked) && !(locked > p.cash);
+      const leverageTriggered = overLeverageCap(p, locked) && !(locked > p.cash);
       let target = null, maxLiab = -1;
       STOCK_IDS.forEach(id=>{
         const liab = (p.shorts[id]||0)*price(id);
@@ -2212,7 +2280,7 @@ function checkMarginCalls(){
       p.shorts[target] = 0;
       forcedThisCall = true;
       logEvent(leverageTriggered
-        ? `Leverage cap: ${p.name}'s locked short collateral exceeded 10x net worth — ${target} short auto-covered at $${price(target)}.`
+        ? `Leverage cap: ${p.name}'s locked short collateral exceeded ${houseRules().leverageCap}x net worth — ${target} short auto-covered at $${price(target)}.`
         : `Margin call: ${p.name}'s ${target} short was auto-covered at $${price(target)}.`, true);
       locked = lockedCash(p);
     }
@@ -2747,8 +2815,8 @@ function tickShortFeesAndDividends(ownerIndex){
     const rank = playerRank(ownerIndex);
     const placingSalary = isFirstRound ? FIRST_ROUND_FLAT_SALARY : placingSalaryForRank(rank);
     const overtimeMult = p.overtimeTurnsLeft>0 ? 1.5 : 1;
-    const ownSalary = Math.round((placingSalary + (p.promotionBonus||0)) * overtimeMult);
-    const spouseSalary = p.married ? Math.round(placingSalary * 2 * overtimeMult) : 0;
+    const ownSalary = Math.round((placingSalary + (p.promotionBonus||0)) * overtimeMult * salaryMultiplier());
+    const spouseSalary = p.married ? Math.round(placingSalary * 2 * overtimeMult * salaryMultiplier()) : 0;
     const salary = ownSalary + spouseSalary;
     p.cash += salary;
     p.salaryCollected = (p.salaryCollected||0) + salary;
@@ -3215,6 +3283,13 @@ function resolveAuto(card){
         logEvent(`${p.name} isn't in first place — Divorce has no effect.`);
         break;
       }
+      // House rule: Divorce can require an actual marriage to end, not
+      // just 1st place — being in first is always required either way,
+      // this only adds a second condition on top when the rule is on.
+      if(houseRules().divorceRequiresMarriage && !p.married){
+        logEvent(`${p.name} is in first place, but isn't married — Divorce has no effect under this game's house rules.`);
+        break;
+      }
       p.cash = Math.floor(p.cash/2);
       STOCK_IDS.forEach(id=>{
         if(p.shares[id]>0){
@@ -3602,9 +3677,10 @@ function sellShares(id, qtyRequested, force){
     : walkOrderDetailed(id, qty, -1, priorFilled);
   const proceeds = walk.total - walk.fee;
   pushUndoSnapshot();
-  p.cash += proceeds;
   const costOfSold = reduceCostBasisOnSell(p, id, qty);
-  addRealizedGain(p, id, proceeds - costOfSold);
+  const creditedCash = capGainAdjust(costOfSold, proceeds, capitalGainsMultiplier());
+  p.cash += creditedCash;
+  addRealizedGain(p, id, creditedCash - costOfSold);
   if(id==='SP'){ p.spShares -= qty; } else if(id==='SPX'){ p.spxShares -= qty; } else { p.shares[id] -= qty; }
   const obj = objFor(id);
   const priorIdx = obj.idx;
@@ -3616,7 +3692,8 @@ function sellShares(id, qtyRequested, force){
   trackBiggestTrade(p, id, proceeds);
   recordTradeLogEntry(id, p, 'sell', qty, proceeds/qty);
   const feeNote = walk.fee>0 ? ` (after $${walk.fee} fee)` : (id==='SP' ? ' (no price impact)' : '');
-  logEvent(`${p.name} sold ${qty} ${tickerLabel(id)} for $${proceeds}${feeNote} — now $${obj.track[obj.idx]}.`);
+  const cgNote = capitalGainsMultiplier()!==1 ? ` (${capitalGainsMultiplier()}x capital gains)` : '';
+  logEvent(`${p.name} sold ${qty} ${tickerLabel(id)} for $${Math.round(creditedCash)}${feeNote}${cgNote} — now $${obj.track[obj.idx]}.`);
   checkMarginCalls(); checkGameOver(); recordTradeMarker(id, p.color, 'down', qty); schedulePersist(); render();
 }
 
@@ -3659,11 +3736,18 @@ function coverShort(id, qtyRequested, force){
   const priorFilled = state.turnFills.up[id]||0; // covering is buy-pressure — shares the "up" channel with Buy
   const walk = walkOrderDetailed(id, qty, +1, priorFilled);
   const totalCost = walk.total + walk.fee;
-  if(totalCost > p.cash){ logEvent(`${p.name} doesn't have enough cash to cover ${qty} ${id}.`); render(); return; }
+  // Preview the capital-gains-adjusted cost BEFORE actually reducing short
+  // basis, since a losing short under a >1x multiplier can cost more to
+  // cover than the raw market price suggests — the affordability check
+  // has to catch that, not just the unadjusted totalCost.
+  const previewAvgBasis = held>0 ? (p.shortBasis[id]||0)/held : 0;
+  const previewAdjustedCost = capGainAdjust(previewAvgBasis*qty, totalCost, capitalGainsMultiplier());
+  if(previewAdjustedCost > p.cash){ logEvent(`${p.name} doesn't have enough cash to cover ${qty} ${id}.`); render(); return; }
   pushUndoSnapshot();
-  p.cash -= totalCost;
   const basisReleased = reduceShortBasisOnCover(p, id, qty);
-  addRealizedGain(p, id, basisReleased - totalCost);
+  const adjustedCost = capGainAdjust(basisReleased, totalCost, capitalGainsMultiplier());
+  p.cash -= adjustedCost;
+  addRealizedGain(p, id, basisReleased - adjustedCost);
   p.shorts[id] -= qty;
   const obj = state.stocks[id];
   obj.prevIdx = obj.idx; obj.idx = walk.finalIdx;
@@ -3673,7 +3757,8 @@ function coverShort(id, qtyRequested, force){
   trackBiggestTrade(p, id, totalCost);
   recordTradeLogEntry(id, p, 'cover', qty, totalCost/qty);
   const feeNote = walk.fee>0 ? ` (incl. $${walk.fee} fee)` : '';
-  logEvent(`${p.name} covered ${qty} ${id} for $${totalCost}${feeNote} — now $${obj.track[obj.idx]}.`);
+  const cgNote = capitalGainsMultiplier()!==1 ? ` (${capitalGainsMultiplier()}x capital gains)` : '';
+  logEvent(`${p.name} covered ${qty} ${id} for $${Math.round(adjustedCost)}${feeNote}${cgNote} — now $${obj.track[obj.idx]}.`);
   checkMarginCalls(); checkGameOver(); recordTradeMarker(id, p.color, 'up', qty); schedulePersist(); render();
 }
 
@@ -4254,7 +4339,11 @@ const app = document.getElementById('app');
 function esc(s){ return s; }
 
 function renderSetup(){
-  if(!roomCode){ (landingView==='expansion' ? renderExpansionLandingScreen : renderLandingScreen)(); return; }
+  if(!roomCode){
+    if(preRoomScreen==='rules'){ renderHouseRulesScreen(); return; }
+    (landingView==='expansion' ? renderExpansionLandingScreen : renderLandingScreen)();
+    return;
+  }
   if(!state){ renderCreateGameScreen(); return; }
   if(state.phase==='lobby'){ renderLobbyScreen(); return; }
   renderWhoAreYouScreen();
@@ -4286,8 +4375,8 @@ function renderLandingScreen(){
     </div>
     ${renderHowToPlayModal()}`;
   wireGameLengthField('landing', renderLandingScreen);
-  document.getElementById('createRoomBtn').onclick = ()=>{ subscribeToRoom(genRoomCode()); render(); };
-  document.getElementById('vsBotBtn').onclick = ()=>{ subscribeToRoom(genRoomCode()); startBotGame(); };
+  document.getElementById('createRoomBtn').onclick = ()=>{ openHouseRulesScreen('multiplayer'); };
+  document.getElementById('vsBotBtn').onclick = ()=>{ openHouseRulesScreen('bot'); };
   document.getElementById('howToPlayBtn').onclick = ()=>{ showHowToPlay = true; renderLandingScreen(); };
   document.getElementById('joinRoomBtn').onclick = ()=>{
     const code = document.getElementById('joinCodeInput').value.trim().replace(/\D/g,'');
@@ -4324,14 +4413,86 @@ function renderExpansionLandingScreen(){
       </div>
     </div>`;
   wireGameLengthField('landing', renderExpansionLandingScreen);
-  document.getElementById('expCreateRoomBtn').onclick = ()=>{ setActiveMode('expansion'); subscribeToRoom(genRoomCode()); render(); };
-  document.getElementById('expVsBotBtn').onclick = ()=>{ setActiveMode('expansion'); subscribeToRoom(genRoomCode()); startBotGame(); };
+  document.getElementById('expCreateRoomBtn').onclick = ()=>{ setActiveMode('expansion'); openHouseRulesScreen('multiplayer'); };
+  document.getElementById('expVsBotBtn').onclick = ()=>{ setActiveMode('expansion'); openHouseRulesScreen('bot'); };
   document.getElementById('expJoinRoomBtn').onclick = ()=>{
     const code = document.getElementById('expJoinCodeInput').value.trim().replace(/\D/g,'');
     if(code.length!==6){ document.getElementById('expJoinError').textContent = 'Enter the 6-digit code your host shared with you.'; return; }
     setActiveMode('expansion'); subscribeToRoom(code); render();
   };
   document.getElementById('backToMainBtn').onclick = ()=>{ landingView = 'main'; setActiveMode('base'); render(); };
+}
+
+/* Entry point into the House Rules screen from either landing screen's
+   Create Game / vs Bot buttons — populates pendingHouseRules fresh from
+   the defaults (with a couple of mode-appropriate starting picks, not
+   hard requirements) every time, so re-opening it never carries over
+   stale choices from a previous room. action is 'multiplayer' or 'bot',
+   remembered so the Continue button on the rules screen knows which of
+   the two original button behaviors to actually run once rules are
+   locked in. */
+function openHouseRulesScreen(action){
+  pendingHouseRules = { ...DEFAULT_HOUSE_RULES };
+  if(landingView==='expansion'){
+    // Not a hard requirement — expansion players can still pick Full Rate
+    // or turn the cap off if they want. Just the more natural default
+    // given the expansion was built around Cut Rate and a leverage cap
+    // in the first place.
+    pendingHouseRules.dividendMode = 'cut';
+    pendingHouseRules.leverageCap = 10;
+  }
+  pendingCreateAction = action;
+  preRoomScreen = 'rules';
+  render();
+}
+
+/* House Rules — shown after Create Game / vs Bot on EITHER landing
+   screen, before the room code is generated. Available in both the base
+   game and the expansion; nothing here is gated to either. Whatever's
+   selected gets locked into pendingHouseRules, which freshState()/
+   createLobby() stamp onto the synced state the moment the room actually
+   gets created — from that point on it's fixed for the rest of the game,
+   not editable from the lobby or mid-game. */
+const HOUSE_RULE_GROUPS = [
+  { key:'dividendMode', label:'Dividends & Short Rebates', hint:'Full Rate: today\'s rate depends only on where the price is right now. Cut Rate: rate depends on where YOU bought/shorted, rewarding a good entry — same rule drives both dividends and short rebates together.', options:[['full','Full Rate'],['cut','Cut Rate']] },
+  { key:'capitalGainsMultiplier', label:'Capital Gains Multiplier', hint:'Multiplies gains AND losses — realized and unrealized, longs and shorts alike. Your actual invested cash is always safe; only the gap above or below it gets scaled.', options:[[1,'1x'],[2,'2x'],[5,'5x'],[10,'10x']] },
+  { key:'salaryMultiplier', label:'Salary Multiplier', hint:'Scales placing-based salary and a spouse\'s salary together, every turn.', options:[[1,'1x'],[2,'2x'],[5,'5x'],[10,'10x']] },
+  { key:'leverageCap', label:'Short Leverage Cap', hint:'Total locked short collateral can never exceed this multiple of your net worth — auto-covers your biggest short if you ever go over, from a bad trade or the market moving against you.', options:[[1,'1x'],[2,'2x'],[4,'4x'],[5,'5x'],[8,'8x'],[10,'10x'],['off','Off']] },
+  { key:'turnTimerSeconds', label:'Turn Timer', hint:'Solo vs bots never has a timer, regardless of this setting.', options:[[30,'30s'],[60,'60s'],[90,'90s'],[120,'120s'],['off','Off']] },
+  { key:'divorceRequiresMarriage', label:'Divorce Card', hint:'Either way, Divorce only ever fires on whoever\'s currently in 1st place.', options:[[false,'Always'],[true,'Only if Married']] },
+];
+function renderHouseRulesScreen(){
+  app.innerHTML = `
+    <div class="overlay">
+      <div class="modal" style="max-width:560px;">
+        <h2>House Rules</h2>
+        <div class="sub">Set the ruleset for this game — locked in once the room is created, the same for everyone who joins it.</div>
+        ${HOUSE_RULE_GROUPS.map(g=>`
+          <div class="setup-field">
+            <label>${g.label}</label>
+            <div class="player-count-row" id="hr-${g.key}-row"></div>
+            <div class="hint" style="margin-top:2px;">${g.hint}</div>
+          </div>
+        `).join('')}
+        <button class="btn full" id="hrContinueBtn" style="margin-top:6px;">Continue</button>
+        <button class="btn secondary full" id="hrBackBtn" style="margin-top:8px;">← Back</button>
+      </div>
+    </div>`;
+  HOUSE_RULE_GROUPS.forEach(g=>{
+    const row = document.getElementById(`hr-${g.key}-row`);
+    g.options.forEach(([val,label])=>{
+      const d = document.createElement('div');
+      d.className = 'count-opt'+(pendingHouseRules[g.key]===val?' selected':'');
+      d.textContent = label;
+      d.onclick = ()=>{ pendingHouseRules[g.key] = val; renderHouseRulesScreen(); };
+      row.appendChild(d);
+    });
+  });
+  document.getElementById('hrContinueBtn').onclick = ()=>{
+    subscribeToRoom(genRoomCode());
+    if(pendingCreateAction==='bot') startBotGame(); else render();
+  };
+  document.getElementById('hrBackBtn').onclick = ()=>{ preRoomScreen = 'landing'; render(); };
 }
 
 function renderCreateGameScreen(){
@@ -4376,7 +4537,7 @@ function createLobby(count){
   // Empty seats use '' (not null!) — Firebase Realtime Database silently
   // strips null entries out of arrays/objects on write, which was quietly
   // collapsing a 2-seat lobby down to 1 the moment it hit the database.
-  state = { phase:'lobby', lobbySeats: Array(count).fill(''), lobbyBots: Array(count).fill(false), gameLength, expansionMode: activeMode==='expansion', version:0, createdAt: Date.now(), ...localDefaults() };
+  state = { phase:'lobby', lobbySeats: Array(count).fill(''), lobbyBots: Array(count).fill(false), gameLength, expansionMode: activeMode==='expansion', houseRules: { ...pendingHouseRules }, version:0, createdAt: Date.now(), ...localDefaults() };
   lastKnownSnapshot = {}; // this is a whole new structure — nothing to diff against yet
   persistFull(); render();
 }
@@ -4599,7 +4760,13 @@ function renderTrack(track, curIdx, prevIdx, colorVar, id){
     // dots always keep price below, so the badge is consistently the top
     // line across the whole zone; alternation still applies everywhere
     // else, where there's nothing else up there to collide with.
-    const priceAbove = useCompactPrice && i%2===1 && !inZone;
+    // Same fix as the dividend zone, mirrored: a short-rebate-zone dot has
+    // its badge competing for the "below" spot instead of "above", so it
+    // always keeps price ABOVE — consistent single row the whole way
+    // across that zone too, never swapping order dot to dot. Dividend
+    // zones still always keep price below; dots in neither zone still
+    // alternate normally, since there's nothing there to collide with.
+    const priceAbove = useCompactPrice && (inZone ? false : (inShortZoneDot ? true : i%2===1));
     const priceHtml = `<div class="dot-price">${priceLabel}</div>`;
     // Always exactly 5 slots, in fixed order, whether or not THIS
     // particular dot has content for a given slot — an empty slot still
@@ -4790,11 +4957,32 @@ function renderBoard(){
       const drip = state.recurringEffects.find(e=>e.stock===id);
       const zone = DIVIDEND_ZONES[id];
       const inZoneNow = inDividendZone(id);
+      // Minimizing is an expansion-pack-only feature — 20 stocks across 5
+      // sectors is a lot more to scroll past than the base game's 8, so
+      // this only ever shows up / applies when state.expansionMode is true.
+      const canMinimize = state.expansionMode;
+      const isMin = canMinimize && minimizedStocks.has(id);
+      const minimizeToggleHtml = canMinimize
+        ? `<button class="minimize-toggle" data-minimize-id="${id}" title="${isMin?'Expand':'Minimize'} ${id}">${isMin?'▸':'▾'}</button>`
+        : '';
+      if(isMin){
+        // Collapsed: ticker + full company name only, no chart/price/track —
+        // still selectable for trading, just visually out of the way.
+        html += `<div class="stock-row minimized ${isSel?'selected':''}" data-trade-id="${id}">
+          <div class="row-top">
+            ${minimizeToggleHtml}
+            <span class="ticker" style="color:${sec.color}">${id}</span>
+            <span style="margin-left:auto;font-size:11px;color:var(--muted);white-space:nowrap;">${STOCKS[id].name}</span>
+          </div>
+        </div>`;
+        return;
+      }
       html += `<div class="stock-row ${isSel?'selected':''} ${s.worthless?'worthless':''}" data-trade-id="${id}">
         <div class="stock-row-inner">
           <div class="stock-chart-col" data-chart-id="${id}">${renderSparkline(s.history, s.track[s.track.length-1], s.track[0], sec.color, s.tradeMarkers, zone ? s.track[s.track.length-zone.dots] : null)}</div>
           <div class="stock-main-col">
             <div class="row-top">
+              ${minimizeToggleHtml}
               <span class="ticker" style="color:${sec.color}">${id}</span>
               <span class="price-now ${s.idx!==s.prevIdx?'flash':''}">$${cur}</span>
               ${priceDeltaBadge(s.idx, s.prevIdx)}
@@ -5892,6 +6080,14 @@ function renderGameScreen(){
   });
   document.querySelectorAll('[data-trade-id]').forEach(el=>{
     el.onclick = ()=>{ state.tradeSelection = el.getAttribute('data-trade-id'); render(); };
+  });
+  document.querySelectorAll('[data-minimize-id]').forEach(el=>{
+    el.onclick = (ev)=>{
+      ev.stopPropagation();
+      const id = el.getAttribute('data-minimize-id');
+      if(minimizedStocks.has(id)) minimizedStocks.delete(id); else minimizedStocks.add(id);
+      render();
+    };
   });
   document.querySelectorAll('[data-chart-id]').forEach(el=>{
     el.onclick = (ev)=>{ ev.stopPropagation(); state.expandedChart = el.getAttribute('data-chart-id'); render(); };
