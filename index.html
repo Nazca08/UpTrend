@@ -1212,15 +1212,18 @@ let landingView = 'main'; // 'main' | 'expansion' — which pre-room screen to s
    same as myPlayerIndex above; not worth the complexity of persisting it
    for what's just a decluttering toggle. */
 let minimizedStocks = new Set();
-/* House rules being edited on the House Rules screen, before a room code
-   even exists yet — null until the player clicks Create Game / vs Bot,
-   at which point it's populated fresh from DEFAULT_HOUSE_RULES (see
-   openHouseRulesScreen below). Deliberately not initialized here at
-   module-load time, since DEFAULT_HOUSE_RULES isn't declared until later
-   in the file — this avoids any load-order dependency entirely. */
+/* House rules for whatever room gets created next — completely optional
+   to ever look at. Populated automatically with DEFAULT_HOUSE_RULES the
+   moment either landing screen first renders (see ensurePendingHouseRules,
+   called at the top of both), so Create Game / vs Bot / Join all work
+   with sensible defaults even if the House Rules button is never touched.
+   If it IS opened and edited, those choices stick around and get reused
+   for the next room too — opening the screen again doesn't reset it back
+   to defaults. Deliberately not initialized here at module-load time,
+   since DEFAULT_HOUSE_RULES isn't declared until later in the file — this
+   avoids any load-order dependency entirely. */
 let pendingHouseRules = null;
 let preRoomScreen = 'landing'; // 'landing' | 'rules' — only meaningful while roomCode is null; which of the two pre-room screens to show
-let pendingCreateAction = null; // 'multiplayer' | 'bot' — which button (Create Game vs vs Bot) sent the player to the House Rules screen, so Continue knows what to do afterward
 
 /* ============================= STATE ============================= */
 let state = null;
@@ -4352,6 +4355,7 @@ function renderSetup(){
 /* True entry point — no room chosen yet. Create a fresh room (random
    6-digit code) or join one someone else already made. */
 function renderLandingScreen(){
+  ensurePendingHouseRules();
   app.innerHTML = `
     <div class="overlay">
       <div class="modal">
@@ -4359,6 +4363,7 @@ function renderLandingScreen(){
         <div class="sub">A turn-based stock market game, playable live with friends on separate screens.</div>
         <button class="btn full" id="createRoomBtn">Create Game</button>
         <button class="btn secondary full" id="vsBotBtn" style="margin-top:8px;">Play vs Bot (1 Player)</button>
+        <button class="btn secondary full" id="houseRulesBtn" style="margin-top:8px;">⚙️ House Rules</button>
         <button class="btn secondary full" id="howToPlayBtn" style="margin-top:8px;">📖 How to Play</button>
         ${renderGameLengthField('landing')}
         <div class="hint" style="margin:14px 0 8px 0;">— or join a game already running —</div>
@@ -4375,8 +4380,9 @@ function renderLandingScreen(){
     </div>
     ${renderHowToPlayModal()}`;
   wireGameLengthField('landing', renderLandingScreen);
-  document.getElementById('createRoomBtn').onclick = ()=>{ openHouseRulesScreen('multiplayer'); };
-  document.getElementById('vsBotBtn').onclick = ()=>{ openHouseRulesScreen('bot'); };
+  document.getElementById('createRoomBtn').onclick = ()=>{ subscribeToRoom(genRoomCode()); render(); };
+  document.getElementById('vsBotBtn').onclick = ()=>{ subscribeToRoom(genRoomCode()); startBotGame(); };
+  document.getElementById('houseRulesBtn').onclick = ()=>{ openHouseRulesScreen(); };
   document.getElementById('howToPlayBtn').onclick = ()=>{ showHowToPlay = true; renderLandingScreen(); };
   document.getElementById('joinRoomBtn').onclick = ()=>{
     const code = document.getElementById('joinCodeInput').value.trim().replace(/\D/g,'');
@@ -4394,6 +4400,7 @@ function renderLandingScreen(){
    created, so freshState() stamps expansionMode:true into it and every
    downstream system (deck, prices, board) picks up the wider dataset. */
 function renderExpansionLandingScreen(){
+  ensurePendingHouseRules();
   app.innerHTML = `
     <div class="overlay">
       <div class="modal">
@@ -4402,6 +4409,7 @@ function renderExpansionLandingScreen(){
         <div class="sub">Same game, one new Crypto sector with Bitcoin, and 3 stocks per sector instead of 2. Rooms created here are separate from the regular game.</div>
         <button class="btn full" id="expCreateRoomBtn" style="background:linear-gradient(135deg,var(--crypto),var(--tech));border:none;">Create Expansion Game</button>
         <button class="btn secondary full" id="expVsBotBtn" style="margin-top:8px;">Play vs Bot (1 Player)</button>
+        <button class="btn secondary full" id="expHouseRulesBtn" style="margin-top:8px;">⚙️ House Rules</button>
         ${renderGameLengthField('landing')}
         <div class="hint" style="margin:14px 0 8px 0;">— or join an expansion game already running —</div>
         <div class="trade-row">
@@ -4413,8 +4421,9 @@ function renderExpansionLandingScreen(){
       </div>
     </div>`;
   wireGameLengthField('landing', renderExpansionLandingScreen);
-  document.getElementById('expCreateRoomBtn').onclick = ()=>{ setActiveMode('expansion'); openHouseRulesScreen('multiplayer'); };
-  document.getElementById('expVsBotBtn').onclick = ()=>{ setActiveMode('expansion'); openHouseRulesScreen('bot'); };
+  document.getElementById('expCreateRoomBtn').onclick = ()=>{ setActiveMode('expansion'); subscribeToRoom(genRoomCode()); render(); };
+  document.getElementById('expVsBotBtn').onclick = ()=>{ setActiveMode('expansion'); subscribeToRoom(genRoomCode()); startBotGame(); };
+  document.getElementById('expHouseRulesBtn').onclick = ()=>{ openHouseRulesScreen(); };
   document.getElementById('expJoinRoomBtn').onclick = ()=>{
     const code = document.getElementById('expJoinCodeInput').value.trim().replace(/\D/g,'');
     if(code.length!==6){ document.getElementById('expJoinError').textContent = 'Enter the 6-digit code your host shared with you.'; return; }
@@ -4423,36 +4432,47 @@ function renderExpansionLandingScreen(){
   document.getElementById('backToMainBtn').onclick = ()=>{ landingView = 'main'; setActiveMode('base'); render(); };
 }
 
-/* Entry point into the House Rules screen from either landing screen's
-   Create Game / vs Bot buttons — populates pendingHouseRules fresh from
-   the defaults (with a couple of mode-appropriate starting picks, not
-   hard requirements) every time, so re-opening it never carries over
-   stale choices from a previous room. action is 'multiplayer' or 'bot',
-   remembered so the Continue button on the rules screen knows which of
-   the two original button behaviors to actually run once rules are
-   locked in. */
-function openHouseRulesScreen(action){
-  pendingHouseRules = { ...DEFAULT_HOUSE_RULES };
-  if(landingView==='expansion'){
-    // Not a hard requirement — expansion players can still pick Full Rate
-    // or turn the cap off if they want. Just the more natural default
-    // given the expansion was built around Cut Rate and a leverage cap
-    // in the first place.
-    pendingHouseRules.dividendMode = 'cut';
-    pendingHouseRules.leverageCap = 10;
+/* Entry point into the House Rules screen — reached via its own button on
+   either landing screen, entirely optional. Everyone gets DEFAULT_HOUSE_RULES
+   automatically just by clicking Create Game / vs Bot / Join without ever
+   touching this button; opening it just lets you review/adjust before you
+   do. Only initializes pendingHouseRules the FIRST time it's ever opened
+   in this session — reopening it later shows whatever you last saved, not
+   a reset back to defaults, so tweaks actually stick across visits. */
+function openHouseRulesScreen(){
+  if(!pendingHouseRules){
+    pendingHouseRules = { ...DEFAULT_HOUSE_RULES };
+    if(landingView==='expansion'){
+      // Not a hard requirement — expansion players can still pick Full Rate
+      // or turn the cap off if they want. Just the more natural starting
+      // point given the expansion was built around Cut Rate and a
+      // leverage cap in the first place.
+      pendingHouseRules.dividendMode = 'cut';
+      pendingHouseRules.leverageCap = 10;
+    }
   }
-  pendingCreateAction = action;
   preRoomScreen = 'rules';
   render();
 }
+/* Same defaulting logic as above, but called automatically the moment
+   either landing screen renders — guarantees pendingHouseRules is always
+   populated (with DEFAULT_HOUSE_RULES, silently) by the time Create Game /
+   vs Bot fires, even if the player never once opens the House Rules
+   screen or button at all. */
+function ensurePendingHouseRules(){
+  if(!pendingHouseRules) pendingHouseRules = { ...DEFAULT_HOUSE_RULES };
+}
 
-/* House Rules — shown after Create Game / vs Bot on EITHER landing
-   screen, before the room code is generated. Available in both the base
-   game and the expansion; nothing here is gated to either. Whatever's
-   selected gets locked into pendingHouseRules, which freshState()/
-   createLobby() stamp onto the synced state the moment the room actually
-   gets created — from that point on it's fixed for the rest of the game,
-   not editable from the lobby or mid-game. */
+/* House Rules — an optional screen reached from its own button on either
+   landing screen, not a gate Create Game / vs Bot forces you through.
+   Available in both the base game and the expansion; nothing here is
+   gated to either. Whatever's selected gets saved into pendingHouseRules
+   immediately (no separate "confirm" step needed beyond closing the
+   screen), which freshState()/createLobby() stamp onto the synced state
+   the moment a room actually gets created — from that point on it's
+   fixed for the rest of that game, not editable from the lobby or
+   mid-game. Opening this screen again later for a NEW room picks up
+   right where you left your selections, not a reset to defaults. */
 const HOUSE_RULE_GROUPS = [
   { key:'dividendMode', label:'Dividends & Short Rebates', hint:'Full Rate: today\'s rate depends only on where the price is right now. Cut Rate: rate depends on where YOU bought/shorted, rewarding a good entry — same rule drives both dividends and short rebates together.', options:[['full','Full Rate'],['cut','Cut Rate']] },
   { key:'capitalGainsMultiplier', label:'Capital Gains Multiplier', hint:'Multiplies gains AND losses — realized and unrealized, longs and shorts alike. Your actual invested cash is always safe; only the gap above or below it gets scaled.', options:[[1,'1x'],[2,'2x'],[5,'5x'],[10,'10x']] },
@@ -4462,11 +4482,12 @@ const HOUSE_RULE_GROUPS = [
   { key:'divorceRequiresMarriage', label:'Divorce Card', hint:'Either way, Divorce only ever fires on whoever\'s currently in 1st place.', options:[[false,'Always'],[true,'Only if Married']] },
 ];
 function renderHouseRulesScreen(){
+  ensurePendingHouseRules();
   app.innerHTML = `
     <div class="overlay">
       <div class="modal" style="max-width:560px;">
         <h2>House Rules</h2>
-        <div class="sub">Set the ruleset for this game — locked in once the room is created, the same for everyone who joins it.</div>
+        <div class="sub">Optional — Create Game / vs Bot already use sensible defaults without ever opening this. Adjust anything below and it's saved for the next room you create.</div>
         ${HOUSE_RULE_GROUPS.map(g=>`
           <div class="setup-field">
             <label>${g.label}</label>
@@ -4474,8 +4495,7 @@ function renderHouseRulesScreen(){
             <div class="hint" style="margin-top:2px;">${g.hint}</div>
           </div>
         `).join('')}
-        <button class="btn full" id="hrContinueBtn" style="margin-top:6px;">Continue</button>
-        <button class="btn secondary full" id="hrBackBtn" style="margin-top:8px;">← Back</button>
+        <button class="btn full" id="hrSaveBtn" style="margin-top:6px;">Save</button>
       </div>
     </div>`;
   HOUSE_RULE_GROUPS.forEach(g=>{
@@ -4488,11 +4508,7 @@ function renderHouseRulesScreen(){
       row.appendChild(d);
     });
   });
-  document.getElementById('hrContinueBtn').onclick = ()=>{
-    subscribeToRoom(genRoomCode());
-    if(pendingCreateAction==='bot') startBotGame(); else render();
-  };
-  document.getElementById('hrBackBtn').onclick = ()=>{ preRoomScreen = 'landing'; render(); };
+  document.getElementById('hrSaveBtn').onclick = ()=>{ preRoomScreen = 'landing'; render(); };
 }
 
 function renderCreateGameScreen(){
