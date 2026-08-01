@@ -92,11 +92,21 @@
   .stock-row.worthless:hover{background:none;}
 
   .track{display:flex;align-items:flex-end;gap:2px;position:relative;overflow-x:auto;padding-bottom:2px;-webkit-overflow-scrolling:touch;}
+  /* 5 fixed-height slots, always present in the DOM for every single dot
+     (see renderTrack) — price-above | div-zone-rate | dot | price-below |
+     short-zone-rate. Deliberately NOT CSS Grid: an empty slot here is a
+     real, rendered, fixed-height <div> with nothing inside it, not an
+     empty grid track whose reservation depends on the browser/engine
+     correctly keeping empty explicit tracks sized. That's what guarantees
+     the dot (row 3) and every rate badge land on the exact same pixel row
+     across the whole track, regardless of whether any individual dot has
+     a price label above it, a zone badge, both, or neither. */
+  .track-slot{height:11px;display:flex;align-items:center;justify-content:center;}
+  .track-slot.dot-slot{height:12px;}
   .dot-wrap{display:flex;flex-direction:column;align-items:center;flex:1;min-width:0;}
   .dot{width:9px;height:9px;border-radius:50%;background:#2A3242;transition:all .25s;}
   .dot.filled{width:12px;height:12px;box-shadow:0 0 7px currentColor;}
-  .dot-price{font-size:8.5px;font-family:'IBM Plex Mono';color:var(--muted);margin-top:4px;white-space:nowrap;}
-  .dot-price.price-above{order:-1;margin-top:0;margin-bottom:4px;}
+  .dot-price{font-size:8.5px;font-family:'IBM Plex Mono';color:var(--muted);white-space:nowrap;}
   .dot.filled + .dot-price, .dot-wrap.active .dot-price{color:var(--text);font-weight:600;}
   .dot-wrap.edge .dot{outline:1px solid rgba(255,255,255,0.15);outline-offset:2px;}
   .dot-wrap.center .dot{box-shadow:0 0 0 2px rgba(255,255,255,0.28);}
@@ -104,11 +114,11 @@
   .dot-wrap.div-zone{background:rgba(62,207,142,0.10);border-top:1px solid rgba(62,207,142,0.45);border-bottom:1px solid rgba(62,207,142,0.45);padding-top:1px;}
   .dot-wrap.div-zone-start{border-left:1px solid rgba(62,207,142,0.45);border-top-left-radius:6px;border-bottom-left-radius:6px;}
   .dot-wrap.div-zone-end{border-right:1px solid rgba(62,207,142,0.45);border-top-right-radius:6px;border-bottom-right-radius:6px;}
-  .div-zone-rate{font-size:8px;font-family:'IBM Plex Mono';color:var(--up);font-weight:700;white-space:nowrap;margin-bottom:2px;}
+  .div-zone-rate{grid-row:2;align-self:end;font-size:8px;font-family:'IBM Plex Mono';color:var(--up);font-weight:700;white-space:nowrap;}
   .dot-wrap.short-zone{background:rgba(255,92,92,0.10);border-top:1px solid rgba(255,92,92,0.45);border-bottom:1px solid rgba(255,92,92,0.45);padding-bottom:1px;}
   .dot-wrap.short-zone-start{border-left:1px solid rgba(255,92,92,0.45);border-top-left-radius:6px;border-bottom-left-radius:6px;}
   .dot-wrap.short-zone-end{border-right:1px solid rgba(255,92,92,0.45);border-top-right-radius:6px;border-bottom-right-radius:6px;}
-  .short-zone-rate{font-size:8px;font-family:'IBM Plex Mono';color:var(--down);font-weight:700;white-space:nowrap;margin-top:2px;}
+  .short-zone-rate{grid-row:5;align-self:start;font-size:8px;font-family:'IBM Plex Mono';color:var(--down);font-weight:700;white-space:nowrap;}
 
   /* ---------- sidebar ---------- */
   .sidebar{display:flex;flex-direction:column;gap:12px;position:sticky;top:16px;}
@@ -1618,19 +1628,31 @@ function isSoloVsBots(){
   return !!state && state.players.filter(pl=>!pl.bot).length===1;
 }
 
-const TURN_TIME_LIMIT = 120; // seconds — 2 minutes, for a human's own turn
+const TURN_TIME_LIMIT = 90; // seconds — 1.5 minutes, for a human's own turn in a multi-human game (solo-vs-bots has no timer at all, see isSoloVsBots below)
 const BOT_TURN_TIME_LIMIT = 20; // seconds — bots should never legitimately take anywhere near this long, so if the proactive turn loop ever silently stops for any reason, recovery kicks in within seconds instead of waiting the full human-length timeout
+/* Solo-vs-bots (exactly one human at the table, see isSoloVsBots above)
+   has no other player waiting on you, so there's no one for a turn timer
+   to protect — it removes the clock entirely for the human's own turn,
+   in both the base game and the expansion pack. Bots keep their own
+   internal BOT_TURN_TIME_LIMIT regardless — that's a stall-recovery
+   safety net, not turn-time pressure on a player, so it stays untouched
+   either way. */
 function currentTurnTimeLimit(){
   const cur = state && state.players && state.players[state.current];
-  return (cur && cur.bot) ? BOT_TURN_TIME_LIMIT : TURN_TIME_LIMIT;
+  if(cur && cur.bot) return BOT_TURN_TIME_LIMIT;
+  if(isSoloVsBots()) return Infinity;
+  return TURN_TIME_LIMIT;
 }
 function turnTimerSecondsLeft(){
   if(!state || !state.turnStartedAt || state.gameOver) return TURN_TIME_LIMIT;
+  const limit = currentTurnTimeLimit();
+  if(limit===Infinity) return Infinity;
   const now = (state.paused && state.pausedAt) ? state.pausedAt : Date.now(); // frozen at the moment pause began
   const elapsed = Math.floor((now-state.turnStartedAt)/1000);
-  return Math.max(0, currentTurnTimeLimit()-elapsed);
+  return Math.max(0, limit-elapsed);
 }
 function formatTurnTimer(secs){
+  if(secs===Infinity) return 'No Limit';
   const m = Math.floor(secs/60), s = secs%60;
   return `${m}:${s<10?'0':''}${s}`;
 }
@@ -4571,12 +4593,20 @@ function renderTrack(track, curIdx, prevIdx, colorVar, id){
     // labels run wider than plain digits, and 31 crowded dots is where
     // staggering actually earns back horizontal room. Every other stock
     // keeps every label below, unchanged.
-    const priceAboveClass = (useCompactPrice && i%2===1) ? ' price-above' : '';
+    const priceAbove = useCompactPrice && i%2===1;
+    const priceHtml = `<div class="dot-price">${priceLabel}</div>`;
+    // Always exactly 5 slots, in fixed order, whether or not THIS
+    // particular dot has content for a given slot — an empty slot still
+    // renders as an empty fixed-height div, not nothing. That's what
+    // keeps the dot itself, and every rate badge, locked to the same row
+    // across the entire track regardless of what any individual dot does
+    // or doesn't have (price above vs below, in a zone vs not).
     html += `<div class="dot-wrap ${filled?'active':''} ${edge?'edge':''} ${isCenter?'center':''}${zoneClasses}${shortZoneClasses}">
-      ${inZone?`<div class="div-zone-rate">${dotRateLabel}</div>`:''}
-      <div class="dot ${filled?'filled':''}" style="${filled?`background:${colorVar};color:${colorVar};`:''}"></div>
-      <div class="dot-price${priceAboveClass}">${priceLabel}</div>
-      ${inShortZoneDot?`<div class="short-zone-rate">${shortRateLabel}</div>`:''}
+      <div class="track-slot">${priceAbove?priceHtml:''}</div>
+      <div class="track-slot">${inZone?`<div class="div-zone-rate">${dotRateLabel}</div>`:''}</div>
+      <div class="track-slot dot-slot"><div class="dot ${filled?'filled':''}" style="${filled?`background:${colorVar};color:${colorVar};`:''}"></div></div>
+      <div class="track-slot">${priceAbove?'':priceHtml}</div>
+      <div class="track-slot">${inShortZoneDot?`<div class="short-zone-rate">${shortRateLabel}</div>`:''}</div>
     </div>`;
   });
   html += `</div>`;
