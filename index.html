@@ -72,8 +72,8 @@
   .stock-row{padding:12px 16px;border-bottom:1px solid var(--line);cursor:pointer;transition:background .15s;}
   .stock-row.minimized{padding:8px 16px;}
   .stock-row.minimized .row-top{gap:8px;margin-bottom:0;}
-  .minimize-toggle{background:none;border:none;color:var(--muted);cursor:pointer;font-size:10px;padding:2px 4px;line-height:1;border-radius:4px;flex-shrink:0;}
-  .minimize-toggle:hover{color:var(--text);background:rgba(255,255,255,0.08);}
+  .minimize-toggle{background:var(--panel-2);border:1px solid var(--line);color:var(--text);cursor:pointer;font-size:13px;font-weight:700;width:22px;height:22px;line-height:1;border-radius:6px;flex-shrink:0;display:flex;align-items:center;justify-content:center;}
+  .minimize-toggle:hover{background:rgba(255,255,255,0.14);border-color:rgba(255,255,255,0.3);}
   .stock-row:last-child{border-bottom:none;}
   .stock-row:hover{background:rgba(255,255,255,0.02);}
   .stock-row.selected{background:rgba(245,166,35,0.07);box-shadow:inset 3px 0 0 var(--amber);}
@@ -1921,7 +1921,7 @@ function netWorth(p){
   });
   v += capGainAdjust(p.spCostBasis||0, p.spShares*spPrice(), mult);
   v += capGainAdjust(p.spxCostBasis||0, p.spxShares*spxPrice(), mult);
-  return v;
+  return Math.round(v);
 }
 
 /* Picks who a Dividend Leach card attaches to: whoever's currently in 1st
@@ -3459,7 +3459,7 @@ function resolveChoice(card, choice){
       const { stock, side, qty } = choice;
       if(side==='buy'){
         const cost = price(stock)*qty;
-        if(cost>p.cash){ state.choiceError = `Not enough cash — whale-buying ${qty} ${stock} costs $${cost}, you have $${p.cash}.`; return false; }
+        if(cost>p.cash){ state.choiceError = `Not enough cash — whale-buying ${qty} ${stock} costs $${Math.round(cost)}, you have $${Math.round(p.cash)}.`; return false; }
         p.cash -= cost; addCostBasis(p, stock, cost); p.shares[stock]+=qty;
         moveStock(stock,1,false); moveStock(stock,1,false);
         recordHistory(); recordTradeMarker(stock, p.color, 'up', qty);
@@ -3681,9 +3681,9 @@ function sellShares(id, qtyRequested, force){
   const proceeds = walk.total - walk.fee;
   pushUndoSnapshot();
   const costOfSold = reduceCostBasisOnSell(p, id, qty);
-  const creditedCash = capGainAdjust(costOfSold, proceeds, capitalGainsMultiplier());
+  const creditedCash = Math.round(capGainAdjust(costOfSold, proceeds, capitalGainsMultiplier()));
   p.cash += creditedCash;
-  addRealizedGain(p, id, creditedCash - costOfSold);
+  addRealizedGain(p, id, creditedCash - Math.round(costOfSold));
   if(id==='SP'){ p.spShares -= qty; } else if(id==='SPX'){ p.spxShares -= qty; } else { p.shares[id] -= qty; }
   const obj = objFor(id);
   const priorIdx = obj.idx;
@@ -3744,13 +3744,13 @@ function coverShort(id, qtyRequested, force){
   // cover than the raw market price suggests — the affordability check
   // has to catch that, not just the unadjusted totalCost.
   const previewAvgBasis = held>0 ? (p.shortBasis[id]||0)/held : 0;
-  const previewAdjustedCost = capGainAdjust(previewAvgBasis*qty, totalCost, capitalGainsMultiplier());
+  const previewAdjustedCost = Math.round(capGainAdjust(previewAvgBasis*qty, totalCost, capitalGainsMultiplier()));
   if(previewAdjustedCost > p.cash){ logEvent(`${p.name} doesn't have enough cash to cover ${qty} ${id}.`); render(); return; }
   pushUndoSnapshot();
   const basisReleased = reduceShortBasisOnCover(p, id, qty);
-  const adjustedCost = capGainAdjust(basisReleased, totalCost, capitalGainsMultiplier());
+  const adjustedCost = Math.round(capGainAdjust(basisReleased, totalCost, capitalGainsMultiplier()));
   p.cash -= adjustedCost;
-  addRealizedGain(p, id, basisReleased - adjustedCost);
+  addRealizedGain(p, id, Math.round(basisReleased) - adjustedCost);
   p.shorts[id] -= qty;
   const obj = state.stocks[id];
   obj.prevIdx = obj.idx; obj.idx = walk.finalIdx;
@@ -4979,7 +4979,7 @@ function renderBoard(){
       const canMinimize = state.expansionMode;
       const isMin = canMinimize && minimizedStocks.has(id);
       const minimizeToggleHtml = canMinimize
-        ? `<button class="minimize-toggle" data-minimize-id="${id}" title="${isMin?'Expand':'Minimize'} ${id}">${isMin?'▸':'▾'}</button>`
+        ? `<button class="minimize-toggle" data-minimize-id="${id}" title="${isMin?'Expand':'Minimize'} ${id}">${isMin?'▶':'▼'}</button>`
         : '';
       if(isMin){
         // Collapsed: ticker + full company name only, no chart/price/track —
@@ -5138,7 +5138,7 @@ function renderSidebar(){
     const projIdxDiv = projectedIndexDividend(pl);
     const projShortRebate = projectedShortRebate(pl);
     html += `<div class="player-card ${i===state.current?'active':''}" style="border-left-color:${pl.color};${pl.eliminated?'opacity:0.5;':''}">
-      <div class="p-top"><span class="p-name" style="color:${pl.color};">${pl.name}${pl.bot?' 🤖':''}${i===state.current?' • turn':''}${pl.eliminated?' <span class="worthless-badge">Eliminated</span>':''}${pl.jailTurnsLeft>0?` <span class="jail-tag">🚔 Jailed (${pl.jailTurnsLeft})</span>`:''}</span><span class="p-cash">$${pl.cash}${locked>0?` <span style="color:var(--muted);font-weight:400;">($${locked} locked)</span>`:''}</span></div>
+      <div class="p-top"><span class="p-name" style="color:${pl.color};">${pl.name}${pl.bot?' 🤖':''}${i===state.current?' • turn':''}${pl.eliminated?' <span class="worthless-badge">Eliminated</span>':''}${pl.jailTurnsLeft>0?` <span class="jail-tag">🚔 Jailed (${pl.jailTurnsLeft})</span>`:''}</span><span class="p-cash">$${Math.round(pl.cash)}${locked>0?` <span style="color:var(--muted);font-weight:400;">($${Math.round(locked)} locked)</span>`:''}</span></div>
       <div class="p-net">Net worth: $${netWorth(pl)}</div>
       <div class="p-net" style="${projDiv>0?'color:var(--up);':''}">Projected dividends: $${projDiv}</div>
       ${projIdxDiv>0?`<div class="p-net" style="color:var(--up);">+ $${projIdxDiv} SP8 (end of round)</div>`:''}
@@ -5218,11 +5218,11 @@ function renderSidebar(){
   } else if(state.phase==='draw' && p.cash<0){
     const sel = state.tradeSelection;
     if(isBankrupt(p)){
-      html += `<div class="choice-error" style="margin-bottom:10px;">${p.name}'s cash is negative ($${p.cash}) and there's nothing left to sell that could ever bring it back to $0 — no way to recover on your own.</div>
+      html += `<div class="choice-error" style="margin-bottom:10px;">${p.name}'s cash is negative ($${Math.round(p.cash)}) and there's nothing left to sell that could ever bring it back to $0 — no way to recover on your own.</div>
         <button class="btn full" id="bankruptcyResetBtn">Restart My Portfolio ($${BANKRUPTCY_RESET_CASH.toLocaleString()})</button>
         <div class="hint">This wipes all your positions and gives you a fresh $${BANKRUPTCY_RESET_CASH.toLocaleString()} to start over with — everyone else's game keeps going untouched.</div>`;
     } else {
-      html += `<div class="choice-error" style="margin-bottom:10px;">${p.name}'s cash is negative ($${p.cash}) after a margin call. Sell or cover holdings until you're back to $0 or more before you can draw a card.</div>`;
+      html += `<div class="choice-error" style="margin-bottom:10px;">${p.name}'s cash is negative ($${Math.round(p.cash)}) after a margin call. Sell or cover holdings until you're back to $0 or more before you can draw a card.</div>`;
       if(!sel){
         html += `<div class="no-selection">Tap any stock row or either S&amp;P 8 panel on the left to sell or cover it.</div>`;
       } else {
