@@ -992,6 +992,8 @@ function repairCollections(s){
   if(s.pendingChoice===undefined) s.pendingChoice = null;
   if(s.choiceError===undefined) s.choiceError = null;
   if(s.winner===undefined) s.winner = null;
+  if(s.finalRound===undefined) s.finalRound = null;
+  if(s.turnsSinceMemorableCard===undefined) s.turnsSinceMemorableCard = 0;
   if(s.turnNumber===undefined) s.turnNumber = 1;
   if(s.paused===undefined) s.paused = false;
   if(s.pausedAt===undefined) s.pausedAt = null;
@@ -1016,6 +1018,7 @@ function repairCollections(s){
       if(pl.biggestTradeAmount===undefined) pl.biggestTradeAmount = 0;
       if(pl.biggestTradeStock===undefined) pl.biggestTradeStock = null;
       if(pl.marginShield===undefined) pl.marginShield = false;
+      if(pl.bot && !BOT_PERSONALITIES[pl.personality]) pl.personality = randomBotPersonality(); // old saves predate personalities — give any bot seat one so it isn't stuck on the (no longer existing) shared defaults
       if(pl.publicOffering && !Array.isArray(pl.publicOffering.usedStocks)) pl.publicOffering.usedStocks = [];
       if(pl.jailTurnsLeft===undefined) pl.jailTurnsLeft = 0;
       if(pl.bannedStocks===undefined || pl.bannedStocks===null || Array.isArray(pl.bannedStocks)) pl.bannedStocks = {}; // old format was a permanent array — migrate to empty (no more permanent bans)
@@ -1562,7 +1565,15 @@ function freshState(players, gameLength){
   STOCK_IDS.forEach(id=>{
     const cfg = STOCK_PRICE_CONFIG[id];
     const track = generateTrack(cfg.top, cfg.bottom, cfg.center, STOCK_DOTS_PER_SIDE);
-    stocks[id] = { idx: STOCK_CENTER_IDX, track, frozen:false, worthless:false, prevIdx: STOCK_CENTER_IDX, history:[track[STOCK_CENTER_IDX]], tradeMarkers:[], tradeLog:[] };
+    // Each stock starts at a randomly rolled point near (but not always
+    // exactly at) its own center, instead of every single game opening with
+    // every stock dead-center. Bounded to within 40% of the way toward
+    // either edge, so it's a genuinely different opening market every game
+    // — no more memorizing "the cheap one is always X early on" — without
+    // ever starting a stock uncomfortably close to its own ceiling/floor.
+    const maxStartOffset = Math.floor(STOCK_DOTS_PER_SIDE*0.4);
+    const startIdx = STOCK_CENTER_IDX + (maxStartOffset>0 ? Math.floor(Math.random()*(2*maxStartOffset+1))-maxStartOffset : 0);
+    stocks[id] = { idx: startIdx, track, frozen:false, worthless:false, prevIdx: startIdx, history:[track[startIdx]], tradeMarkers:[], tradeLog:[] };
   });
   // 'sp' is the original index fund, now labeled "Mini SP8" everywhere in
   // the UI. 'spx' is the new "SP8" — same shape, same starting position
@@ -1624,6 +1635,7 @@ function freshState(players, gameLength){
     pendingChoice: null,
     gameOver: false,
     winner: null,
+    finalRound: null, // {crossedBy: playerIndex, pending: [playerIndex,...]} — once someone reaches a net-worth target, everyone else still gets exactly one more turn (with a guaranteed closing-bell swing) before a winner locks in, instead of the game stopping mid-round. See checkGameOver/endTurn/finalizeFinalRound.
     winCondition, // {mode:'networth', target} or {mode:'timer', minutes, endsAt}
     tradeSelection: null, // stock id or 'SP'
     turnUsage: { total: 0, perStock: {} }, // resets each player's turn; buys+shorts only, drives the 12/4 caps
@@ -1645,6 +1657,7 @@ function freshState(players, gameLength){
     cardsPerTurn: 1, // exactly one draw to open the turn, and one more to close it
     cardsDrawnThisTurn: 0,
     turnStage: 'start', // 'start' = the opening draw(s), 'end' = the mandatory draw that closes the turn
+    turnsSinceMemorableCard: 0, // drought counter driving the memorable-card pity timer — see maybePullMemorableCardForward
   };
 }
 
@@ -2386,24 +2399,25 @@ function checkWorthless(){
   });
 }
 
-/* A player whose net worth is negative can never dig out — even selling
-   every last share can't bring their cash back to $0, since shorts/fees
-   already account for that in netWorth. Rather than soft-locking their
-   turn forever, they're knocked out of the game entirely. */
+/* A player whose net worth is negative can never dig out on their own —
+   even selling every last share can't bring their cash back to $0, since
+   shorts/fees already account for that in netWorth. Nobody gets knocked out
+   of the game for this anymore, though: instead of a permanent elimination
+   that leaves them spectating the rest of what can be a very long game,
+   this is just treated as an automatic bankruptcy reset — the same fresh
+   start the manual "Restart My Portfolio" button already gives someone
+   whose cash alone goes underwater. The only difference here is it can
+   catch a single event that craters BOTH cash and net worth at once (a Raid
+   card, a brutal margin call cascade) before the player ever gets a turn to
+   hit that button themselves. `eliminated` stays in the data model — lots
+   of other code still reads it — nothing just ever sets it true anymore. */
 function checkEliminations(){
   if(state.gameOver) return;
   state.players.forEach(p=>{
     if(!p.eliminated && p.cash<0 && netWorth(p)<0){
-      p.eliminated = true;
-      logEvent(`${p.name} is eliminated — net worth went negative with no way to recover.`, true);
+      resetBankruptPlayer(p);
     }
   });
-  const active = state.players.filter(p=>!p.eliminated);
-  if(state.players.length>1 && active.length<=1 && !state.gameOver){
-    state.gameOver = true;
-    state.winner = active[0] || state.players.reduce((best,p)=> (!best||netWorth(p)>netWorth(best))?p:best, null);
-    logEvent(active.length===1 ? `${active[0].name} is the last player standing — wins!` : 'All players were eliminated — game over.', true);
-  }
 }
 
 /* Appends the current price to each stock's (and SP8's) history whenever it
@@ -2471,17 +2485,66 @@ function checkGameOver(){
   // 3. Win condition: either a target net worth, or a fixed game-length timer
   const wc = state.winCondition || { mode:'networth', target:500000 };
   if(wc.mode==='networth'){
-    const bigWinner = state.players.find(p=>!p.eliminated && netWorth(p)>=wc.target);
-    if(bigWinner){
-      state.gameOver = true;
-      state.winner = bigWinner;
-      logEvent(`${bigWinner.name} reached $${wc.target.toLocaleString()} net worth — game over!`, true);
-      return;
+    if(!state.finalRound){
+      const bigWinner = state.players.find(p=>netWorth(p)>=wc.target);
+      if(bigWinner){
+        const crossedByIndex = state.players.indexOf(bigWinner);
+        const others = state.players.map((pl,i)=>i).filter(i=>i!==crossedByIndex);
+        if(others.length===0){
+          // solo game (or everyone else somehow already gone) — nobody left
+          // to give a final round to, so it ends right here same as before.
+          state.gameOver = true;
+          state.winner = bigWinner;
+          logEvent(`${bigWinner.name} reached $${wc.target.toLocaleString()} net worth — game over!`, true);
+          return;
+        }
+        // Don't end the game the instant someone crosses the line — give
+        // everyone else exactly one more turn (each with a guaranteed
+        // dramatic swing, see applyClosingBellSwing/endTurn) for a real shot
+        // at overtaking before a winner actually locks in. Whoever has the
+        // highest net worth once that last round wraps up wins, even if
+        // that ends up being someone other than whoever crossed first.
+        state.finalRound = { crossedBy: crossedByIndex, pending: others };
+        logEvent(`🔔 ${bigWinner.name} crossed $${wc.target.toLocaleString()}! Final round — everyone else gets one last turn.`, true);
+      }
     }
   } else if(wc.mode==='timer' && Date.now()>=wc.endsAt){
     finalizeTimerGameOver();
     return;
   }
+}
+
+/* Applied automatically once, on each remaining player's bonus turn during
+   a final round (see endTurn) — a hard, dramatic swing on a random live
+   stock, in a random direction. Deliberately NOT drawn from the deck (so it
+   never depends on what big-swing cards happen to be left in it, and never
+   consumes/reshuffles anything) — this is the game manufacturing its own
+   closing-bell moment, on top of whatever the deck itself has already been
+   doing all game. */
+function applyClosingBellSwing(){
+  const live = STOCK_IDS.filter(id=>!state.stocks[id].worthless);
+  if(live.length===0) return;
+  const id = live[Math.floor(Math.random()*live.length)];
+  const dir = Math.random()<0.5 ? -1 : 1;
+  applyDictatedSteps(id, dir, 3);
+  checkWorthless();
+  logEvent(`🔔 Closing Bell: ${id} swings hard ${dir>0?'up':'down'} — now $${price(id)}.`, true);
+}
+
+/* Wraps up a final round once every other player has taken their one bonus
+   turn — highest net worth at that point wins, whether or not that's still
+   whoever originally crossed the target. */
+function finalizeFinalRound(){
+  if(!state.finalRound || state.gameOver) return;
+  let best=null, bestNW=-Infinity;
+  state.players.forEach(p=>{ const nw=netWorth(p); if(nw>bestNW){ bestNW=nw; best=p; } });
+  const crossedByPlayer = state.players[state.finalRound.crossedBy];
+  state.gameOver = true;
+  state.winner = best;
+  state.finalRound = null;
+  logEvent(best===crossedByPlayer
+    ? `${best.name} held on through the final round — wins with $${Math.round(bestNW).toLocaleString()}!`
+    : `${best.name} came from behind in the final round and overtakes ${crossedByPlayer ? crossedByPlayer.name : 'the leader'} — wins with $${Math.round(bestNW).toLocaleString()}!`, true);
 }
 
 /* Timer-mode games don't end on a specific in-game event — they just stop
@@ -2521,8 +2584,86 @@ function drawsNeededThisStage(){
    botResolveChoice already handles it reliably if one ever does slip
    through. */
 const MAX_BOT_DRAW_SKIPS = 8;
+/* The deck's highest-magnitude, most "memorable" market-mover cards — the
+   ones an endgame stretch should be leaning on harder than the small ±1
+   nudges. Reused by both the endgame volatility ramp below and the
+   memorable-card pity timer. */
+const BIG_SWING_TYPES = new Set(['bull2','recession','recession2','covid','buyout','short_squeeze','earnings_report']);
+
+/* 0..1 — how deep into the "endgame" the game currently is, based on
+   whichever win condition is actually active. Ramps in gradually starting
+   once the leader is 60% of the way to a net-worth target (or 60% of the
+   way through a timer game's clock), reaching 1 right at the finish line —
+   a smooth build rather than a switch flipping on, so the market visibly
+   gets more volatile over the back half of a game instead of everything
+   feeling identical until the moment someone crosses the line. */
+const FINAL_STRETCH_RAMP_START = 0.6;
+function finalStretchIntensity(){
+  if(!state || state.gameOver) return 0;
+  const wc = state.winCondition || { mode:'networth', target:500000 };
+  let progress = 0;
+  if(wc.mode==='networth'){
+    let best = -Infinity;
+    state.players.forEach(p=>{ const nw=netWorth(p); if(nw>best) best=nw; });
+    progress = wc.target>0 ? best/wc.target : 0;
+  } else if(wc.mode==='timer' && wc.endsAt){
+    const total = (wc.minutes||30)*60000;
+    const remaining = Math.max(0, wc.endsAt-Date.now());
+    progress = total>0 ? (total-remaining)/total : 0;
+  }
+  if(progress<=FINAL_STRETCH_RAMP_START) return 0;
+  return Math.max(0, Math.min(1, (progress-FINAL_STRETCH_RAMP_START)/(1-FINAL_STRETCH_RAMP_START)));
+}
+
+/* Doesn't touch the deck's actual composition — just resequences it. Finds
+   the nearest big-swing card still left in the deck and moves it to the
+   top, with a chance that scales up to 50/50 as the endgame ramp climbs
+   toward its max. Total supply of big cards across the whole game is
+   unchanged (whatever gets drawn eventually cycles back through the
+   discard-reshuffle in drawFromDeck), this just biases WHEN they tend to
+   land toward the tense back half of the game instead of being uniformly
+   likely on every single turn all game long. */
+function maybePullBigSwingCardForward(){
+  const intensity = finalStretchIntensity();
+  if(intensity<=0) return;
+  if(Math.random() > intensity*0.5) return;
+  const idx = state.deck.findIndex(c=>BIG_SWING_TYPES.has(c.type));
+  if(idx>0){
+    const [card] = state.deck.splice(idx,1);
+    state.deck.unshift(card);
+  }
+}
+
+/* The deck's flavor-heavy "moment" cards — the ones a table actually
+   remembers and talks about after the game, as opposed to routine trading.
+   Used for the pity timer below, separate from BIG_SWING_TYPES (a Marriage
+   or a Buyout is memorable regardless of whether the market's currently
+   volatile or not). */
+const MEMORABLE_CARD_TYPES = new Set(['marriage','divorce','golden_goose','buyout','promotion','insider_tip']);
+const MEMORABLE_PITY_TURNS = 10; // once this many turns pass with nobody drawing a memorable card, the odds of pulling one forward start climbing
+const MEMORABLE_PITY_MAX_TURNS = 22; // by this many turns dry, a memorable card is pulled to the top for certain
+
+/* Same resequencing trick as maybePullBigSwingCardForward, but driven by a
+   running drought counter (state.turnsSinceMemorableCard) instead of game
+   progress — so a game that's just been unlucky with small nudge cards for
+   a stretch gets nudged back toward something worth talking about, rather
+   than every game's pacing being purely up to shuffle luck. */
+function maybePullMemorableCardForward(){
+  const dry = state.turnsSinceMemorableCard||0;
+  if(dry < MEMORABLE_PITY_TURNS) return;
+  const chance = Math.min(1, (dry-MEMORABLE_PITY_TURNS) / (MEMORABLE_PITY_MAX_TURNS-MEMORABLE_PITY_TURNS));
+  if(Math.random() > chance) return;
+  const idx = state.deck.findIndex(c=>MEMORABLE_CARD_TYPES.has(c.type));
+  if(idx>0){
+    const [card] = state.deck.splice(idx,1);
+    state.deck.unshift(card);
+  }
+}
+
 function drawFromDeck(p){
   if(state.deck.length===0){ state.deck = shuffle(state.discard); state.discard=[]; }
+  maybePullBigSwingCardForward();
+  maybePullMemorableCardForward();
   if(!p.bot) return state.deck.shift();
   for(let i=0; i<MAX_BOT_DRAW_SKIPS; i++){
     if(state.deck.length===0){ state.deck = shuffle(state.discard); state.discard=[]; }
@@ -2568,6 +2709,7 @@ function drawCard(force){
     if(state.gameOver){ persist(); render(); return; } // a scheduled prediction landing just ended the game
   }
   const card = drawFromDeck(p);
+  if(MEMORABLE_CARD_TYPES.has(card.type)) state.turnsSinceMemorableCard = 0;
   state.pendingCard = card;
   state.phase = 'resolve';
   state.choiceError = null;
@@ -3781,6 +3923,22 @@ function endTurn(){
     });
   }
   leaving.publicOffering = null; // this-turn-only perk — clear it as the turn ends
+  state.turnsSinceMemorableCard = (state.turnsSinceMemorableCard||0) + 1; // reset to 0 the moment a memorable card is actually drawn — see drawCard/maybePullMemorableCardForward
+  // Final round bookkeeping: if this player's turn was one of the bonus
+  // turns everyone else gets after someone crosses the net-worth target,
+  // give them their guaranteed closing-bell swing right as their turn
+  // wraps up, then check whether that was the last one still owed —
+  // if so, the game actually ends here instead of advancing to a next turn.
+  if(state.finalRound && state.finalRound.pending.includes(state.current)){
+    applyClosingBellSwing();
+    state.finalRound.pending = state.finalRound.pending.filter(i=>i!==state.current);
+    if(state.finalRound.pending.length===0){
+      finalizeFinalRound();
+      recordNetWorthHistory();
+      persist(); render();
+      return;
+    }
+  }
   recordNetWorthHistory();
   const wasLastPlayer = state.current === state.players.length-1;
   let next = state.current;
@@ -4009,10 +4167,27 @@ function botInsiderSignal(id){
    cheapest/richest-by-price — keeping a cash buffer in reserve
    throughout. Returns false once nothing more looks worth doing, which
    is the bot's signal to end its turn. */
-const BOT_SP_FLOOR_PCT = 0.10; // bots always keep at least this fraction of net worth in SP/SPX combined
-const BOT_SHORT_CHANCE = 0.20; // vs. 80% buy, when opening a brand new position
+/* Every bot gets assigned one of these archetypes at game start (see
+   startBotGame/startGameFromLobby) instead of every bot sharing one shared
+   set of thresholds — so replaying against bots doesn't mean facing the
+   same opponent in different colors every time. All four knobs plug
+   directly into botTakeOneTradeAction below in place of the old shared
+   BOT_SP_FLOOR_PCT/BOT_SHORT_CHANCE globals and hardcoded 0.25 buffer/qty-2
+   sizing; richBar/cheapBar/shortBar scale the same "how extended does a
+   move need to be before I react" thresholds the original logic already
+   used, just per-personality instead of fixed. */
+const BOT_PERSONALITIES = {
+  aggressive:   { label:'Aggressive',   spFloorPct:0.05, shortChance:0.35, cashBufferPct:0.15, qty:3, richBar:0.55, cheapBar:0.20, shortBar:0.50 },
+  conservative: { label:'Conservative', spFloorPct:0.20, shortChance:0.08, cashBufferPct:0.35, qty:1, richBar:0.40, cheapBar:0.10, shortBar:0.70 },
+  contrarian:   { label:'Contrarian',   spFloorPct:0.10, shortChance:0.30, cashBufferPct:0.25, qty:2, richBar:0.60, cheapBar:0.05, shortBar:0.40 },
+  diversifier:  { label:'Diversifier',  spFloorPct:0.15, shortChance:0.12, cashBufferPct:0.25, qty:1, richBar:0.50, cheapBar:0.25, shortBar:0.65 },
+};
+const BOT_PERSONALITY_KEYS = Object.keys(BOT_PERSONALITIES);
+function randomBotPersonality(){ return BOT_PERSONALITY_KEYS[Math.floor(Math.random()*BOT_PERSONALITY_KEYS.length)]; }
+function botPersonalityFor(bot){ return BOT_PERSONALITIES[bot.personality] || BOT_PERSONALITIES.aggressive; }
 function botTakeOneTradeAction(){
   const bot = state.players[state.current];
+  const pers = botPersonalityFor(bot);
 
   // 0. Maintain the SP floor — checked first, every time, so it's honored
   // "at all times" rather than only when nothing else looks worth doing.
@@ -4021,7 +4196,7 @@ function botTakeOneTradeAction(){
   // trades need), but SP8 holdings count toward the floor too.
   if(capRemaining()>0 && capRemainingForStock('SP')>0){
     const spValue = (bot.spShares||0)*spPrice() + (bot.spxShares||0)*spxPrice();
-    const targetSpValue = netWorth(bot) * BOT_SP_FLOOR_PCT;
+    const targetSpValue = netWorth(bot) * pers.spFloorPct;
     if(spValue < targetSpValue){
       const shortfallShares = Math.max(1, Math.ceil((targetSpValue-spValue)/spPrice()));
       const maxAffordable = Math.floor(freeCash(bot)/spPrice()); // no discretionary buffer here — this is a mandatory floor, not an opportunistic buy
@@ -4032,8 +4207,8 @@ function botTakeOneTradeAction(){
 
   // 1. Cover a short that's swung back down — lock in the profit. Skipped
   // if the short was opened this same turn (that's a same-turn reversal).
-  const coverable = STOCK_IDS.find(id=> (bot.shorts[id]||0)>0 && botRelativeIdx(id) < -0.3 && !botTouchedThisTurn(id) );
-  if(coverable){ coverShort(coverable, Math.min(2, bot.shorts[coverable]), true); return true; }
+  const coverable = STOCK_IDS.find(id=> (bot.shorts[id]||0)>0 && botRelativeIdx(id) < -pers.shortBar*0.6 && !botTouchedThisTurn(id) );
+  if(coverable){ coverShort(coverable, Math.min(pers.qty, bot.shorts[coverable]), true); return true; }
 
   // 2. Sell a long holding that's gotten rich — or, even before it's
   // technically "rich," one a tip or earnings drift specifically points
@@ -4041,10 +4216,11 @@ function botTakeOneTradeAction(){
   // to fully catch up. Skipped if it was bought this same turn — don't
   // buy something and immediately flip on it.
   const richHeld = STOCK_IDS.find(id=> bot.shares[id]>0 && !botTouchedThisTurn(id) &&
-    (botRelativeIdx(id) > 0.5 || (botInsiderSignal(id)<0 && botRelativeIdx(id) > 0.25)) );
-  if(richHeld){ sellShares(richHeld, Math.min(2, bot.shares[richHeld]), true); return true; }
+    (botRelativeIdx(id) > pers.richBar || (botInsiderSignal(id)<0 && botRelativeIdx(id) > pers.richBar*0.5)) );
+  if(richHeld){ sellShares(richHeld, Math.min(pers.qty, bot.shares[richHeld]), true); return true; }
 
-  // 3/4. Open a new position. Weighted 80/20 buy-vs-short: roll which type
+  // 3/4. Open a new position. Personality sets how often it prefers
+  // shorting vs. buying when opening something brand new: roll which type
   // the bot prefers this decision, try that one, and only fall back to the
   // other type if the preferred one has no viable candidate — so a bot
   // that rolled "short" but has nothing overextended to short still does
@@ -4055,27 +4231,27 @@ function botTakeOneTradeAction(){
   const tryOpenShort = ()=>{
     if(capRemaining()<=0) return false;
     const candidates = STOCK_IDS.filter(id=> !state.stocks[id].worthless && bot.shares[id]<=0 && !botTouchedThisTurn(id) );
-    let target = candidates.filter(id=> botInsiderSignal(id)<0 && botRelativeIdx(id)>0.3 )
+    let target = candidates.filter(id=> botInsiderSignal(id)<0 && botRelativeIdx(id)>pers.shortBar*0.5 )
       .reduce((best,id)=> (best===null || botInsiderSignal(id)<botInsiderSignal(best)) ? id : best, null);
-    if(!target) target = candidates.find(id=> botRelativeIdx(id) > 0.6 ) || null;
+    if(!target) target = candidates.find(id=> botRelativeIdx(id) > pers.shortBar ) || null;
     if(!target || capRemainingForStock(target)<=0) return false;
-    const qty = Math.min(2, capRemaining(), capRemainingForStock(target));
-    const buffer = freeCash(bot)*0.25;
+    const qty = Math.min(pers.qty, capRemaining(), capRemainingForStock(target));
+    const buffer = freeCash(bot)*pers.cashBufferPct;
     if(qty>0 && price(target)*qty <= (freeCash(bot)-buffer)){ openShort(target, qty, true); return true; }
     return false;
   };
   const tryBuy = ()=>{
     if(capRemaining()<=0) return false;
     const candidates = STOCK_IDS.filter(id=>!state.stocks[id].worthless && !botTouchedThisTurn(id));
-    let target = candidates.filter(id=> botInsiderSignal(id)>0 && botRelativeIdx(id)<0.6 )
+    let target = candidates.filter(id=> botInsiderSignal(id)>0 && botRelativeIdx(id)<pers.cheapBar*4 )
       .reduce((best,id)=> (best===null || botInsiderSignal(id)>botInsiderSignal(best)) ? id : best, null);
     if(!target){
       const cheapest = candidates.reduce((best,id)=> (best===null || botRelativeIdx(id)<botRelativeIdx(best)) ? id : best, null);
-      if(cheapest && botRelativeIdx(cheapest) < 0.15) target = cheapest;
+      if(cheapest && botRelativeIdx(cheapest) < pers.cheapBar) target = cheapest;
     }
     if(!target || capRemainingForStock(target)<=0) return false;
-    const buffer = freeCash(bot)*0.25; // keep ~25% of free cash in reserve
-    const qty = Math.min(2, capRemaining(), capRemainingForStock(target));
+    const buffer = freeCash(bot)*pers.cashBufferPct; // keep some free cash in reserve — how much depends on personality
+    const qty = Math.min(pers.qty, capRemaining(), capRemainingForStock(target));
     if(qty<=0) return false;
     const priorFilled = state.turnFills.up[target]||0;
     const walk = walkOrderDetailed(target, qty, +1, priorFilled);
@@ -4083,7 +4259,7 @@ function botTakeOneTradeAction(){
     buyShares(target, qty, true);
     return true;
   };
-  const wantsShort = Math.random() < BOT_SHORT_CHANCE;
+  const wantsShort = Math.random() < pers.shortChance;
   if(wantsShort){
     if(tryOpenShort()) return true;
     if(tryBuy()) return true;
@@ -4298,6 +4474,7 @@ function startBotGame(){
   const gameLength = currentGameLengthSetup();
   state = freshState(['You', 'Bot'], gameLength);
   state.players[1].bot = true;
+  state.players[1].personality = randomBotPersonality();
   state.createdAt = Date.now();
   myPlayerIndex = 0;
   saveLocalRoom(roomCode, 0, 'You');
@@ -4618,7 +4795,7 @@ function startGameFromLobby(){
   const locals = localDefaults();
   const createdAt = state.createdAt || Date.now();
   state = freshState(names, gameLength);
-  state.players.forEach((pl,i)=>{ if(bots[i]) pl.bot = true; });
+  state.players.forEach((pl,i)=>{ if(bots[i]){ pl.bot = true; pl.personality = randomBotPersonality(); } });
   state.createdAt = createdAt;
   Object.assign(state, locals);
   lastKnownSnapshot = {}; // structure changed completely — full replace, not a diff
@@ -5138,7 +5315,7 @@ function renderSidebar(){
     const projIdxDiv = projectedIndexDividend(pl);
     const projShortRebate = projectedShortRebate(pl);
     html += `<div class="player-card ${i===state.current?'active':''}" style="border-left-color:${pl.color};${pl.eliminated?'opacity:0.5;':''}">
-      <div class="p-top"><span class="p-name" style="color:${pl.color};">${pl.name}${pl.bot?' 🤖':''}${i===state.current?' • turn':''}${pl.eliminated?' <span class="worthless-badge">Eliminated</span>':''}${pl.jailTurnsLeft>0?` <span class="jail-tag">🚔 Jailed (${pl.jailTurnsLeft})</span>`:''}</span><span class="p-cash">$${Math.round(pl.cash)}${locked>0?` <span style="color:var(--muted);font-weight:400;">($${Math.round(locked)} locked)</span>`:''}</span></div>
+      <div class="p-top"><span class="p-name" style="color:${pl.color};">${pl.name}${pl.bot?` 🤖 <span style="color:var(--muted);font-weight:400;font-size:11px;">(${botPersonalityFor(pl).label})</span>`:''}${i===state.current?' • turn':''}${pl.eliminated?' <span class="worthless-badge">Eliminated</span>':''}${pl.jailTurnsLeft>0?` <span class="jail-tag">🚔 Jailed (${pl.jailTurnsLeft})</span>`:''}</span><span class="p-cash">$${Math.round(pl.cash)}${locked>0?` <span style="color:var(--muted);font-weight:400;">($${Math.round(locked)} locked)</span>`:''}</span></div>
       <div class="p-net">Net worth: $${netWorth(pl)}</div>
       <div class="p-net" style="${projDiv>0?'color:var(--up);':''}">Projected dividends: $${projDiv}</div>
       ${projIdxDiv>0?`<div class="p-net" style="color:var(--up);">+ $${projIdxDiv} SP8 (end of round)</div>`:''}
